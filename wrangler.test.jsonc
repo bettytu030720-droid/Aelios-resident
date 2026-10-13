@@ -1,0 +1,34 @@
+// Local test config: no AI binding, scripted "fake" model, Telegram and Aelios mocked on :9999.
+{
+  "name": "aelios-resident-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "public",
+    "run_worker_first": ["/messengers/*", "/tg/*", "/web/*"]
+  },
+  "durable_objects": { "bindings": [{ "name": "RESIDENT", "class_name": "Resident" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Resident"] }],
+  "vars": {
+    "MODEL": "fake",
+    "TG_BOT_USERNAME": "resident_test_bot",
+    "TG_ALLOWED": "@her_test",
+    "TIME_ZONE": "Asia/Shanghai",
+    "DEBOUNCE_SECONDS": "1",
+    "LETTER_AFTER_TOKENS": "100000",
+    "KEEP_RECENT_TOKENS": "10",
+    "SHOW_LETTER": "true",
+    "AELIOS_URL": "http://127.0.0.1:9999",
+    "AELIOS_NAMESPACE": "test-space",
+    "WEB_SEARCH": "off",
+    "FETCH_ALLOWLIST": "",
+    "CHECKIN_SCHEDULE": "",
+    "TG_API_BASE": "http://127.0.0.1:9999",
+    "TG_BOT_TOKEN": "123456:test-token",
+    "TG_WEBHOOK_SECRET": "test-secret",
+    "AELIOS_API_KEY": "test-key",
+    "WEB_KEY": "test-web-key",
+    "PERSONA": "你是她的伴侣，在 Telegram 上陪她聊天。"
+  }
+}
