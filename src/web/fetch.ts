@@ -14,7 +14,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { renderInBrowser } from "./browser";
-import { compressPage, DEFAULT_COMPRESS_MODEL, type Compressor } from "./compress";
+import { compressPage, type Compressor } from "./compress";
 import { htmlToMarkdown } from "./html-to-markdown";
 import { validateUrlWithDns } from "./validate-url";
 
@@ -45,20 +45,15 @@ export type Reader = { browser?: BrowserRun; compressor: Compressor | null; cach
 /** A refusal the browser must not retry: the address is not allowed, or the page is not there or not text. */
 class Final extends Error {}
 
-export function readerFor(env: Env, cache?: PageCache): Reader {
-  const model = env.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
-  return {
-    // Undefined when the binding is not configured (the local test config has none).
-    browser: (env as { BROWSER?: BrowserRun }).BROWSER,
-    compressor: env.AI && model.toLowerCase() !== "off" ? { ai: env.AI, model, gateway: env.AI_GATEWAY_ID?.trim() || undefined } : null,
-    cache
-  };
+export function readerFor(env: Env, compressor: Compressor | null, cache?: PageCache): Reader {
+  // Undefined when the binding is not configured (the local test config has none).
+  return { browser: (env as { BROWSER?: BrowserRun }).BROWSER, compressor, cache };
 }
 
 /** How pages are read, for /status. */
 export function webFetchVia(reader: Reader): string {
   const browser = reader.browser ? "JS 页面用浏览器" : "没有浏览器绑定";
-  const compress = reader.compressor ? `长页用 ${reader.compressor.model} 压` : "长页不压";
+  const compress = reader.compressor ? `长页用 ${reader.compressor.name} 压` : "长页不压";
   return `自己读（${browser}，${compress}）`;
 }
 

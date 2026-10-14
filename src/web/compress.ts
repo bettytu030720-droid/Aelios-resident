@@ -1,5 +1,6 @@
 // Adapted from https://github.com/sakisakisa-design/web-fetch (src/lib/compress.ts at 65e7d4e): the same
-// policy, token estimate, chunking and prompts; the model is called through the Workers AI binding.
+// policy, token estimate, chunking and prompts. The model is any one the resident can talk to (WEB_FETCH_MODEL:
+// a Workers AI id, or a vendor model such as anthropic/… or openai/… through AI Gateway).
 // MIT License, Copyright (c) 2026 Claude World.
 //
 // A long page handed to the resident whole would sit in the conversation until the next handoff letter,
@@ -12,6 +13,8 @@
 //   | >= THRESHOLD tokens  | extracted  | condensed     |
 //
 // Compression never fails a read: if the model errors, times out or is off, the page comes back as it was.
+
+import { generateText, type LanguageModel } from "ai";
 
 const THRESHOLD_TOKENS = 8_000;
 const QUERY_MIN_TOKENS = 800;
@@ -26,7 +29,8 @@ const CALL_TIMEOUT_MS = 20_000;
 
 export const DEFAULT_COMPRESS_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
 
-export type Compressor = { ai: Ai; model: string; gateway?: string };
+/** The model that shrinks pages, and its id as it was configured. */
+export type Compressor = { name: string; model: LanguageModel };
 
 export type Compressed = { content: string; note?: string };
 
@@ -199,32 +203,28 @@ export async function compressPage(
 
 async function chat(compressor: Compressor, system: string, user: string, signal?: AbortSignal): Promise<string> {
   // Qwen3 thinks before answering unless told not to; extraction needs no thinking.
-  const prompt = compressor.model.toLowerCase().includes("qwen3") ? `${system}\n\n/no_think` : system;
+  const prompt = compressor.name.toLowerCase().includes("qwen3") ? `${system}\n\n/no_think` : system;
   const timeout = AbortSignal.timeout(CALL_TIMEOUT_MS);
   const stop = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  const run = compressor.ai.run(
-    compressor.model as Parameters<Ai["run"]>[0],
-    { messages: [{ role: "system", content: prompt }, { role: "user", content: user }], max_tokens: MAX_OUTPUT_TOKENS } as never,
-    { ...(compressor.gateway ? { gateway: { id: compressor.gateway } } : {}), signal: stop }
-  ) as Promise<unknown>;
-  // The call is cancelled through the signal; the race is for a binding that does not honour it.
+  const run = generateText({
+    model: compressor.model,
+    system: prompt,
+    prompt: user,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxRetries: 0,
+    abortSignal: stop
+  }).then((result) => result.text);
+  // The call is cancelled through the signal; the race is for a provider that does not honour it.
   const stopped = new Promise<never>((_, reject) => {
     const fail = () => reject(new Error(timeout.aborted ? `no answer in ${CALL_TIMEOUT_MS / 1000}s` : "stopped"));
     if (stop.aborted) fail();
     else stop.addEventListener("abort", fail, { once: true });
   });
-  return textOf(await Promise.race([run, stopped]));
+  return clean(await Promise.race([run, stopped]));
 }
 
-/** The answer text of a Workers AI text-generation result, in either of its shapes, without a think block. */
-export function textOf(result: unknown): string {
-  const value = result as { response?: unknown; choices?: { message?: { content?: unknown } }[] } | null;
-  const raw =
-    typeof value?.response === "string"
-      ? value.response
-      : typeof value?.choices?.[0]?.message?.content === "string"
-        ? value.choices[0].message.content
-        : "";
+/** The answer without a think block. Throws when nothing is left. */
+function clean(raw: string): string {
   const text = raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   if (!text) throw new Error("the model returned no text");
   return text;

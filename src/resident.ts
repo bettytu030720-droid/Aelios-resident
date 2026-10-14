@@ -31,6 +31,7 @@ import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, le
 import { claudeSystemAsText } from "./claude-run";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
+import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { searchEngines, searchSource } from "./web/search";
 
@@ -236,8 +237,23 @@ export class Resident extends Think<Env> {
         maxDescriptionChars: 400
       });
     }
-    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.env, this.pageCache()));
+    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.env, this.compressor(), this.pageCache()));
     return tools;
+  }
+
+  /**
+   * The model web_fetch shrinks long pages with: WEB_FETCH_MODEL, any id the model picker takes
+   * (a Workers AI id, or anthropic/…, openai/… through AI Gateway). Null when it is "off" or cannot be used.
+   */
+  private compressor(): Compressor | null {
+    const name = this.env.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
+    if (name.toLowerCase() === "off" || !this.env.AI) return null;
+    try {
+      return { name, model: this.resolveModel(name) };
+    } catch (error) {
+      console.error("web_fetch: WEB_FETCH_MODEL cannot be used", { name, error: String(error) });
+      return null;
+    }
   }
 
   private webFetchOn(): boolean {
@@ -579,7 +595,7 @@ export class Resident extends Think<Env> {
       `已写交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
       `长期记忆 Aelios：${aeliosConfig(this.env) ? "开，每条消息先自动想一下相关的旧事" : "关"}`,
-      `查网页：搜索 ${searchEngines(this.env).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.env)) : "关"}`,
+      `查网页：搜索 ${searchEngines(this.env).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.env, this.compressor())) : "关"}`,
       `主动找你：${this.env.CHECKIN_SCHEDULE?.trim() || "关"}`
     ].join("\n");
   }

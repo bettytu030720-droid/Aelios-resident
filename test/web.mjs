@@ -3,16 +3,17 @@
 // shrunk, and a page in GBK is decoded. Usage: node test/web.mjs
 // (esbuild comes with wrangler; it bundles the TypeScript for Node.)
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
-const dir = mkdtempSync(join(tmpdir(), "resident-web-"));
+// Packages stay outside the bundle and load from node_modules, so the bundle is written next to it.
+mkdirSync("node_modules/.cache", { recursive: true });
+const dir = mkdtempSync(join("node_modules/.cache", "resident-web-"));
 const out = join(dir, "fetch.mjs");
-await build({ entryPoints: ["src/web/fetch.ts"], bundle: true, platform: "node", format: "esm", outfile: out, logLevel: "error" });
-const { webFetchTool } = await import(pathToFileURL(out).href);
+await build({ entryPoints: ["src/web/fetch.ts"], bundle: true, packages: "external", platform: "node", format: "esm", outfile: out, logLevel: "error" });
+const { webFetchTool } = await import(pathToFileURL(join(process.cwd(), out)).href);
 rmSync(dir, { recursive: true, force: true });
 
 // --- The fake internet -----------------------------------------------------------------------------
@@ -74,17 +75,34 @@ function cache() {
   return { pages, get: (url) => pages.get(url) ?? null, put: (url, page) => pages.set(url, page) };
 }
 
-function ai(answer) {
+/** A fake LanguageModel that answers `answer` (or throws it) and records what it was sent. */
+function model(answer) {
   const calls = [];
   return {
     calls,
-    async run(model, inputs, options) {
-      calls.push({ model, inputs, options });
+    specificationVersion: "v4",
+    provider: "fake",
+    modelId: "fake",
+    supportedUrls: {},
+    async doGenerate(options) {
+      const [system, user] = options.prompt;
+      calls.push({ system: system.content, user: user.content.map((part) => part.text).join(""), signal: options.abortSignal });
       if (answer instanceof Error) throw answer;
-      return answer;
+      return {
+        content: [{ type: "text", text: answer }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+        warnings: []
+      };
+    },
+    async doStream() {
+      throw new Error("compression does not stream");
     }
   };
 }
+
+const QWEN = "@cf/qwen/qwen3-30b-a3b-fp8";
+const shrinker = (fake, name = QWEN) => ({ name, model: fake });
 
 const read = (reader, input) => webFetchTool(reader).execute(input, { toolCallId: "t", messages: [] });
 let failures = 0;
@@ -169,67 +187,72 @@ await step("a page read once is kept: another question about it fetches nothing"
 });
 
 await step("with a query, a long page is cut down to what answers it", async () => {
-  const model = ai({ response: "## 长文\n今天的新闻很长。" });
-  const text = await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }, { url: "https://example.com/long", query: "今天怎么了" });
+  const fake = model("## 长文\n今天的新闻很长。");
+  const text = await read({ compressor: shrinker(fake) }, { url: "https://example.com/long", query: "今天怎么了" });
   assert.ok(text.includes("(only the parts about: 今天怎么了)"), text);
   assert.ok(text.endsWith("## 长文\n今天的新闻很长。"), text);
-  assert.equal(model.calls.length, 1);
-  const [system, user] = model.calls[0].inputs.messages;
-  assert.ok(system.content.endsWith("/no_think"), "Qwen3 is told not to think");
-  assert.ok(user.content.startsWith("Question: 今天怎么了"));
+  assert.equal(fake.calls.length, 1);
+  assert.ok(fake.calls[0].system.endsWith("/no_think"), "Qwen3 is told not to think");
+  assert.ok(fake.calls[0].user.startsWith("Question: 今天怎么了"));
+});
+
+await step("any model the resident can use shrinks pages too, and only Qwen3 gets /no_think", async () => {
+  const fake = model("摘到的内容");
+  const text = await read({ compressor: shrinker(fake, "anthropic/claude-haiku-5.5") }, { url: "https://example.com/long", query: "新闻" });
+  assert.ok(text.endsWith("摘到的内容"), text);
+  assert.ok(!fake.calls[0].system.includes("/no_think"));
 });
 
 await step("the same question about the same page is answered from the cache", async () => {
   const c = cache();
-  const model = ai({ response: "摘出来的段落" });
-  const reader = { compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" }, cache: c };
+  const fake = model("摘出来的段落");
+  const reader = { compressor: shrinker(fake), cache: c };
   const first = await read(reader, { url: "https://example.com/long", query: "今天怎么了" });
   const again = await read(reader, { url: "https://example.com/long", query: "今天怎么了" });
   assert.equal(again, first);
-  assert.equal(model.calls.length, 1);
+  assert.equal(fake.calls.length, 1);
   assert.equal(requests.length, 1);
   await read(reader, { url: "https://example.com/long", query: "别的问题" });
-  assert.equal(model.calls.length, 2, "another question asks the model again, without refetching");
+  assert.equal(fake.calls.length, 2, "another question asks the model again, without refetching");
   assert.equal(requests.length, 1);
 });
 
 await step("a section that answers NOTHING_RELEVANT is dropped, a passage that mentions it is kept", async () => {
-  const nothing = await read({ compressor: { ai: ai({ response: "NOTHING_RELEVANT." }), model: "m" } }, { url: "https://example.com/long", query: "猫" });
+  const nothing = await read({ compressor: shrinker(model("NOTHING_RELEVANT.")) }, { url: "https://example.com/long", query: "猫" });
   assert.match(nothing, /Nothing on this page seems to be about: 猫/);
-  const kept = await read({ compressor: { ai: ai({ response: "The flag NOTHING_RELEVANT is used by the tool." }), model: "m" } }, { url: "https://example.com/long", query: "flag" });
+  const kept = await read({ compressor: shrinker(model("The flag NOTHING_RELEVANT is used by the tool.")) }, { url: "https://example.com/long", query: "flag" });
   assert.ok(kept.endsWith("The flag NOTHING_RELEVANT is used by the tool."), kept);
 });
 
 await step("a short page with no query is not sent to the model", async () => {
-  const model = ai({ response: "x" });
-  await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }, { url: "https://example.com/long" });
-  assert.equal(model.calls.length, 0);
+  const fake = model("x");
+  await read({ compressor: shrinker(fake) }, { url: "https://example.com/long" });
+  assert.equal(fake.calls.length, 0);
 });
 
-await step("an OpenAI-shaped answer with a think block is read, and the gateway is used", async () => {
-  const model = ai({ choices: [{ message: { content: "<think>想想</think>\n摘到的内容" } }] });
-  const text = await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8", gateway: "gw" } }, { url: "https://example.com/long", query: "新闻" });
+await step("a think block is dropped from the answer, and the call can be cancelled", async () => {
+  const fake = model("<think>想想</think>\n摘到的内容");
+  const text = await read({ compressor: shrinker(fake) }, { url: "https://example.com/long", query: "新闻" });
   assert.ok(text.endsWith("摘到的内容"), text);
-  assert.deepEqual(model.calls[0].options.gateway, { id: "gw" });
-  assert.ok(model.calls[0].options.signal instanceof AbortSignal, "the model call can be cancelled");
+  assert.ok(fake.calls[0].signal instanceof AbortSignal, "the model call can be cancelled");
 });
 
 await step("when the model fails, the page comes back whole", async () => {
-  const model = ai(new Error("down"));
-  const text = await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }, { url: "https://example.com/long", query: "新闻" });
+  const text = await read({ compressor: shrinker(model(new Error("down"))) }, { url: "https://example.com/long", query: "新闻" });
   assert.ok(text.includes("今天的新闻很长。今天的新闻很长。"));
   assert.ok(text.includes("could not be shortened"));
 });
 
 await step("when web_fetch gives up, the model call is stopped and the page comes back whole", async () => {
-  const hanging = { calls: [], run: (model, inputs, options) => new Promise((_, reject) => {
-    hanging.calls.push(options);
-    options.signal.addEventListener("abort", () => reject(new Error("aborted")));
-  }) };
+  const hanging = model("never");
+  hanging.doGenerate = (options) => new Promise((_, reject) => {
+    hanging.calls.push({ signal: options.abortSignal });
+    options.abortSignal.addEventListener("abort", () => reject(new Error("aborted")));
+  });
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 200);
   const started = Date.now();
-  const text = await webFetchTool({ compressor: { ai: hanging, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }).execute(
+  const text = await webFetchTool({ compressor: shrinker(hanging) }).execute(
     { url: "https://example.com/long", query: "新闻" },
     { toolCallId: "t", messages: [], abortSignal: controller.signal }
   );
