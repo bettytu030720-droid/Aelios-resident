@@ -131,6 +131,25 @@ if (phase === "main") {
     assert.equal(recall.auth, "Bearer test-key");
   });
 
+  await step("a memory comes up by itself before the reply, once, and stays on its message", async () => {
+    let before = (await sent()).length;
+    await post("生日那天想浮现一下");
+    assert.deepEqual(await waitForSends(before, 1), ["这条：有，之前带着的：0"]);
+    const asked = (await log()).filter((e) => e.kind === "aelios.recall" && e.body.query === "生日那天想浮现一下");
+    assert.equal(asked.length, 1, "searched with her words, time stamp left out");
+    assert.equal(asked[0].body.namespace, "test-space");
+    // The same memory does not come up again, and the earlier one is still where it was.
+    before = (await sent()).length;
+    await post("还是生日，再浮现");
+    assert.deepEqual(await waitForSends(before, 1), ["这条：无，之前带着的：1"]);
+    const recorded = (await log()).filter((e) => e.kind === "aelios.ingest").flatMap((e) => e.body.messages);
+    assert.ok(recorded.some((m) => m.content.includes("生日那天想浮现一下")));
+    assert.ok(!recorded.some((m) => m.content.includes("想起的旧事")), "what came up is not recorded as hers");
+    const page = await (await fetch(`${WORKER}/web/messages`, { headers: { "x-web-key": "test-web-key" } })).json();
+    assert.ok(page.data.some((l) => l.text === "生日那天想浮现一下"), JSON.stringify(page.data));
+    assert.ok(!page.data.some((l) => l.text.includes("想起的旧事")), "what came up stays out of the page");
+  });
+
   await step("each exchange is recorded in Aelios", async () => {
     const ingests = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident");
     assert.ok(ingests.length >= 3);

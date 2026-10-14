@@ -1,5 +1,5 @@
 // Aelios as long-term memory, over its REST API:
-//   POST /v1/memory/recall   the memory_recall tool
+//   POST /v1/memory/recall   the memory_recall tool, and the recall that comes up by itself before each reply
 //   POST /v1/memory/ingest   every exchange and every handoff letter, so Dream can digest them at night
 //   GET  /v1/memory_boot     yesterday's diary, precious notes and glossary, added to the system prompt
 // Unset AELIOS_URL or AELIOS_API_KEY and all three quietly do nothing.
@@ -33,7 +33,19 @@ async function aelios(config: AeliosConfig, path: string, init: RequestInit = {}
   });
 }
 
-type RecallHit = { content?: string; type?: string; score?: number };
+export type RecallHit = { id?: string; content: string; type?: string; score?: number };
+
+/** Search Aelios' long-term memory. Throws when Aelios cannot be reached or answers with an error. */
+export async function recall(config: AeliosConfig, query: string, k: number, signal?: AbortSignal): Promise<RecallHit[]> {
+  const response = await aelios(config, "/v1/memory/recall", {
+    method: "POST",
+    body: JSON.stringify({ query, namespace: config.namespace, k }),
+    signal
+  });
+  if (!response.ok) throw new Error(`memory unavailable (${response.status})`);
+  const body = (await response.json()) as { data?: Partial<RecallHit>[] };
+  return (body.data ?? []).filter((hit): hit is RecallHit => typeof hit.content === "string" && hit.content.trim() !== "");
+}
 
 export function recallTool(config: AeliosConfig) {
   return tool({
@@ -45,13 +57,12 @@ export function recallTool(config: AeliosConfig) {
       query: z.string().describe("What to look for, in a few words.")
     }),
     async execute({ query }) {
-      const response = await aelios(config, "/v1/memory/recall", {
-        method: "POST",
-        body: JSON.stringify({ query, namespace: config.namespace, k: 5 })
-      });
-      if (!response.ok) return `memory unavailable (${response.status})`;
-      const body = (await response.json()) as { data?: RecallHit[] };
-      const hits = (body.data ?? []).filter((hit) => hit.content);
+      let hits: RecallHit[];
+      try {
+        hits = await recall(config, query, 5);
+      } catch (error) {
+        return error instanceof Error ? error.message : "memory unavailable";
+      }
       return hits.length ? hits.map((hit, i) => `${i + 1}. ${hit.content}`).join("\n") : "No matching memory.";
     }
   });

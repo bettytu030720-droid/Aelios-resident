@@ -24,11 +24,12 @@ import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { createFetchTools } from "@cloudflare/think/tools/fetch";
 import { createCompactFunction } from "agents/sessions";
 import { webSearchTool } from "agents/websearch/ai-sdk";
-import { generateText, type ToolSet, type UIMessage } from "ai";
-import { aeliosConfig, fetchBoot, ingest, pin, recallTool, type IngestMessage } from "./aelios";
+import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "ai";
+import { aeliosConfig, fetchBoot, ingest, pin, recall, recallTool, type AeliosConfig, type IngestMessage } from "./aelios";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, LETTER_INSTRUCTIONS, SKIP, checkinPrompt, stamp } from "./prompts";
 import { claudeSystemAsText } from "./claude-run";
+import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
@@ -220,13 +221,71 @@ export class Resident extends Think<Env> {
       await this.ctx.storage.put("tg_thread", thread.id);
     }
     const boot = await this.boot();
+    const messages = await this.withRecall(ctx);
     // Only our own tools: Think's workspace file tools would cost tokens every turn and do nothing here.
     const own = Object.keys(this.getTools());
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
-      providerOptions: PROMPT_CACHE
+      providerOptions: PROMPT_CACHE,
+      ...(messages ? { messages } : {})
     };
+  }
+
+  /**
+   * The turn's messages with what came up from Aelios (see surface.ts): a new search for her latest message,
+   * and the earlier ones put back exactly as they were. Undefined when nothing came up at all.
+   */
+  private async withRecall(ctx: TurnContext): Promise<ModelMessage[] | undefined> {
+    const memory = aeliosConfig(this.env);
+    if (!memory) return undefined;
+    const kept = this.surfaced();
+    const texts = new Map(kept.map((row) => [row.key, row.text]));
+    const last = ctx.messages.at(-1);
+    if (!ctx.continuation && last?.role === "user") {
+      const said = userText(last);
+      const key = await keyOf(said);
+      if (!texts.has(key) && !said.startsWith(CHECKIN_PREFIX)) {
+        const { text, ids } = await this.recallFor(memory, said, kept);
+        // Kept even when empty, so a retried turn sees the same thing.
+        this.sql`INSERT OR REPLACE INTO res_surfaced (key, text, ids) VALUES (${key}, ${text}, ${JSON.stringify(ids)})`;
+        this.sql`DELETE FROM res_surfaced WHERE rowid NOT IN (SELECT rowid FROM res_surfaced ORDER BY rowid DESC LIMIT ${SURFACE_KEEP})`;
+        texts.set(key, text);
+      }
+    }
+    let found = false;
+    const messages: ModelMessage[] = [];
+    for (const message of ctx.messages) {
+      const text = message.role === "user" ? texts.get(await keyOf(userText(message))) : undefined;
+      if (message.role === "user" && text) {
+        messages.push(withSurface(message, text));
+        found = true;
+      } else {
+        messages.push(message);
+      }
+    }
+    return found ? messages : undefined;
+  }
+
+  /** Search Aelios for her message, leaving out memories that came up lately. Never throws. */
+  private async recallFor(memory: AeliosConfig, said: string, kept: { ids: string }[]): Promise<{ text: string; ids: string[] }> {
+    const query = said.replace(STAMP_PREFIX, "").trim().slice(0, 500);
+    if (!query) return { text: "", ids: [] };
+    const recent = new Set(kept.slice(0, SURFACE_RECENT).flatMap((row) => JSON.parse(row.ids) as string[]));
+    try {
+      const hits = await recall(memory, query, SURFACE_HITS + 4, AbortSignal.timeout(SURFACE_TIMEOUT_MS));
+      const fresh = hits.filter((hit) => !hit.id || !recent.has(hit.id)).slice(0, SURFACE_HITS);
+      return { text: surfaceText(fresh), ids: fresh.flatMap((hit) => (hit.id ? [hit.id] : [])) };
+    } catch (error) {
+      console.error("aelios: recall before reply failed", { error: String(error) });
+      return { text: "", ids: [] };
+    }
+  }
+
+  /** What came up for each of her messages, newest first. */
+  private surfaced(): { key: string; text: string; ids: string }[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_surfaced (key TEXT PRIMARY KEY, text TEXT NOT NULL, ids TEXT NOT NULL)`;
+    return this.sql<{ key: string; text: string; ids: string }>`SELECT key, text, ids FROM res_surfaced ORDER BY rowid DESC`;
   }
 
   /** Token use of the latest model step, so /status and the web page can show whether the prompt cache is hit. */
@@ -407,7 +466,7 @@ export class Resident extends Think<Env> {
       `对话：${rows.length} 条，约 ${tokens} token（超过 ${num(this.env.LETTER_AFTER_TOKENS, 24000)} 写交接信）`,
       `交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
-      `长期记忆 Aelios：${on(Boolean(aeliosConfig(this.env)))}`,
+      `长期记忆 Aelios：${aeliosConfig(this.env) ? "开，每条消息先自动想一下相关的旧事" : "关"}`,
       `查网页：搜索${on(this.env.WEB_SEARCH?.trim().toLowerCase() === "on")}，指定网站 ${list(this.env.FETCH_ALLOWLIST).length} 个`,
       `主动找你：${this.env.CHECKIN_SCHEDULE?.trim() || "关"}`
     ].join("\n");

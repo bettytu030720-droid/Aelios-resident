@@ -55,6 +55,13 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const anthropic = options.providerOptions?.anthropic as { cacheControl?: { type?: string } } | undefined;
     return { text: anthropic?.cacheControl?.type === "ephemeral" ? "缓存标记在。" : "没有缓存标记。" };
   }
+  // Whether the birthday memory rode along with this message, and with how many earlier ones.
+  if (said.includes("浮现")) {
+    const users = prompt.filter((m) => m.role === "user").map((m) => textOf(m.content));
+    const carries = (text: string) => text.includes("<想起的旧事>") && text.includes("她的生日在春天");
+    const earlier = users.slice(0, -1).filter(carries).length;
+    return { text: `这条：${carries(user) ? "有" : "无"}，之前带着的：${earlier}` };
+  }
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // The first check-in says something; later ones pass, to exercise SKIP.
   if (said.includes("定时提醒")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };

@@ -44,7 +44,9 @@ const server = http.createServer(async (req, res) => {
   const auth = req.headers.authorization;
   if (url.pathname === "/v1/memory/recall") {
     log.push({ kind: "aelios.recall", body: json, auth });
-    return reply({ data: [{ content: "她的生日在春天", type: "fact", score: 0.9 }] });
+    // Only a question about her birthday finds something, so ordinary test messages recall nothing.
+    const hit = { id: "mem-birthday", content: "她的生日在春天", type: "fact", score: 0.9 };
+    return reply({ data: String(json.query ?? "").includes("生日") ? [hit] : [] });
   }
   if (url.pathname === "/v1/memory/ingest") {
     log.push({ kind: "aelios.ingest", body: json, auth });
