@@ -95,7 +95,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - [deep-chat](https://github.com/OvidijusParsiunas/deep-chat) 2.5.1，聊天界面，MIT（`deep-chat-LICENSE.txt`）
 - [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9，换模型和人设页，MIT（`alpine-LICENSE.txt`）
 
-读网页的 HTML 转 Markdown 和网址检查是 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的原文件，长页压缩（`src/web/compress.ts`）照它的改，都是 MIT，在 `src/web/`。
+读网页的 HTML 转 Markdown 和网址检查是 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的原文件，长页压缩（`src/web/compress.ts`）照它的改，都是 MIT，在 `src/web/`（`web-fetch-LICENSE.txt`）。
 
 换模型用的目录在 `public/models.json`，从 [Cloudflare 模型目录](https://developers.cloudflare.com/ai/models/)里挑的文字模型。Cloudflare 上了新模型想让它出现在列表里，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
 
@@ -109,3 +109,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 ```
 
 `wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），不需要登录 Cloudflare，也不花钱。定时和空闲交接信要另外起一次，见 `test/run.mjs` 开头的说明。读网页的测试 `node test/web.mjs` 和 `node test/claude-run.mjs` 不用起 Worker。
+
+## 许可证
+
+AGPL-3.0，和 [Aelios](https://github.com/wusaki0723/Aelios) 一样（`LICENSE`）：随便用、随便改；改过的版本拿去当网络服务给别人用，改动也要用同样的许可证公开。「网页用到的现成东西」那节列的文件各自保留 MIT 许可。
