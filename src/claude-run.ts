@@ -56,7 +56,11 @@ const THINKING = new Set(["thinking", "redacted_thinking"]);
 
 /** The request without thinking blocks from before the last message they typed (tool results are not typed). */
 export function withoutOldThinking(model: unknown, inputs: unknown): unknown {
-  if (!isClaude(model, inputs)) return inputs;
+  return isClaude(model, inputs) ? withoutOldThinkingIn(inputs) : inputs;
+}
+
+/** The same for any Anthropic Messages request body (a provider of your own, custom.ts). */
+export function withoutOldThinkingIn(inputs: Record<string, unknown>): Record<string, unknown> {
   const { messages } = inputs as { messages?: unknown };
   if (!Array.isArray(messages)) return inputs;
   const list = messages as Message[];

@@ -84,6 +84,47 @@ const server = http.createServer(async (req, res) => {
       }
     });
   }
+  // A provider of your own (custom/…): OpenAI chat completions, and Anthropic messages.
+  // Her words only: what came up from Aelios rides along as a later text part.
+  const textOf = (content) => (typeof content === "string" ? content : (content ?? []).find((p) => p.type === "text")?.text ?? "");
+  const sse = (events) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    for (const [event, data] of events) res.write(`${event ? `event: ${event}\n` : ""}data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`);
+    res.end();
+  };
+  if (url.pathname === "/custom/v1/chat/completions") {
+    log.push({ kind: "custom.chat", auth: req.headers.authorization, body: json });
+    const said = textOf(json.messages.filter((m) => m.role === "user").at(-1)?.content);
+    const text = `自己的供应商（OpenAI 格式）收到：${said}`;
+    const usage = { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 };
+    if (!json.stream) {
+      return reply({ id: "c1", object: "chat.completion", created: 0, model: json.model, choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }], usage });
+    }
+    const chunk = (delta, finish, extra = {}) => ({ id: "c1", object: "chat.completion.chunk", created: 0, model: json.model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra });
+    return sse([[null, chunk({ role: "assistant", content: text }, null)], [null, chunk({}, "stop", { usage })], [null, "[DONE]"]]);
+  }
+  if (url.pathname === "/custom/v1/messages") {
+    log.push({ kind: "custom.messages", apiKey: req.headers["x-api-key"], body: json });
+    const oldThinking = json.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "thinking").length;
+    const cached = Boolean(json.cache_control) || JSON.stringify(json).includes('"cache_control"');
+    const text = `自己的供应商（Anthropic 格式）收到 ${json.messages.length} 条，缓存标记${cached ? "有" : "无"}，旧思考块 ${oldThinking} 个`;
+    const usage = { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    if (!json.stream) {
+      return reply({ id: "msg_1", type: "message", role: "assistant", model: json.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage });
+    }
+    return sse([
+      ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: json.model, content: [], stop_reason: null, stop_sequence: null, usage } }],
+      ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "想一想。" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-test" } }],
+      ["content_block_stop", { type: "content_block_stop", index: 0 }],
+      ["content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text } }],
+      ["content_block_stop", { type: "content_block_stop", index: 1 }],
+      ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } }],
+      ["message_stop", { type: "message_stop" }]
+    ]);
+  }
   res.writeHead(404);
   res.end();
 });

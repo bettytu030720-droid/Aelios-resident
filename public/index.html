@@ -101,6 +101,7 @@
   .chip svg { flex: none; width: 14px; height: 14px; color: var(--text-4); }
   .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--violet); }
   .dot.gateway { background: var(--coral); }
+  .dot.own { background: transparent; box-shadow: inset 0 0 0 1.5px var(--coral); }
 
   .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .chat-host { flex: 1; min-height: 0; }
@@ -193,7 +194,7 @@
       <div class="sub">改完下一句就生效</div>
     </div>
     <button class="chip" type="button" x-show="view === 'chat'" @click="openPicker()" :title="'现在用 ' + currentModel() + '，点这里换'" aria-label="换模型">
-      <span class="dot" :class="isGateway(currentModel()) ? 'gateway' : ''"></span>
+      <span class="dot" :class="dotFor(currentModel())"></span>
       <span class="name" x-text="shortName(currentModel())"></span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
     </button>
@@ -220,7 +221,7 @@
     <div class="model">
       <span class="label">模型</span>
       <div class="current">
-        <span class="dot" :class="isGateway(currentModel()) ? 'gateway' : ''"></span>
+        <span class="dot" :class="dotFor(currentModel())"></span>
         <span x-text="currentModel() + (model.model ? '' : '（默认）')"></span>
         <div class="spacer"></div>
         <button class="btn" type="button" @click="openPicker()">换模型</button>
@@ -267,12 +268,12 @@
             <template x-for="item in group.items" :key="group.title + item.id">
               <button class="option" type="button" role="option" :class="item.index === picker.active ? 'active' : ''" :disabled="Boolean(picker.busy)"
                 @click="chooseModel(item.id)" @mouseenter="picker.active = item.index" :aria-selected="item.id === currentModel()">
-                <span class="dot" :class="isGateway(item.id) ? 'gateway' : ''"></span>
+                <span class="dot" :class="dotFor(item.id)"></span>
                 <span class="body">
                   <span class="title">
                     <span x-text="item.custom ? '直接用这个 id' : item.name"></span>
                     <span class="tag" x-show="item.provider" x-text="item.provider"></span>
-                    <span class="tag" x-text="isGateway(item.id) ? 'Gateway 额度' : 'Workers AI'"></span>
+                    <span class="tag" x-text="{ gateway: 'Gateway 额度', own: '自己的供应商', '': 'Workers AI' }[dotFor(item.id)]"></span>
                   </span>
                   <span class="id" x-text="item.id"></span>
                   <span class="desc" x-show="item.desc" x-text="item.desc"></span>
@@ -601,7 +602,11 @@ function resident() {
       this.model = await this.api('/web/model');
     },
     currentModel() { return this.model.model || this.model.fallback || ''; },
-    isGateway(id) { return Boolean(id) && id.charAt(0) !== '@' && id !== 'fake'; },
+    // Violet: Workers AI. Coral: a vendor model through AI Gateway. A coral ring: your own provider (custom/…).
+    dotFor(id) {
+      if (!id || id.charAt(0) === '@' || id === 'fake') return '';
+      return id.indexOf('custom/') === 0 ? 'own' : 'gateway';
+    },
     shortName(id) {
       if (!id) return '模型';
       var parts = id.split('/');

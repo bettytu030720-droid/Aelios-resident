@@ -16,6 +16,9 @@ interface Env {
   WEB_SEARCH?: string;
   WEB_FETCH?: string;
   WEB_FETCH_MODEL?: string;
+  // A provider of your own (custom.ts): its address up to /v1, and openai (default) or anthropic.
+  CUSTOM_BASE_URL?: string;
+  CUSTOM_FORMAT?: string;
   CHECKIN_SCHEDULE?: string;
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
@@ -26,5 +29,6 @@ interface Env {
   TAVILY_API_KEY?: string;
   BRAVE_API_KEY?: string;
   PERPLEXITY_API_KEY?: string;
+  CUSTOM_API_KEY?: string;
   WEB_KEY?: string;
 }

@@ -26,6 +26,8 @@
     "TG_BOT_TOKEN": "123456:test-token",
     "TG_WEBHOOK_SECRET": "test-secret",
     "AELIOS_API_KEY": "test-key",
-    "WEB_KEY": "test-web-key"
+    "WEB_KEY": "test-web-key",
+    "CUSTOM_BASE_URL": "http://127.0.0.1:9999/custom/v1",
+    "CUSTOM_API_KEY": "test-custom-key"
   }
 }

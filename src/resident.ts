@@ -31,6 +31,7 @@ import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosC
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeOnRunPath } from "./claude-run";
+import { customModel, isCustom } from "./custom";
 import { foldIntoLetter, tokensOf } from "./fold";
 import { withPictures, type Download } from "./pictures";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
@@ -67,6 +68,15 @@ function idleMinutes(env: Env): number {
   // Later than the cache lasts, the letter would read the whole conversation at full price: keep it inside.
   if (setting && Number.isFinite(minutes) && minutes >= 0) return Math.min(minutes, ttl - 1);
   return ttl === 5 ? 4 : 55;
+}
+
+/** What to do about the two errors you get when Cloudflare's own billing cannot serve a model. */
+function hintFor(reason: string): string {
+  if (/unified billing/i.test(reason)) {
+    return "（可以在这个 AI Gateway 的 Provider Keys 里存你自己的 key，别名 default，就不走 Cloudflare 的统一计费；或者填自己的供应商 custom/…，见 README）";
+  }
+  if (/unknown gateway provider/i.test(reason)) return "（自己的供应商请填 custom/模型名，并设好 CUSTOM_BASE_URL、CUSTOM_API_KEY，见 README）";
+  return "";
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -168,7 +178,9 @@ export class Resident extends Think<Env> {
     return this.env.FAKE_MODEL === "true" ? "fake" : DEFAULT_MODEL;
   }
 
+  /** A model id as Think takes it: your own provider's `custom/…` is built here (custom.ts). */
   private modelFor(id: string): ThinkModel {
+    if (isCustom(id)) return customModel(this.env, id);
     return id === "fake" && this.env.FAKE_MODEL === "true" ? fakeModel() : id;
   }
 
@@ -271,9 +283,9 @@ export class Resident extends Think<Env> {
    */
   private compressor(): Compressor | null {
     const name = this.env.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
-    if (name.toLowerCase() === "off" || !this.env.AI) return null;
+    if (name.toLowerCase() === "off" || (!this.env.AI && !isCustom(name))) return null;
     try {
-      return { name, model: this.resolveModel(name) };
+      return { name, model: this.resolveModel(this.modelFor(name)) };
     } catch (error) {
       console.error("web_fetch: WEB_FETCH_MODEL cannot be used", { name, error: String(error) });
       return null;
@@ -711,7 +723,7 @@ export class Resident extends Think<Env> {
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        return { error: `这个模型用不了：${reason.slice(0, 300)}` };
+        return { error: `这个模型用不了：${reason.slice(0, 300)}${hintFor(reason)}` };
       }
     }
     this.saveSetting("model", model);

@@ -7,6 +7,7 @@
 //   crash-1  sends a slow reply; kill workerd once the first bubble is out, restart, then run crash-2
 //   crash-2  checks what she got after the restart
 //   migrate  needs the old model variable (start wrangler with --var MODEL:fake)
+//   custom-anthropic  your own provider on the Messages API (start wrangler with --var CUSTOM_FORMAT:anthropic)
 import assert from "node:assert/strict";
 
 const WORKER = "http://127.0.0.1:8787";
@@ -53,6 +54,13 @@ async function resend(update) {
     body: JSON.stringify(update)
   });
 }
+
+const web = (path, key, body) =>
+  fetch(`${WORKER}${path}`, {
+    method: body ? "POST" : "GET",
+    headers: { "x-web-key": key, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined
+  });
 
 /** Wait until the bot has sent `count` more messages than `before`. */
 async function waitForSends(before, count, timeoutMs = 20000) {
@@ -236,13 +244,6 @@ if (phase === "main") {
     assert.match(out, /写的：\n\n亲爱的下一个我/);
   });
 
-  const web = (path, key, body) =>
-    fetch(`${WORKER}${path}`, {
-      method: body ? "POST" : "GET",
-      headers: { "x-web-key": key, ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined
-    });
-
   await step("the web door is shut without WEB_KEY", async () => {
     assert.equal((await fetch(`${WORKER}/web/messages`)).status, 401);
     assert.equal((await web("/web/messages", "wrong")).status, 401);
@@ -332,6 +333,24 @@ if (phase === "main") {
     await post("/status");
     const [out] = await waitForSends(before, 1);
     assert.match(out, /^模型：fake\n/);
+  });
+
+  await step("a provider of your own (custom/…, OpenAI format) is tried, picked and answers with your key", async () => {
+    let response = await web("/web/model", "test-web-key", { text: "custom/nous/claude-test" });
+    const picked = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(picked));
+    assert.equal(picked.model, "custom/nous/claude-test");
+    const before = (await sent()).length;
+    await post("自己的供应商在吗");
+    const [out] = await waitForSends(before, 1);
+    assert.match(out, /^自己的供应商（OpenAI 格式）收到：\[[^\]]+\] 自己的供应商在吗$/);
+    const calls = (await log()).filter((e) => e.kind === "custom.chat");
+    assert.equal(calls.length, 2, "the trial call and the turn");
+    assert.equal(calls[1].auth, "Bearer test-custom-key");
+    assert.equal(calls[1].body.model, "nous/claude-test");
+    assert.equal(calls[1].body.stream, true);
+    response = await web("/web/model", "test-web-key", { text: "fake" });
+    assert.equal(response.status, 200);
   });
 
   let fallback;
@@ -447,6 +466,27 @@ if (phase === "migrate") {
     assert.equal(typeof model.at, "number");
     await post("你好");
     await waitForSends(0, 2);
+  });
+}
+
+if (phase === "custom-anthropic") {
+  await fetch(`${MOCK}/__reset`);
+  await step("a provider of your own on the Messages API: your key, the cache marker, no thinking from earlier turns", async () => {
+    const response = await web("/web/model", "test-web-key", { text: "custom/claude-test" });
+    assert.equal(response.status, 200, JSON.stringify(await response.json()));
+    let before = (await sent()).length;
+    await post("第一句");
+    assert.deepEqual(await waitForSends(before, 1), ["自己的供应商（Anthropic 格式）收到 1 条，缓存标记有，旧思考块 0 个"]);
+    before = (await sent()).length;
+    await post("第二句");
+    assert.deepEqual(await waitForSends(before, 1), ["自己的供应商（Anthropic 格式）收到 3 条，缓存标记有，旧思考块 0 个"]);
+    const calls = (await log()).filter((e) => e.kind === "custom.messages");
+    assert.equal(calls.at(-1).apiKey, "test-custom-key");
+    assert.equal(calls.at(-1).body.model, "claude-test");
+    // The first answer went back without its thinking, its words kept.
+    const earlier = calls.at(-1).body.messages[1];
+    assert.equal(earlier.role, "assistant");
+    assert.ok(earlier.content.some((b) => b.type === "text"), JSON.stringify(earlier));
   });
 }
 

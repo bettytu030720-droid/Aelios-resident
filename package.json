@@ -11,6 +11,8 @@
     "test": "node test/run.mjs"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.79",
+    "@ai-sdk/openai": "4.0.92",
     "@chat-adapter/telegram": "4.41.1",
     "@cloudflare/think": "0.20.2",
     "@modelcontextprotocol/client": "2.0.0",

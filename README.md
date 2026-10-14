@@ -16,6 +16,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **Telegram**：私聊才回，不在 `TG_ALLOWED` 里的人一个字都不回。连发几条会等 `DEBOUNCE_SECONDS` 秒并成一轮。回复按空行拆成几条消息，写完一段发一段，中间显示「正在输入」。你每条消息前面带上当地时间（`TIME_ZONE`），模型知道现在几点。Telegram 重发同一条消息不会回两次。发图片（照片，或者当文件发的图）模型看得到：Think 本来只把附件写成一行文字，住户收到后从 Telegram 下载下来放进你那条消息（`src/pictures.ts`），配的文字照常；超过 5 MB 或下载失败的还是一行文字。超过 32 KB 的图按 Think 默认的做法，过几轮会从对话里拿掉、留一行标记，免得每轮都重读；网页上显示成「[图片]」。网页门暂时不能发图。
 - **网页门**：打开 Worker 的网址，填 `WEB_KEY` 进门。聊天界面用的是现成的 [deep-chat](https://github.com/OvidijusParsiunas/deep-chat)（MIT），星空配色，夜间/白天可切，手机上也好按。跟 Telegram 是同一段对话：两边说的话两边都看得到（网页每 5 秒刷新一次）；在网页上说的话只在网页上回。每条下面有时间、从哪边来的、心形按钮（存进 Aelios 的「珍贵」）。交接信折叠显示在它收起的位置。
 - **模型**：点网页门左上角的模型名换。弹出来的是一个搜索框，不是几千项的下拉菜单：上面是正在用的、最近用过的、常用的（Claude 几个和默认的 GLM），往下是 Cloudflare 模型目录里全部文字模型（110 个，按厂商分组），输入 `opus`、`kimi`、`qwen` 就筛出来；目录里没有的，直接填完整 id 也能用。紫点是 Cloudflare 自己跑的（Workers AI），橙点走 AI Gateway 的额度。换之前先让它带着一句人设和缓存标记说一个字试试，调不通（写错、档位不含、没额度）就不换，当场告诉你原因。没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。Claude 填 `anthropic/claude-opus-5.5` 这种（Cloudflare 的写法用点号），走 Anthropic 的 Messages 接口，每轮都带缓存标记，人设、规矩、开机包和之前的聊天下一轮从缓存读，缓存默认留 1 小时（`CACHE_TTL`）；`/status` 和人设页会显示上一次调用的缓存读了多少。以前填在 `MODEL` 变量里的模型，第一次用时自动搬过来，之后改 `MODEL` 不再起作用。
+- **自己的 key、自己的供应商**：Claude（`anthropic/…`）默认花 Cloudflare 的统一计费额度。想用自己的 Anthropic key，不用改任何东西：在住户用的那个 AI Gateway（`AI_GATEWAY_ID`，没填就是 `default`）→ Provider Keys 里存一把 Anthropic 的 key，别名留 `default`，之后 `anthropic/…` 就用这把，不再走统一计费（Cloudflare 的规矩：请求里没带厂商 key 时先用 Gateway 里别名 `default` 的那把，没有才走统一计费）。要接中转、OpenRouter、Nous 这类别家，填 `CUSTOM_BASE_URL`（那家的地址，写到 `/v1` 为止）和 Secret `CUSTOM_API_KEY`，模型填 `custom/` 加那家自己的模型名，比如 `custom/anthropic/claude-sonnet-5.5`。默认按 OpenAI 的 chat completions 格式调；那家说的是 Anthropic 的 Messages 格式（Anthropic 自己 `https://api.anthropic.com/v1`，或者支持 Messages 的中转）就把 `CUSTOM_FORMAT` 填 `anthropic`，这样缓存标记照带、之前几轮的思考块照样拿掉（`src/custom.ts`）。这条路从 Worker 直接打过去，不经过 AI Gateway，所以 Gateway 的日志里看不到。AI Gateway 后台建的「自定义供应商」（`custom-xxx/…`）Cloudflare 的模型目录不认，住户用不了，直接填那家的地址就行。网页选单里这种模型的圆点是空心的。
 - **人设**：点右上角的铅笔填，保存后下一句就按新的说。存在 Durable Object 里，不在代码和 Secret 里，所以公开仓库也不会带出去。最近 10 版都留着，可以一键放回去；没填时用一句默认的，网页门顶上会提醒你去填。
 - **Aelios 长期记忆**：你每发一条，回之前先拿这句去 Aelios 搜一下，最近没想起过的几条贴在这句后面给模型看，标成 `<recalled>`（自动浮现）；贴上的跟着那条留在记录里、以后不再改，所以缓存照样命中，网页、Telegram 和存回 Aelios 的都看不到它。另外给模型 6 个记忆工具：`memory_recall` 查、`memory_remember` 记一句（能改旧的）、`memory_keep_moment` 存珍贵瞬间、`memory_forget` 归档（Aelios 里能找回）、`memory_learn_word` 记黑话、`memory_read_diary` 翻日记；除了查，都走 Aelios 自己的 MCP，但描述是住户这边写的短句，7 个工具（含 `web_fetch`）的说明加起来约 2500 字符，每轮少占 token；每一轮都记进 Aelios（夜里 Dream 照常整理）；Aelios 的开机包（昨天的日记、珍贵原话、黑话表）放进系统提示，最多 6 小时取一次。
 - **交接信**：没有长度上限。你 `LETTER_IDLE_MINUTES`（默认 55）分钟没动静，住户就给之后的自己写一封信，较早的聊天收进信里，最近 `KEEP_RECENT_TOKENS` 原样留着（中文一个字算约 1 token）；聊得还不多、全在这段里时没有旧的可收，就不写，也不调模型，`/status` 的「对话」一行能看到现在带着多少。写完就不动了，等你下次发消息。这 55 分钟是 Durable Object 的定时（alarm），部署、Worker 睡着都不丢，不用另外接 Queue。55 分钟是为了赶在 1 小时缓存过期前：写信那一轮就接在原对话后面问（系统提示、工具、之前每条消息都和上一轮一字不差），所以整段对话从缓存读，便宜；写完把这一问一答撤掉。信照七段写（对方怎么样、我们之间发生了什么、做了什么事、现在的温度、想做的事、喜欢的事、未完成的事），上一封里还没了结的要接着往下传，有时效的写死日期。信存在 Durable Object 里，也记进 Aelios，不发 Telegram 打扰你；`/letter` 看，`/handoff` 随时手动写。
@@ -28,9 +29,10 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 本地用假 Telegram、假 Aelios、脚本模型跑 `test/run.mjs`：
 
-- 主流程 27 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；`memory_remember` 走 Aelios 的 MCP；`web_fetch` 本机地址拒读；自动浮现（同一条记忆不重复浮现，之前浮现的原样留在那条后面，不存回 Aelios、网页上看不到）；每轮记进 Aelios；连发三条并成一轮；发的照片模型收到的是图（下载不了的还是一行附件说明），网页上显示「[图片]」；`/status`、`/letter`、`/handoff`（写信后对话里带着信；写信那一轮发给模型的前文和上一轮一字不差，所以吃得到缓存）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记（1 小时）；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
+- 主流程 28 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；`memory_remember` 走 Aelios 的 MCP；`web_fetch` 本机地址拒读；自动浮现（同一条记忆不重复浮现，之前浮现的原样留在那条后面，不存回 Aelios、网页上看不到）；每轮记进 Aelios；连发三条并成一轮；发的照片模型收到的是图（下载不了的还是一行附件说明），网页上显示「[图片]」；自己的供应商（`custom/…`，OpenAI 格式）先试调再换上，带着 `CUSTOM_API_KEY` 回话；`/status`、`/letter`、`/handoff`（写信后对话里带着信；写信那一轮发给模型的前文和上一轮一字不差，所以吃得到缓存）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记（1 小时）；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
 - 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
 - 空闲交接信：把空闲时间调成 3 秒，聊 3 轮后自己写了信：没发 Telegram、记进 Aelios、网页上看得到信、写信的那一问一答撤掉了、前文和上一轮一字不差；之后再说一句会再写一封，不说话就不再写。
+- 自己的供应商走 Messages 格式（`--var CUSTOM_FORMAT:anthropic`，`node test/run.mjs custom-anthropic`）：带着 key、每轮有缓存标记，第二轮发回去的第一轮回复留着字、没有思考块；把拿思考块那一步关掉再跑，这项就挂。
 - 发给 Claude 前的整理（`node test/claude-run.mjs`）4 项：system 合成一段；之前几轮的思考块拿掉、回复和工具调用留着、这一轮工具之间的思考留着、只有思考的那条整条去掉；第一轮和没思考块的原样发；别家模型不动。另外用真的 AI SDK 和 Cloudflare provider 核过：不整理时历史里的思考块会带着签名发出去，整理后没有。
 - 交接信收哪些聊天（`node test/fold.mjs`）9 项：中文一个字算 1 token、全角标点也算，思考不算，图片和工具调用、结果算；留最近 6000 token，从她的那条开始留，她连发的几条和回复不拆开；聊得少时不写信、不调模型；更早的信不再收一遍；写出来是空的就不收。
 - 读网页（`node test/web.mjs`，不用起 Worker，网络全是假的）17 项：跳转先查再跟；跳到本机或内网（包括域名解析到内网）不跟；无限跳转会停；本机地址直接拒；JavaScript 空壳交给浏览器且不加载图片、浏览器里也拦内网 IP；没有浏览器时原样返回；404 和图片不送浏览器；读过的页面再问不重抓、同一页同一个问题连压缩结果也不重算；模型回 NOTHING_RELEVANT 的段落丢掉、只是提到这个词的留着；带问题的长页只留摘出来的部分（Qwen3 带 `/no_think`）；换成 Claude 之类的别家模型也能压、不带 `/no_think`；短页不送模型；回答里的 think 块去掉；模型挂了原样返回；工具超时会把模型调用一起取消；GBK 页面（GBK 在本地 workerd 里也核过能解）。
@@ -52,6 +54,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
    - 变量 `TG_ALLOWED`：你的 Telegram 用户名，比如 `@your_name`（也可以填 chat id，逗号隔开）
    - 变量 `AELIOS_URL`：Aelios 的地址，比如 `https://companion-memory-proxy.xxx.workers.dev`
    - 可选 Secret `TAVILY_API_KEY`、`BRAVE_API_KEY`、`PERPLEXITY_API_KEY`：你自己的搜索 key，有几个填几个
+   - 可选 Secret `CUSTOM_API_KEY`：自己的供应商的 key（见上面「自己的 key、自己的供应商」）
 4. **接上 Telegram**：浏览器打开一次 `https://aelios-resident.<你的子域>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>`，两个 `"ok":true` 就接好了（顺便把三个命令登记到 bot 的菜单里）。
 5. 打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进网页门，点左上角的模型名选模型，点右上角的铅笔把人设贴进去、保存。
 6. 给 bot 发条消息。
@@ -74,6 +77,8 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | `WEB_SEARCH` | `on` | `off` 关掉搜网；填 `ceramic`、`exa` 或 `linkup` 时，自己的 key 都失败后再用 Cloudflare 的 Web Search 这一家（没填自己的 key 时默认就是 `ceramic`）。Exa、Linkup、Ceramic 的 key 可以存在 AI Gateway → Provider Keys，别名 `default`，就不扣额度 |
 | `WEB_FETCH` | `on` | `off` 关掉读网页 |
 | `WEB_FETCH_MODEL` | `@cf/qwen/qwen3-30b-a3b-fp8` | 压长网页用的模型，主模型能填的 id 这里都能填（Workers AI 的 `@cf/…`，或 `anthropic/claude-haiku-5.5`、`openai/…` 这种走 AI Gateway 的）；`off` 不压，只截断 |
+| `CUSTOM_BASE_URL` | 空 | 自己的供应商的地址，写到 `/v1` 为止；模型填 `custom/…` 时用它和 Secret `CUSTOM_API_KEY` |
+| `CUSTOM_FORMAT` | `openai` | 自己的供应商说哪种格式：`openai`（chat completions）或 `anthropic`（Messages，带缓存） |
 | `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |
 
 ## 花钱吗
