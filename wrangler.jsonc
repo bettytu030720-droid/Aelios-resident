@@ -50,7 +50,7 @@
   // Secrets (Dashboard → Worker → Settings → Variables and Secrets, type Secret):
   //   TG_BOT_TOKEN         from @BotFather
   //   TG_WEBHOOK_SECRET    any long random string you make up (letters, digits, _ and -)
-  //   PERSONA              the persona; PERSONA_2..PERSONA_4 continue it past the ~5KB per-value cap
   //   AELIOS_API_KEY       an Aelios key with memory read/write (CHATBOX_API_KEY lets AELIOS_NAMESPACE apply)
   //   WEB_KEY              the password for the web door; unset = the web door stays shut
+  // The persona is not a secret or a var: write it on the web door (the person button, top right).
 }

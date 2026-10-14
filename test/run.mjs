@@ -155,8 +155,10 @@ if (phase === "main") {
     const before = (await sent()).length;
     await post("/status");
     const [out] = await waitForSends(before, 1);
-    assert.match(out, /^模型：fake\n对话：\d+ 条/);
+    assert.match(out, /^模型：fake\n/);
+    assert.match(out, /\n对话：\d+ 条/);
     assert.match(out, /交接信：0 封/);
+    assert.match(out, /人设：还没填/);
     assert.match(out, /主动找你：关/);
   });
 
@@ -233,6 +235,48 @@ if (phase === "main") {
     const precious = (await log()).filter((e) => e.kind === "aelios.precious").at(-1);
     assert.equal(precious.body.content, "这是第二个气泡。");
     assert.equal(precious.body.namespace, "test-space");
+  });
+
+  let fallback;
+  await step("with no persona written yet, the default line is the persona", async () => {
+    const persona = await (await web("/web/persona", "test-web-key")).json();
+    assert.equal(persona.text, "");
+    assert.equal(persona.at, null);
+    assert.deepEqual(persona.versions, []);
+    fallback = persona.fallback;
+    assert.ok(fallback);
+    const before = (await sent()).length;
+    await post("你是谁");
+    assert.deepEqual(await waitForSends(before, 1), [fallback]);
+  });
+
+  await step("a persona saved on the web applies from the next message", async () => {
+    assert.equal((await web("/web/persona", "wrong", { text: "x" })).status, 401);
+    assert.equal((await web("/web/persona", "test-web-key", { text: "长".repeat(30001) })).status, 400);
+    const response = await web("/web/persona", "test-web-key", { text: "  你是测试用的住户，说话很温柔。\n第二行。  " });
+    const saved = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(saved.text, "你是测试用的住户，说话很温柔。\n第二行。");
+    assert.equal(typeof saved.at, "number");
+    const before = (await sent()).length;
+    await post("你是谁");
+    assert.deepEqual(await waitForSends(before, 1), ["你是测试用的住户，说话很温柔。"]);
+    const [status] = await (async () => {
+      const mark = (await sent()).length;
+      await post("/status");
+      return waitForSends(mark, 1);
+    })();
+    assert.match(status, /人设：网页上填的，20 字/);
+  });
+
+  await step("earlier personas can be brought back, and saving empty goes back to the default", async () => {
+    await web("/web/persona", "test-web-key", { text: "第二版人设。" });
+    const persona = await (await web("/web/persona", "test-web-key", { text: "" })).json();
+    assert.equal(persona.text, "");
+    assert.deepEqual(persona.versions.map((v) => v.text), ["第二版人设。", "你是测试用的住户，说话很温柔。\n第二行。"]);
+    const before = (await sent()).length;
+    await post("你是谁");
+    assert.deepEqual(await waitForSends(before, 1), [fallback]);
   });
 }
 

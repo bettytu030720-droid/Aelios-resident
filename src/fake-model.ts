@@ -48,6 +48,8 @@ function decide(prompt: Prompt): { text: string; delayMs?: number } | { tool: st
     const all = prompt.map((m) => textOf(m.content)).join("\n");
     return { text: all.includes("亲爱的下一个我") ? "交接信在。" : "没看到交接信。" };
   }
+  // The first line of the system prompt is the persona.
+  if (said.includes("你是谁")) return { text: system.split("\n")[0] };
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // The first check-in says something; later ones pass, to exercise SKIP.
   if (said.includes("定时提醒")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };

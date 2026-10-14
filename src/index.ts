@@ -1,7 +1,7 @@
 // The Worker in front of the resident:
 //   POST /messengers/telegram/webhook   Telegram → secret check, allowlist, slash commands → the resident
 //   GET  /tg/setup?secret=…             points the bot's webhook here (open once after deploy)
-//   /web/*                              the web page's API (same conversation as Telegram), behind WEB_KEY
+//   /web/*                              the web page's API (same conversation as Telegram, and the persona), behind WEB_KEY
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
@@ -84,6 +84,12 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json(await agent.webSay(String(body.text ?? "")));
     case "POST /web/pin":
       return Response.json({ ok: await agent.webPin(String(body.text ?? "")) });
+    case "GET /web/persona":
+      return Response.json(await agent.webPersona());
+    case "POST /web/persona": {
+      const saved = await agent.webSetPersona(String(body.text ?? ""));
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
     default:
       return new Response("not found", { status: 404 });
   }

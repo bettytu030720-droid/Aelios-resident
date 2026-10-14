@@ -30,7 +30,11 @@ import { CHAT_RULES, LETTER_INSTRUCTIONS, SKIP, checkinPrompt, stamp } from "./p
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
-const DEFAULT_PERSONA = "你是她的伴侣，住在她的 Telegram 里。";
+// Used until a persona is written on the web page.
+const DEFAULT_PERSONA = "你是她的伴侣，在 Telegram 和网页上陪她聊天。";
+const PERSONA_MAX_CHARS = 30000;
+// How many earlier personas the web page can bring back.
+const PERSONA_VERSIONS = 10;
 const BOOT_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 function num(value: string | undefined, fallback: number): number {
@@ -53,6 +57,14 @@ export type WebLine = {
   text: string;
   at: number | null;
   via: "telegram" | "web" | "checkin" | null;
+};
+
+/** The persona as the web page edits it. An empty text means the default line is in use. */
+export type WebPersona = {
+  text: string;
+  at: number | null;
+  fallback: string;
+  versions: { at: number; text: string }[];
 };
 
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
@@ -97,12 +109,15 @@ export class Resident extends Think<Env> {
     return id ? { id } : undefined;
   }
 
+  // Think asks for this on every turn (nothing freezes it), so a persona saved on the web applies to the next message.
   override getSystemPrompt(): string {
-    const persona = [this.env.PERSONA, this.env.PERSONA_2, this.env.PERSONA_3, this.env.PERSONA_4]
-      .map((part) => part?.trim())
-      .filter(Boolean)
-      .join("\n");
-    return `${persona || DEFAULT_PERSONA}\n\n${CHAT_RULES}`;
+    return `${this.personas(1)[0]?.text || DEFAULT_PERSONA}\n\n${CHAT_RULES}`;
+  }
+
+  /** Personas saved on the web page, newest first. */
+  private personas(limit: number): { at: number; text: string }[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_persona (at INTEGER NOT NULL, text TEXT NOT NULL)`;
+    return this.sql<{ at: number; text: string }>`SELECT at, text FROM res_persona ORDER BY rowid DESC LIMIT ${limit}`;
   }
 
   override getMessengers(): ThinkMessengers {
@@ -309,8 +324,12 @@ export class Resident extends Think<Env> {
     const tokens = rows.reduce((sum, row) => sum + row.tokenEstimate, 0);
     const model = this.env.MODEL?.trim() || DEFAULT_MODEL;
     const on = (flag: boolean) => (flag ? "开" : "关");
+    const [persona] = this.personas(1);
     return [
       `模型：${model}`,
+      persona?.text
+        ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
+        : "人设：还没填，先用默认的一句（在网页门右上角填）",
       `对话：${rows.length} 条，约 ${tokens} token（超过 ${num(this.env.LETTER_AFTER_TOKENS, 24000)} 写交接信）`,
       `交接信：${compactions.length} 封`,
       `长期记忆 Aelios：${on(Boolean(aeliosConfig(this.env)))}`,
@@ -361,6 +380,27 @@ export class Resident extends Think<Env> {
       }
     ]);
     return { status: result.status };
+  }
+
+  /** The persona panel on the web page: the current persona and the ones before it. */
+  async webPersona(): Promise<WebPersona> {
+    const [current, ...older] = this.personas(PERSONA_VERSIONS + 1);
+    const text = current?.text ?? "";
+    // Each earlier persona once, skipping empties and the one in use (bringing one back saves it again).
+    const seen = new Set([text, ""]);
+    const versions = older.filter((version) => !seen.has(version.text) && Boolean(seen.add(version.text)));
+    return { text, at: current?.at ?? null, fallback: DEFAULT_PERSONA, versions };
+  }
+
+  /** Save a persona from the web page. Empty goes back to the default line. */
+  async webSetPersona(text: string): Promise<WebPersona | { error: string }> {
+    const persona = text.trim();
+    if (persona.length > PERSONA_MAX_CHARS) return { error: `人设最多 ${PERSONA_MAX_CHARS} 字` };
+    if (persona !== (this.personas(1)[0]?.text ?? "")) {
+      this.sql`INSERT INTO res_persona (at, text) VALUES (${Date.now()}, ${persona})`;
+      this.sql`DELETE FROM res_persona WHERE rowid NOT IN (SELECT rowid FROM res_persona ORDER BY rowid DESC LIMIT ${PERSONA_VERSIONS + 1})`;
+    }
+    return this.webPersona();
   }
 
   /** The heart on the web page: keep a line in Aelios' precious memories. */

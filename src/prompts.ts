@@ -1,5 +1,5 @@
-// Fixed text the resident runs on. The persona itself is not here: it lives in
-// the PERSONA secrets, so a public copy of this code never carries one.
+// Fixed text the resident runs on. The persona itself is not here: it is written on
+// the web page and kept in the Durable Object, so a public copy of this code never carries one.
 
 export const CHAT_RULES = `你在聊天软件上跟她说话（Telegram，有时是网页）。
 - 想拆成几条消息发，就用空行隔开；一个完整的意思放在同一条里。

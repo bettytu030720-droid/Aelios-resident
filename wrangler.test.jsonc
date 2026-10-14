@@ -28,7 +28,6 @@
     "TG_BOT_TOKEN": "123456:test-token",
     "TG_WEBHOOK_SECRET": "test-secret",
     "AELIOS_API_KEY": "test-key",
-    "WEB_KEY": "test-web-key",
-    "PERSONA": "你是她的伴侣，在 Telegram 上陪她聊天。"
+    "WEB_KEY": "test-web-key"
   }
 }
