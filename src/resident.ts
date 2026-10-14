@@ -22,13 +22,13 @@ import {
   type ThinkMessengers
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
-import { createCompactFunction } from "agents/sessions";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig, type IngestMessage } from "./aelios";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeOnRunPath } from "./claude-run";
+import { foldIntoLetter, tokensOf } from "./fold";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
@@ -381,13 +381,12 @@ export class Resident extends Think<Env> {
   override configureSession(session: ThinkSession) {
     // No token limit: a letter is written when she has been quiet for a while (idleLetter) or on /handoff.
     return session
-      .onCompaction(
-        createCompactFunction({
-          keepRecentTokens: num(this.env.KEEP_RECENT_TOKENS, 6000),
-          summarize: () => this.letterTurn()
-        })
-      )
+      .onCompaction(foldIntoLetter(this.keepRecentTokens(), () => this.letterTurn()))
       .onCompactionError((error) => console.error("letter: compaction failed", { error: String(error) }));
+  }
+
+  private keepRecentTokens(): number {
+    return num(this.env.KEEP_RECENT_TOKENS, 6000);
   }
 
   /** Why the letter being written is written. Set while compact() runs. */
@@ -580,9 +579,9 @@ export class Resident extends Think<Env> {
   }
 
   private async status(): Promise<string> {
-    const rows = await this.session.getHistoryRowStats();
+    const history = await this.session.getHistory();
     const compactions = await this.session.getCompactions();
-    const tokens = rows.reduce((sum, row) => sum + row.tokenEstimate, 0);
+    const tokens = history.reduce((sum, message) => sum + tokensOf(message), 0);
     const model = this.savedModel() || this.defaultModel;
     const [persona] = this.personas(1);
     return [
@@ -590,7 +589,7 @@ export class Resident extends Think<Env> {
       persona?.text
         ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
         : "人设：还没填，先用默认的一句（网页门右上角的铅笔）",
-      `对话：${rows.length} 条，约 ${tokens} token`,
+      `对话：${history.length} 条，约 ${tokens} token（最近 ${this.keepRecentTokens()} token 原样留着，更早的才收进交接信）`,
       `交接信：${idleMinutes(this.env) ? `没动静 ${idleMinutes(this.env)} 分钟后趁缓存还在写一封，` : ""}/handoff 随时写；缓存 ${promptCache(this.env).anthropic.cacheControl.ttl}`,
       `已写交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
