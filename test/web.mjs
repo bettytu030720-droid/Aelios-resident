@@ -136,6 +136,14 @@ await step("an empty JavaScript page is opened in the browser, without pictures"
   assert.equal(b.calls.length, 1);
   assert.equal(b.calls[0].action, "content");
   assert.deepEqual(b.calls[0].options.rejectResourceTypes, ["image", "media", "font"]);
+  // Requests to private addresses written in the URL are refused inside the browser too.
+  const blocked = (url) => b.calls[0].options.rejectRequestPattern.some((pattern) => new RegExp(pattern).test(url));
+  for (const url of ["http://127.0.0.1/", "http://169.254.169.254/latest", "http://10.1.2.3:8080/x", "http://192.168.1.1/", "http://172.20.0.1/", "http://localhost:8787/", "http://[::1]/", "http://user@10.0.0.1/"]) {
+    assert.ok(blocked(url), `the browser may not load ${url}`);
+  }
+  for (const url of ["https://example.com/", "https://172.217.1.1/", "https://news.10.example/", "https://www.localhost-news.com/"]) {
+    assert.ok(!blocked(url), `the browser may load ${url}`);
+  }
 });
 
 await step("without a browser, the empty page comes back as it is", async () => {
@@ -171,6 +179,27 @@ await step("with a query, a long page is cut down to what answers it", async () 
   assert.ok(user.content.startsWith("Question: 今天怎么了"));
 });
 
+await step("the same question about the same page is answered from the cache", async () => {
+  const c = cache();
+  const model = ai({ response: "摘出来的段落" });
+  const reader = { compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" }, cache: c };
+  const first = await read(reader, { url: "https://example.com/long", query: "今天怎么了" });
+  const again = await read(reader, { url: "https://example.com/long", query: "今天怎么了" });
+  assert.equal(again, first);
+  assert.equal(model.calls.length, 1);
+  assert.equal(requests.length, 1);
+  await read(reader, { url: "https://example.com/long", query: "别的问题" });
+  assert.equal(model.calls.length, 2, "another question asks the model again, without refetching");
+  assert.equal(requests.length, 1);
+});
+
+await step("a section that answers NOTHING_RELEVANT is dropped, a passage that mentions it is kept", async () => {
+  const nothing = await read({ compressor: { ai: ai({ response: "NOTHING_RELEVANT." }), model: "m" } }, { url: "https://example.com/long", query: "猫" });
+  assert.match(nothing, /Nothing on this page seems to be about: 猫/);
+  const kept = await read({ compressor: { ai: ai({ response: "The flag NOTHING_RELEVANT is used by the tool." }), model: "m" } }, { url: "https://example.com/long", query: "flag" });
+  assert.ok(kept.endsWith("The flag NOTHING_RELEVANT is used by the tool."), kept);
+});
+
 await step("a short page with no query is not sent to the model", async () => {
   const model = ai({ response: "x" });
   await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }, { url: "https://example.com/long" });
@@ -181,7 +210,8 @@ await step("an OpenAI-shaped answer with a think block is read, and the gateway 
   const model = ai({ choices: [{ message: { content: "<think>想想</think>\n摘到的内容" } }] });
   const text = await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8", gateway: "gw" } }, { url: "https://example.com/long", query: "新闻" });
   assert.ok(text.endsWith("摘到的内容"), text);
-  assert.deepEqual(model.calls[0].options, { gateway: { id: "gw" } });
+  assert.deepEqual(model.calls[0].options.gateway, { id: "gw" });
+  assert.ok(model.calls[0].options.signal instanceof AbortSignal, "the model call can be cancelled");
 });
 
 await step("when the model fails, the page comes back whole", async () => {
@@ -189,6 +219,23 @@ await step("when the model fails, the page comes back whole", async () => {
   const text = await read({ compressor: { ai: model, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }, { url: "https://example.com/long", query: "新闻" });
   assert.ok(text.includes("今天的新闻很长。今天的新闻很长。"));
   assert.ok(text.includes("could not be shortened"));
+});
+
+await step("when web_fetch gives up, the model call is stopped and the page comes back whole", async () => {
+  const hanging = { calls: [], run: (model, inputs, options) => new Promise((_, reject) => {
+    hanging.calls.push(options);
+    options.signal.addEventListener("abort", () => reject(new Error("aborted")));
+  }) };
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 200);
+  const started = Date.now();
+  const text = await webFetchTool({ compressor: { ai: hanging, model: "@cf/qwen/qwen3-30b-a3b-fp8" } }).execute(
+    { url: "https://example.com/long", query: "新闻" },
+    { toolCallId: "t", messages: [], abortSignal: controller.signal }
+  );
+  assert.ok(Date.now() - started < 3000, "it does not wait for the model's own timeout");
+  assert.ok(text.includes("今天的新闻很长。"), text);
+  assert.ok(hanging.calls[0].signal.aborted, "the model call was cancelled");
 });
 
 await step("a page in GBK is decoded", async () => {

@@ -27,7 +27,7 @@ import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig, type IngestMessage } from "./aelios";
 import { fakeModel } from "./fake-model";
-import { CHAT_RULES, DEFAULT_PERSONA, LETTER_PREFIX, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeSystemAsText } from "./claude-run";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
@@ -55,11 +55,13 @@ function promptCache(env: Env) {
 
 /** Minutes of quiet after which the letter is written, while the conversation is still in the cache. 0 = never. */
 function idleMinutes(env: Env): number {
+  const ttl = env.CACHE_TTL?.trim() === "5m" ? 5 : 60;
   const setting = env.LETTER_IDLE_MINUTES?.trim().toLowerCase();
   if (setting === "off") return 0;
   const minutes = Number(setting);
-  if (setting && Number.isFinite(minutes) && minutes >= 0) return minutes;
-  return env.CACHE_TTL?.trim() === "5m" ? 4 : 55;
+  // Later than the cache lasts, the letter would read the whole conversation at full price: keep it inside.
+  if (setting && Number.isFinite(minutes) && minutes >= 0) return Math.min(minutes, ttl - 1);
+  return ttl === 5 ? 4 : 55;
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -93,6 +95,17 @@ export type WebPersona = {
 
 const RECALLED_BLOCK = /<(recalled|想起的旧事)>[\s\S]*?<\/\1>\n?/g;
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
+
+/** The letter in the letter turn's answer: its text after the last tool call, should the model have made one. */
+function letterText(answer: readonly { parts?: readonly { type: string; text?: string }[] }[]): string {
+  const parts = answer.flatMap((message) => message.parts ?? []);
+  const lastTool = parts.findLastIndex((part) => part.type.startsWith("tool-") || part.type === "dynamic-tool");
+  return parts
+    .slice(lastTool + 1)
+    .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+    .join("")
+    .trim();
+}
 
 function textOf(message: { parts?: readonly { type: string; text?: string }[] } | undefined): string {
   return (message?.parts ?? [])
@@ -342,7 +355,8 @@ export class Resident extends Think<Env> {
     const memory = aeliosConfig(this.env);
     if (!memory) return "";
     const cached = await this.ctx.storage.get<{ text: string; at: number }>("aelios_boot");
-    if (cached && Date.now() - cached.at < BOOT_REFRESH_MS) return cached.text;
+    // The letter turn keeps the packet the conversation already has, so its request still matches the cache.
+    if (cached && (this.#letterPromptId || Date.now() - cached.at < BOOT_REFRESH_MS)) return cached.text;
     const text = await fetchBoot(memory);
     await this.ctx.storage.put("aelios_boot", { text, at: Date.now() });
     return text;
@@ -362,6 +376,8 @@ export class Resident extends Think<Env> {
 
   /** Why the letter being written is written. Set while compact() runs. */
   #letterReason: "idle" | "handoff" = "handoff";
+  /** The letter prompt's id while its turn runs, so onChatResponse and boot() can tell that turn apart. */
+  #letterPromptId: string | null = null;
 
   /**
    * The handoff letter, written as one more turn of the same conversation: the request is the chat's own
@@ -370,34 +386,55 @@ export class Resident extends Think<Env> {
    * conversation again, and compaction folds the older turns into the letter.
    */
   private async letterTurn(): Promise<string> {
+    // She came back just as the quiet time ran out: no letter now, her turn plans the next one.
+    if (this.#letterReason === "idle" && this.activeTurn) return "";
     const prompt: UIMessage = {
       id: `letter_${crypto.randomUUID()}`,
       role: "user",
       parts: [{ type: "text", text: letterPrompt(stamp(new Date(), this.tz), this.#letterReason === "idle") }]
     };
-    const result = await this.saveMessages([prompt]);
-    const history = await this.session.getHistory();
-    const at = history.findIndex((message) => message.id === prompt.id);
-    const answer: SessionMessage[] = [];
-    for (const message of at < 0 ? [] : history.slice(at + 1)) {
-      if (message.role === "user") break;
-      answer.push(message);
+    this.#letterPromptId = prompt.id;
+    let status = "error";
+    let answer: SessionMessage[] = [];
+    try {
+      status = (await this.saveMessages([prompt])).status;
+    } finally {
+      this.#letterPromptId = null;
+      // Whatever happened, the prompt and its answer leave the conversation, or every later turn would carry them.
+      answer = await this.takeOut(prompt.id).catch((error) => {
+        console.error("letter: could not take the letter turn out", { error: String(error) });
+        return [];
+      });
     }
-    await this.session.deleteMessages([prompt.id, ...answer.map((message) => message.id)]);
-    if (result.status !== "completed") throw new Error(`the letter turn ended ${result.status}`);
-    const letter = answer.map((message) => textOf(message)).join("\n").trim();
+    if (status !== "completed") throw new Error(`the letter turn ended ${status}`);
+    const letter = letterText(answer);
     if (!letter || letter === SKIP) return "";
     this.letters();
     this.sql`INSERT INTO res_letters (at, text) VALUES (${Date.now()}, ${letter})`;
-    await this.ctx.storage.put("wrote_since_letter", false);
     const memory = aeliosConfig(this.env);
     if (memory) this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: `（交接信）${letter}` }], "aelios-resident:letter"));
     return `[Handoff letter you wrote on ${stamp(new Date(), this.tz)}]\n${letter}`;
   }
 
+  /** Delete one message and the answer right after it. Returns the answer. */
+  private async takeOut(id: string): Promise<SessionMessage[]> {
+    const history = await this.session.getHistory();
+    const at = history.findIndex((message) => message.id === id);
+    if (at < 0) return [];
+    const answer: SessionMessage[] = [];
+    for (const message of history.slice(at + 1)) {
+      if (message.role === "user") break;
+      answer.push(message);
+    }
+    await this.session.deleteMessages([id, ...answer.map((message) => message.id)]);
+    return answer;
+  }
+
   /** Fold the older turns into a letter now. False when there was nothing to fold. */
   private async writeLetter(reason: "idle" | "handoff"): Promise<boolean> {
     this.#letterReason = reason;
+    // Cleared before, not after: a message that arrives while the letter is written sets it again.
+    await this.ctx.storage.put("wrote_since_letter", false);
     try {
       return Boolean(await this.session.compact());
     } finally {
@@ -405,10 +442,15 @@ export class Resident extends Think<Env> {
     }
   }
 
-  /** After a turn: plan the idle letter, replacing the one planned after the turn before. */
-  private async planIdleLetter(): Promise<void> {
+  /**
+   * After a turn: plan the idle letter. Her message moves it to LETTER_IDLE_MINUTES from now; a check-in
+   * leaves a planned one where it is (it reads the cache, which keeps the cache alive), and only plans one
+   * when none is planned, as when the letter's time came while the check-in was running.
+   */
+  private async planIdleLetter(fromThem: boolean): Promise<void> {
     const minutes = idleMinutes(this.env);
     const previous = await this.ctx.storage.get<string>("idle_letter");
+    if (previous && !fromThem) return;
     if (previous) await this.cancelSchedule(previous).catch(() => false);
     if (!minutes || !(await this.ctx.storage.get<boolean>("wrote_since_letter"))) {
       await this.ctx.storage.delete("idle_letter");
@@ -424,9 +466,9 @@ export class Resident extends Think<Env> {
    */
   async idleLetter(): Promise<void> {
     await this.ctx.storage.delete("idle_letter");
-    // A turn that is running now will plan its own letter when it ends.
-    if (this.activeTurn) return;
     if (!(await this.ctx.storage.get<boolean>("wrote_since_letter"))) return;
+    // Checked last: a turn that is running now plans its own letter when it ends.
+    if (this.activeTurn) return;
     await this.writeLetter("idle");
   }
 
@@ -449,11 +491,14 @@ export class Resident extends Think<Env> {
   }
 
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
-    const asked = this.userMessageBefore(result.message.id);
+    const before = this.userMessageBefore(result.message.id);
     // The letter turn: letterTurn() takes the answer and removes both messages.
-    if (asked.startsWith(LETTER_PREFIX)) return;
-    if (asked && !isNote(asked)) await this.ctx.storage.put("wrote_since_letter", true);
-    await this.planIdleLetter();
+    if (this.#letterPromptId && before?.id === this.#letterPromptId) return;
+    const asked = before?.text ?? "";
+    // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
+    const fromThem = Boolean(asked) && !isNote(asked);
+    if (fromThem) await this.ctx.storage.put("wrote_since_letter", true);
+    await this.planIdleLetter(fromThem);
     if (result.status !== "completed") return;
     // Should the model ever repeat a <recalled> block, it does not go back into Aelios as something it said.
     const reply = textOf(result.message).replace(RECALLED_BLOCK, "").trim();
@@ -471,13 +516,13 @@ export class Resident extends Think<Env> {
     this.ctx.waitUntil(ingest(memory, messages, proactive ? "aelios-resident:checkin" : "aelios-resident"));
   }
 
-  private userMessageBefore(id: string): string {
+  private userMessageBefore(id: string): { id: string; text: string } | null {
     const messages = this.messages;
     const index = messages.findIndex((message) => message.id === id);
     for (let i = (index < 0 ? messages.length : index) - 1; i >= 0; i -= 1) {
-      if (messages[i].role === "user") return textOf(messages[i]).trim();
+      if (messages[i].role === "user") return { id: messages[i].id, text: textOf(messages[i]).trim() };
     }
-    return "";
+    return null;
   }
 
   override getDefaultTimezone(): string {

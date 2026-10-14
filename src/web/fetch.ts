@@ -29,12 +29,12 @@ const THIN_CHARS = 500;
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 15_000;
 const BROWSER_TIMEOUT_MS = 20_000;
-const TOOL_TIMEOUT_MS = 60_000;
+const TOOL_TIMEOUT_MS = 90_000;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-export type Page = { url: string; title?: string; content: string; browser?: boolean };
+export type Page = { url: string; title?: string; content: string; browser?: boolean; note?: string };
 
 /** Pages read in the last hour, by the URL that was asked for. */
 export type PageCache = { get(url: string): Page | null; put(url: string, page: Page): void };
@@ -83,7 +83,12 @@ export function webFetchTool(reader: Reader) {
           page = await readPage(reader, url, signal);
           remember(reader, url, page);
         }
-        const shrunk = await compressPage(reader.compressor, page.content, query);
+        // What the model made of this page for this question is kept too, so asking it again costs nothing.
+        const asked = `${url}\n${query?.trim() ?? ""}`;
+        const done = cached(reader, asked);
+        if (done) return render(page, done.content, done.note);
+        const shrunk = await compressPage(reader.compressor, page.content, query, signal);
+        if (shrunk.content !== page.content && !signal.aborted) remember(reader, asked, { url, content: shrunk.content, note: shrunk.note });
         return render(page, shrunk.content, shrunk.note);
       } catch (error) {
         return `Could not read this page: ${error instanceof Error ? error.message : String(error)}`;

@@ -21,7 +21,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **交接信**：没有长度上限。你 `LETTER_IDLE_MINUTES`（默认 55）分钟没动静，住户就给之后的自己写一封信，较早的聊天收进信里，最近 `KEEP_RECENT_TOKENS` 原样留着；写完就不动了，等你下次发消息。55 分钟是为了赶在 1 小时缓存过期前：写信那一轮就接在原对话后面问（系统提示、工具、之前每条消息都和上一轮一字不差），所以整段对话从缓存读，便宜；写完把这一问一答撤掉。信照七段写（对方怎么样、我们之间发生了什么、做了什么事、现在的温度、想做的事、喜欢的事、未完成的事），上一封里还没了结的要接着往下传，有时效的写死日期。信存在 Durable Object 里，也记进 Aelios，不发 Telegram 打扰你；`/letter` 看，`/handoff` 随时手动写。
 - **提示词**：住户自带的聊天规矩、交接信和定时提示都是英文写的，不预设对方是谁、什么性别，称呼用人设和聊天里的；人设用什么语言，它就用什么语言聊。
 - **主动找你**：`CHECKIN_SCHEDULE` 填了（比如 `every day at 09:00`），到点住户自己想想要不要找你；不合适打扰就不发。
-- **查网页**（默认开）：`web_search` 搜网。填了自己的搜索 key（Secret `TAVILY_API_KEY`、`BRAVE_API_KEY`、`PERPLEXITY_API_KEY`，有几个填几个）就按 Tavily → Brave → Perplexity 的顺序用，前一家报错或免费额度用完就换下一家，不花 Gateway 的钱；一个都没填时用 Cloudflare 的 Web Search（按次收一点 AI Gateway 额度，见下）。`web_fetch` 把一个网页读成 Markdown，搜到的结果、你发的链接都能打开，照 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的做法长在住户里，不用另外部署：先普通地抓，每一次跳转都先查目的地再跟过去，本机和内网地址一律不读；抓回来几乎是空的（靠 JavaScript 才显示的页面）就交给 Cloudflare 的浏览器（`BROWSER` 绑定，不加载图片字体）；读过的页面在住户自己的存储里留 1 小时，再问同一页不用重抓；长页面先用 Workers AI 的小模型（默认 Qwen3 30B，`WEB_FETCH_MODEL`）压一遍，带了问题就只摘跟问题有关的段落，这样一页新闻不会占掉一大截聊天记录。GBK 之类的老编码也认。
+- **查网页**（默认开）：`web_search` 搜网。填了自己的搜索 key（Secret `TAVILY_API_KEY`、`BRAVE_API_KEY`、`PERPLEXITY_API_KEY`，有几个填几个）就按 Tavily → Brave → Perplexity 的顺序用，前一家报错或免费额度用完就换下一家，不花 Gateway 的钱；一个都没填时用 Cloudflare 的 Web Search（按次收一点 AI Gateway 额度，见下）。`web_fetch` 把一个网页读成 Markdown，搜到的结果、你发的链接都能打开，照 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的做法长在住户里，不用另外部署：先普通地抓，每一次跳转都先查目的地再跟过去，本机和内网地址一律不读；抓回来几乎是空的（靠 JavaScript 才显示的页面）就交给 Cloudflare 的浏览器（`BROWSER` 绑定，不加载图片字体；浏览器跑在 Cloudflare 的机器上，网址里写明的本机和内网 IP 在浏览器里也拦掉，最后落到哪儿再查一遍，但解析到内网的域名只在最后这一查里拦得住）；读过的页面在住户自己的存储里留 1 小时，再问同一页不用重抓；长页面先用 Workers AI 的小模型（默认 Qwen3 30B，`WEB_FETCH_MODEL`）压一遍，带了问题就只摘跟问题有关的段落，这样一页新闻不会占掉一大截聊天记录。GBK 之类的老编码也认。
 - **命令**：`/status` 看模型、人设、对话长度、交接信封数、上一次调用的缓存命中；`/letter` 看最近一封信；`/handoff` 马上写信。
 
 ## 测过什么
@@ -31,7 +31,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - 主流程 25 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；`memory_remember` 走 Aelios 的 MCP；`web_fetch` 本机地址拒读；自动浮现（同一条记忆不重复浮现，之前浮现的原样留在那条后面，不存回 Aelios、网页上看不到）；每轮记进 Aelios；连发三条并成一轮；`/status`、`/letter`、`/handoff`（写信后对话里带着信；写信那一轮发给模型的前文和上一轮一字不差，所以吃得到缓存）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记（1 小时）；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
 - 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
 - 空闲交接信：把空闲时间调成 3 秒，聊 3 轮后自己写了信：没发 Telegram、记进 Aelios、网页上看得到信、写信的那一问一答撤掉了、前文和上一轮一字不差；之后再说一句会再写一封，不说话就不再写。
-- 读网页（`node test/web.mjs`，不用起 Worker，网络全是假的）14 项：跳转先查再跟；跳到本机或内网（包括域名解析到内网）不跟；无限跳转会停；本机地址直接拒；JavaScript 空壳交给浏览器且不加载图片；没有浏览器时原样返回；404 和图片不送浏览器；读过的页面再问不重抓；带问题的长页只留摘出来的部分（Qwen3 带 `/no_think`）；短页不送模型；OpenAI 格式的回答和 think 块；模型挂了原样返回；GBK 页面。
+- 读网页（`node test/web.mjs`，不用起 Worker，网络全是假的）17 项：跳转先查再跟；跳到本机或内网（包括域名解析到内网）不跟；无限跳转会停；本机地址直接拒；JavaScript 空壳交给浏览器且不加载图片、浏览器里也拦内网 IP；没有浏览器时原样返回；404 和图片不送浏览器；读过的页面再问不重抓、同一页同一个问题连压缩结果也不重算；模型回 NOTHING_RELEVANT 的段落丢掉、只是提到这个词的留着；带问题的长页只留摘出来的部分（Qwen3 带 `/no_think`）；短页不送模型；OpenAI 格式的回答和 think 块；模型挂了原样返回；工具超时会把模型调用一起取消；GBK 页面（GBK 在本地 workerd 里也核过能解）。
 - 回复写到一半把进程杀掉：重启后住户自己醒过来，发一句「刚才回到一半断了，再发一次好吗？」，不会把半截重发一遍。
 - 网页门在 Chromium 里点过（手机宽度夜间、电脑宽度白天）：错钥匙提示、手机宽度没有横向滚动、发消息收到回复（自己那条也带上时间和心形）、心形按钮、Telegram 那边发的消息 5 秒内自己出现且不重复、交接信折叠；换模型：搜 `opus` 只出 opus、调不通的不换并显示原因、目录里没有的 id 可以直接试、方向键和回车能选、Esc 关掉；人设：没填时的提醒、写了「Claude Code」会提示、保存后提醒消失。
 
@@ -65,7 +65,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | `TG_ALLOWED` | 空（谁都不回） | 允许的 chat id 和 @用户名 |
 | `TIME_ZONE` | `Asia/Shanghai` | 消息前的时间、定时用哪个时区 |
 | `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
-| `LETTER_IDLE_MINUTES` | `55`（`CACHE_TTL=5m` 时 `4`） | 没动静多少分钟写交接信；`off` 只靠 `/handoff` |
+| `LETTER_IDLE_MINUTES` | `55`（`CACHE_TTL=5m` 时 `4`） | 你没动静多少分钟写交接信（定时找你那几轮不算，不往后推）；最多比缓存时长少 1 分钟，填多了也按这个算；`off` 只靠 `/handoff` |
 | `KEEP_RECENT_TOKENS` | `6000` | 写信后最近多少 token 原样留着 |
 | `CACHE_TTL` | `1h` | Claude 的缓存留多久，`1h` 或 `5m` |
 | `AELIOS_URL` / `AELIOS_NAMESPACE` | 空 / `default` | 长期记忆；不填就不接 |

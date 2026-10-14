@@ -18,10 +18,11 @@ const QUERY_MIN_TOKENS = 800;
 /** Tokens of page text handed to the model per call. */
 const CHUNK_TOKENS = 6_000;
 /** Upper bound on chunks, so one huge page can't fan out into many model calls. */
-const MAX_CHUNKS = 8;
+const MAX_CHUNKS = 6;
 const CONCURRENCY = 3;
 const MAX_OUTPUT_TOKENS = 1_500;
-const CALL_TIMEOUT_MS = 25_000;
+// Two rounds of three calls at most, so a long page is done well inside web_fetch's time.
+const CALL_TIMEOUT_MS = 20_000;
 
 export const DEFAULT_COMPRESS_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
 
@@ -137,8 +138,18 @@ const CONDENSE_SYSTEM = [
 
 const NOTHING_RELEVANT = "NOTHING_RELEVANT";
 
+/** The model's "nothing here" answer, give or take punctuation; a passage that merely mentions it is kept. */
+function isNothing(text: string): boolean {
+  return text.replace(/[\s.。*`"'-]/g, "") === NOTHING_RELEVANT;
+}
+
 /** Shrink a page when the policy above says so. Always resolves. */
-export async function compressPage(compressor: Compressor | null, content: string, query?: string): Promise<Compressed> {
+export async function compressPage(
+  compressor: Compressor | null,
+  content: string,
+  query?: string,
+  signal?: AbortSignal
+): Promise<Compressed> {
   const question = query?.trim() || undefined;
   if (!content.trim()) return { content };
   const tokens = estimateTokens(content);
@@ -156,12 +167,14 @@ export async function compressPage(compressor: Compressor | null, content: strin
       const position = chunks.length > 1 ? `Section ${i + offset + 1} of ${chunks.length}.\n\n` : "";
       const user = question ? `Question: ${question}\n\n${position}Page content:\n\n${chunk}` : `${position}Page content:\n\n${chunk}`;
       try {
-        return { ok: true as const, text: await chat(compressor, system, user) };
+        return { ok: true as const, text: await chat(compressor, system, user, signal) };
       } catch (error) {
         return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
       }
     });
     results.push(...(await Promise.all(batch)));
+    // web_fetch gave up: stop calling the model for an answer nobody will read.
+    if (signal?.aborted) return { content, note: "could not be shortened in time, so here is the page as it is" };
   }
 
   if (results.every((result) => !result.ok)) {
@@ -169,36 +182,38 @@ export async function compressPage(compressor: Compressor | null, content: strin
     console.error("web_fetch: compression failed", { error: first && !first.ok ? first.error : "" });
     return { content, note: "could not be shortened, so here is the page as it is" };
   }
+  const failed = results.filter((result) => !result.ok).length;
   const kept = results
     .flatMap((result) => (result.ok ? [result.text.trim()] : []))
-    .filter((text) => text && !text.includes(NOTHING_RELEVANT));
+    .filter((text) => text && !isNothing(text));
   if (!kept.length) {
     return question
       ? { content: `Nothing on this page seems to be about: ${question}`, note: "read without a query to see the whole page" }
       : { content, note: "could not be shortened, so here is the page as it is" };
   }
-  const tail = cut ? `only the first ${MAX_CHUNKS} sections of a very long page were read` : undefined;
-  const what = question ? `only the parts about: ${question}` : "a condensed version of a long page";
-  return { content: kept.join("\n\n"), note: tail ? `${what}; ${tail}` : what };
+  const notes = [question ? `only the parts about: ${question}` : "a condensed version of a long page"];
+  if (failed) notes.push(`${failed} of ${results.length} sections could not be read`);
+  if (cut) notes.push(`only the first ${MAX_CHUNKS} sections of a very long page were read`);
+  return { content: kept.join("\n\n"), note: notes.join("; ") };
 }
 
-async function chat(compressor: Compressor, system: string, user: string): Promise<string> {
+async function chat(compressor: Compressor, system: string, user: string, signal?: AbortSignal): Promise<string> {
   // Qwen3 thinks before answering unless told not to; extraction needs no thinking.
   const prompt = compressor.model.toLowerCase().includes("qwen3") ? `${system}\n\n/no_think` : system;
+  const timeout = AbortSignal.timeout(CALL_TIMEOUT_MS);
+  const stop = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const run = compressor.ai.run(
     compressor.model as Parameters<Ai["run"]>[0],
     { messages: [{ role: "system", content: prompt }, { role: "user", content: user }], max_tokens: MAX_OUTPUT_TOKENS } as never,
-    compressor.gateway ? { gateway: { id: compressor.gateway } } : undefined
+    { ...(compressor.gateway ? { gateway: { id: compressor.gateway } } : {}), signal: stop }
   ) as Promise<unknown>;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`no answer in ${CALL_TIMEOUT_MS / 1000}s`)), CALL_TIMEOUT_MS);
+  // The call is cancelled through the signal; the race is for a binding that does not honour it.
+  const stopped = new Promise<never>((_, reject) => {
+    const fail = () => reject(new Error(timeout.aborted ? `no answer in ${CALL_TIMEOUT_MS / 1000}s` : "stopped"));
+    if (stop.aborted) fail();
+    else stop.addEventListener("abort", fail, { once: true });
   });
-  try {
-    return textOf(await Promise.race([run, timeout]));
-  } finally {
-    if (timer !== null) clearTimeout(timer);
-  }
+  return textOf(await Promise.race([run, stopped]));
 }
 
 /** The answer text of a Workers AI text-generation result, in either of its shapes, without a think block. */

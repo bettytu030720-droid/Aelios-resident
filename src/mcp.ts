@@ -8,6 +8,14 @@ type McpMessage = {
   error?: { code?: number; message?: string };
 };
 
+function parse(text: string): McpMessage | null {
+  try {
+    return JSON.parse(text) as McpMessage;
+  } catch {
+    return null;
+  }
+}
+
 /** Call one tool and return its text. Throws when the server, the call or the tool fails. */
 export async function callMcpTool(
   endpoint: string,
@@ -28,15 +36,15 @@ export async function callMcpTool(
   });
   if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
   const raw = await response.text();
-  // A server may answer with a one-event SSE stream instead of plain JSON.
-  const payload = (response.headers.get("content-type") ?? "").includes("text/event-stream")
-    ? raw
+  // A server may answer with an SSE stream instead of plain JSON: the answer is the event with a result or an error.
+  const message = (response.headers.get("content-type") ?? "").includes("text/event-stream")
+    ? (raw
         .split("\n")
         .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .at(-1) ?? ""
-    : raw;
-  const message = JSON.parse(payload) as McpMessage;
+        .map((line) => parse(line.slice(5).trim()))
+        .find((event) => event && (event.result || event.error)) ?? null)
+    : parse(raw);
+  if (!message) throw new Error(`${name}: no answer in the response`);
   if (message.error) throw new Error(`${name}: ${message.error.message ?? "MCP error"}`);
   const text = (message.result?.content ?? [])
     .filter((part) => part.type === "text")
