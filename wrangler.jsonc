@@ -18,39 +18,18 @@
   },
   // SQLite-backed Durable Objects are the kind the Workers Free plan allows.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Resident"] }],
-  "observability": { "enabled": true },
-  "vars": {
-    // A Workers AI id (free plan: 10,000 neurons a day, then errors, never a bill),
-    // or a vendor model through AI Gateway such as "anthropic/claude-sonnet-5-5" (AI_GATEWAY_ID picks the
-    // gateway; empty = the account's "default"). Changing it switches the running conversation too.
-    "MODEL": "@cf/zai-org/glm-4.7-flash",
-    "AI_GATEWAY_ID": "",
-    // The bot's username from @BotFather, without the @.
-    "TG_BOT_USERNAME": "",
-    // Comma-separated Telegram chat ids and/or @usernames allowed to talk to the bot.
-    "TG_ALLOWED": "",
-    "TIME_ZONE": "Asia/Shanghai",
-    // Messages sent within this many seconds of each other are answered as one turn.
-    "DEBOUNCE_SECONDS": "3",
-    // When the conversation passes this many tokens, older turns are folded into a handoff letter.
-    "LETTER_AFTER_TOKENS": "24000",
-    // How much of the newest conversation stays word for word after a letter.
-    "KEEP_RECENT_TOKENS": "6000",
-    "SHOW_LETTER": "true",
-    // Aelios base URL (e.g. https://companion-memory-proxy.<you>.workers.dev); empty = no long-term memory.
-    "AELIOS_URL": "",
-    "AELIOS_NAMESPACE": "default",
-    // "on" gives the model a web_search tool. Each search is billed to AI Gateway credits.
-    "WEB_SEARCH": "off",
-    // Comma-separated URL globs the model may read for free, e.g. "https://www.bbc.com/zhongwen/**".
-    "FETCH_ALLOWLIST": "",
-    // e.g. "every day at 09:00": the resident starts a conversation on its own. Empty = never.
-    "CHECKIN_SCHEDULE": ""
-  }
+  "observability": { "enabled": true }
+  // No "vars" here on purpose: a value written in this file would overwrite what you set in the
+  // Dashboard on every push. Every setting has a default in the code; set the ones you need in
+  // Dashboard → Worker → Settings → Variables and Secrets (type Text). See README for the list:
+  //   MODEL, AI_GATEWAY_ID, TG_BOT_USERNAME, TG_ALLOWED, TIME_ZONE, DEBOUNCE_SECONDS,
+  //   LETTER_AFTER_TOKENS, KEEP_RECENT_TOKENS, SHOW_LETTER, AELIOS_URL, AELIOS_NAMESPACE,
+  //   WEB_SEARCH, FETCH_ALLOWLIST, CHECKIN_SCHEDULE
   // Secrets (Dashboard → Worker → Settings → Variables and Secrets, type Secret):
   //   TG_BOT_TOKEN         from @BotFather
   //   TG_WEBHOOK_SECRET    any long random string you make up (letters, digits, _ and -)
-  //   AELIOS_API_KEY       an Aelios key with memory read/write (CHATBOX_API_KEY lets AELIOS_NAMESPACE apply)
+  //   AELIOS_API_KEY       the value of your Aelios' CHATBOX_API_KEY, IM_API_KEY or MEMORY_MCP_API_KEY
+  //                        (all read and write the "default" space; only CHATBOX_API_KEY lets AELIOS_NAMESPACE pick another)
   //   WEB_KEY              the password for the web door; unset = the web door stays shut
   // The persona is not a secret or a var: write it on the web door (the person button, top right).
 }

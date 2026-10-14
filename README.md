@@ -37,12 +37,12 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 ## 上线
 
 1. **建 bot**：Telegram 里找 @BotFather，`/newbot`，起名字，记下 token 和 bot 的用户名。
-2. **部署**：Cloudflare 后台 → Workers & Pages → Create → Import a repository，选这个仓库，其余用默认（部署命令 `npx wrangler deploy`）。以后推到 main 就自动更新。
-3. **填密钥**（Worker → Settings → Variables and Secrets）：
+2. **部署**：Cloudflare 后台 → Workers & Pages → Create → Import a repository，选这个仓库。项目名填 `aelios-resident`（要跟 `wrangler.jsonc` 里的 `name` 一样），其余用默认（部署命令 `npx wrangler deploy`）。以后推到 main 就自动更新。不用建 D1、KV 或别的库：聊天记录、交接信、人设存在 Durable Object 自带的 SQLite 里，部署时自动建好；长期记忆走你现有的 Aelios。
+3. **填密钥和设置**（Worker → Settings → Variables and Secrets）。`wrangler.jsonc` 里故意一个变量都不写，所以这里填的东西以后推代码不会被冲掉：
    - Secret `TG_BOT_TOKEN`：第 1 步的 token
    - Secret `TG_WEBHOOK_SECRET`：自己编一串长的（字母、数字、`_`、`-`）
    - Secret `WEB_KEY`：网页门的钥匙，自己编；不填网页门就一直关着
-   - Secret `AELIOS_API_KEY`：Aelios 的 key（用 `CHATBOX_API_KEY` 才能指定 `AELIOS_NAMESPACE`）
+   - Secret `AELIOS_API_KEY`：跟你 Aelios 那边 `CHATBOX_API_KEY`、`IM_API_KEY`、`MEMORY_MCP_API_KEY` 任意一把同一个值。三把都读写 `default` 空间；想用别的空间（`AELIOS_NAMESPACE`）只能用 `CHATBOX_API_KEY`
    - 变量 `TG_BOT_USERNAME`：bot 的用户名（不带 @）
    - 变量 `TG_ALLOWED`：你的 Telegram 用户名，比如 `@your_name`（也可以填 chat id，逗号隔开）
    - 变量 `AELIOS_URL`：Aelios 的地址，比如 `https://companion-memory-proxy.xxx.workers.dev`
@@ -51,6 +51,8 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 6. 给 bot 发条消息。
 
 ## 设置
+
+下面这些都在 Worker 的 Variables and Secrets 里按 Text 类型填，不填就用默认。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
