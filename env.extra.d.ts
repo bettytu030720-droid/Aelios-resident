@@ -14,7 +14,8 @@ interface Env {
   AELIOS_URL?: string;
   AELIOS_NAMESPACE?: string;
   WEB_SEARCH?: string;
-  FETCH_ALLOWLIST?: string;
+  WEB_FETCH?: string;
+  WEB_FETCH_URL?: string;
   CHECKIN_SCHEDULE?: string;
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
@@ -22,5 +23,6 @@ interface Env {
   // Local tests only: the default model is the scripted one.
   FAKE_MODEL?: string;
   AELIOS_API_KEY?: string;
+  WEB_FETCH_KEY?: string;
   WEB_KEY?: string;
 }

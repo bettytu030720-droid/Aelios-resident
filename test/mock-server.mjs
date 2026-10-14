@@ -48,6 +48,10 @@ const server = http.createServer(async (req, res) => {
     const hit = { id: "mem-birthday", content: "她的生日在春天", type: "fact", score: 0.9 };
     return reply({ data: String(json.query ?? "").includes("生日") ? [hit] : [] });
   }
+  if (url.pathname === "/web-fetch/fetch") {
+    log.push({ kind: "webfetch", body: json, auth });
+    return reply({ url: json.url, title: "测试新闻", content: "今天的测试新闻：一切正常。", retrieved_via: "fetch" });
+  }
   if (url.pathname === "/v1/memory/ingest") {
     log.push({ kind: "aelios.ingest", body: json, auth });
     return reply({ data: { conversation_id: json.conversation_id, message_ids: [] } });

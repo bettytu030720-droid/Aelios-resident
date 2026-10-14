@@ -7,7 +7,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 网页门（public/，WEB_KEY）────────────▶ Worker /web/* ──┤
                                                      ▼
                          Resident（一个 Durable Object，一段对话）
-            模型（网页上选）← 人设（网页上填）+ 聊天规矩 + Aelios 开机包；工具：memory_recall、可选查网页
+            模型（网页上选）← 人设（网页上填）+ 聊天规矩 + Aelios 开机包；工具：memory_recall、web_search、web_fetch
             每轮记进 Aelios；超过 LETTER_AFTER_TOKENS 写交接信；到点可以主动找你
 ```
 
@@ -20,14 +20,14 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **Aelios 长期记忆**：她每发一条，回之前先拿这句去 Aelios 搜一下，最近没想起过的几条贴在这句后面给模型看，标成「想起的旧事」（自动浮现）；贴上的跟着那条留在记录里、以后不再改，所以缓存照样命中，网页、Telegram 和存回 Aelios 的都看不到它。另外有 `memory_recall` 工具，想不起来时自己查；每一轮都记进 Aelios（夜里 Dream 照常整理）；Aelios 的开机包（昨天的日记、珍贵原话、黑话表）放进系统提示，最多 6 小时取一次。
 - **交接信**：对话超过 `LETTER_AFTER_TOKENS`，较早的部分由住户自己写成一封信（第一人称，写给之后的自己），最近 `KEEP_RECENT_TOKENS` 原样留着。信存在 Durable Object 里，也记进 Aelios；`SHOW_LETTER=true` 时会发到 Telegram 给你看。
 - **主动找你**：`CHECKIN_SCHEDULE` 填了（比如 `every day at 09:00`），到点住户自己想想要不要找你；不合适打扰就不发。
-- **查网页**（默认关）：`WEB_SEARCH=on` 给模型一个搜索工具（按次收 AI Gateway 额度，见下）；`FETCH_ALLOWLIST` 填几个网站，模型可以免费读这些网站的页面。
+- **查网页**（默认开）：`web_search` 搜网（Cloudflare 的 Web Search，按次收一点 AI Gateway 额度，见下）；`web_fetch` 把一个网页读成 Markdown，搜到的结果、你发的链接都能打开，本机和内网地址一律不读。读网页默认是住户自己读，HTML 用 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的转换器转；你部署了 web-fetch 的话，填 `WEB_FETCH_URL` 和 `WEB_FETCH_KEY` 就改走它，要靠浏览器才显示得出来的页面也能读，长页面只取跟问题有关的部分。
 - **命令**：`/status` 看模型、人设、对话长度、交接信封数、上一次调用的缓存命中；`/letter` 看最近一封信；`/handoff` 马上写信。
 
 ## 测过什么
 
 本地用假 Telegram、假 Aelios、脚本模型跑 `test/run.mjs`：
 
-- 主流程 23 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；自动浮现（同一条记忆不重复浮现，之前浮现的原样留在那条后面，不存回 Aelios、网页上看不到）；每轮记进 Aelios；连发三条并成一轮；`/status`、`/letter`、`/handoff`（写信后对话里带着信）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
+- 主流程 24 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；`web_fetch` 走 web-fetch Worker、本机地址拒读；自动浮现（同一条记忆不重复浮现，之前浮现的原样留在那条后面，不存回 Aelios、网页上看不到）；每轮记进 Aelios；连发三条并成一轮；`/status`、`/letter`、`/handoff`（写信后对话里带着信）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
 - 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
 - 自动交接信：把门槛调低连聊 8 轮，自己写了信、发到 Telegram、记进 Aelios。
 - 回复写到一半把进程杀掉：重启后住户自己醒过来，发一句「刚才回到一半断了，再发一次好吗？」，不会把半截重发一遍。
@@ -66,15 +66,16 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | `KEEP_RECENT_TOKENS` | `6000` | 写信后最近多少 token 原样留着 |
 | `SHOW_LETTER` | `true` | 写了信发到 Telegram 给你看 |
 | `AELIOS_URL` / `AELIOS_NAMESPACE` | 空 / `default` | 长期记忆；不填就不接 |
-| `WEB_SEARCH` | `off` | `on` 打开搜索工具 |
-| `FETCH_ALLOWLIST` | 空 | 模型可以读的网站，逗号隔开，如 `https://www.bbc.com/zhongwen/**` |
+| `WEB_SEARCH` | `on` | `off` 关掉搜网 |
+| `WEB_FETCH` | `on` | `off` 关掉读网页 |
+| `WEB_FETCH_URL` | 空（住户自己读） | 你的 web-fetch Worker 地址，如 `https://web-fetch.<你的子域>.workers.dev`；还要配 Secret `WEB_FETCH_KEY`（它的 `API_KEYS` 里的一把） |
 | `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |
 
 ## 花钱吗
 
 - **Workers 免费档**：超出免费额度是报错，不扣钱。Durable Object 每天 10 万次请求，Workers AI 每天 1 万 neurons，UTC 0 点重置。闲着能休眠的 Durable Object 不算时长费。网页门开着时每 5 秒刷新一次，一小时大约 720 次请求，关掉页面或切到后台就停。
 - **默认模型** `glm-4.7-flash`：免费档能用（DeepSeek v4、Kimi、GLM 5.3 这些在 Workers AI 上要付费账户）。按官方价目，每百万输入 token 5500 neurons、输出 36400 neurons，一万 neurons 大约够每天 80 到 200 轮，看对话多长（估算）。定时找你每次也算一轮。
-- **搜索**（`WEB_SEARCH=on`）：走 AI Gateway 的 Web Search，默认用 Gateway 额度按次付费，没有额度就报错。`FETCH_ALLOWLIST` 读指定网站不收钱。
+- **搜网**：走 AI Gateway 的 Web Search，用 Gateway 额度按次付费，默认的 Ceramic.ai 是每 1000 次 0.25 美元（10-14 查的官方价），没有额度就报错。读网页住户自己读不收钱；走 web-fetch 的话按那边的配置算（它压缩长页面会调模型）。
 - **Workers Paid（5 美元/月）**：超出包含额度才按量收，这个量级基本碰不到。
 - **换 Claude**：走 AI Gateway，花的是 Gateway 的预付额度；Gateway 里存了你自己的 Anthropic key 时用那把。每轮带缓存标记，命中的部分按缓存价算。Cloudflare 这条路只收一整段文字的 system，AI SDK 发的是一组文字块，所以住户在发出去前把它们合成一段（`src/claude-run.ts`），缓存标记照带。用 Max 附带的 API key 时，人设里别出现「Claude Code」这几个字。
 
@@ -89,6 +90,8 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 - [deep-chat](https://github.com/OvidijusParsiunas/deep-chat) 2.5.1，聊天界面，MIT（`deep-chat-LICENSE.txt`）
 - [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9，换模型和人设页，MIT（`alpine-LICENSE.txt`）
+
+读网页的 HTML 转 Markdown 和网址检查是 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的原文件，MIT，在 `src/web/`。
 
 换模型用的目录在 `public/models.json`，从 [Cloudflare 模型目录](https://developers.cloudflare.com/ai/models/)里挑的文字模型。Cloudflare 上了新模型想让它出现在列表里，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
 

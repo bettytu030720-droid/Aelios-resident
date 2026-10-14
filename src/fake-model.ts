@@ -42,6 +42,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
 
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
   if (said.includes("查记忆")) return { tool: "memory_recall", input: { query: "生日" } };
+  if (said.includes("读新闻")) return { tool: "web_fetch", input: { url: "https://example.com/news", query: "今天发生了什么" } };
+  if (said.includes("读本机")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   if (said.includes("开机包")) {
     return { text: system.includes("[长期记忆开机包]") && system.includes("一起去看海") ? "开机包在。" : "没有开机包。" };
   }

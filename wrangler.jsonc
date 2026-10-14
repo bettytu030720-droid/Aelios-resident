@@ -24,12 +24,13 @@
   // Dashboard → Worker → Settings → Variables and Secrets (type Text). See README for the list:
   //   AI_GATEWAY_ID, TG_BOT_USERNAME, TG_ALLOWED, TIME_ZONE, DEBOUNCE_SECONDS,
   //   LETTER_AFTER_TOKENS, KEEP_RECENT_TOKENS, SHOW_LETTER, AELIOS_URL, AELIOS_NAMESPACE,
-  //   WEB_SEARCH, FETCH_ALLOWLIST, CHECKIN_SCHEDULE
+  //   WEB_SEARCH, WEB_FETCH, WEB_FETCH_URL, CHECKIN_SCHEDULE
   // Secrets (Dashboard → Worker → Settings → Variables and Secrets, type Secret):
   //   TG_BOT_TOKEN         from @BotFather
   //   TG_WEBHOOK_SECRET    any long random string you make up (letters, digits, _ and -)
   //   AELIOS_API_KEY       the value of your Aelios' CHATBOX_API_KEY, IM_API_KEY or MEMORY_MCP_API_KEY
   //                        (all read and write the "default" space; only CHATBOX_API_KEY lets AELIOS_NAMESPACE pick another)
   //   WEB_KEY              the password for the web door; unset = the web door stays shut
+  //   WEB_FETCH_KEY        one of the API_KEYS of your web-fetch Worker, if WEB_FETCH_URL points at one
   // The model and the persona are not secrets or vars: pick them on the web door.
 }

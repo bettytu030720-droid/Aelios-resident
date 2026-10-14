@@ -131,6 +131,23 @@ if (phase === "main") {
     assert.equal(recall.auth, "Bearer test-key");
   });
 
+  await step("web_fetch reads a page through the web-fetch Worker, and refuses local addresses", async () => {
+    let before = (await sent()).length;
+    await post("帮我读新闻");
+    const out = (await waitForSends(before, 2)).join("\n");
+    assert.match(out, /^我查到了：/);
+    assert.ok(out.includes("测试新闻") && out.includes("今天的测试新闻：一切正常。"), out);
+    const call = (await log()).filter((e) => e.kind === "webfetch").at(-1);
+    assert.equal(call.auth, "Bearer test-fetch-key");
+    assert.equal(call.body.url, "https://example.com/news");
+    assert.equal(call.body.query, "今天发生了什么");
+    before = (await sent()).length;
+    await post("帮我读本机");
+    const [refused] = await waitForSends(before, 1);
+    assert.match(refused, /^我查到了：Cannot read this URL/);
+    assert.equal((await log()).filter((e) => e.kind === "webfetch").length, 1, "the local address never left the resident");
+  });
+
   await step("a memory comes up by itself before the reply, once, and stays on its message", async () => {
     let before = (await sent()).length;
     await post("生日那天想浮现一下");

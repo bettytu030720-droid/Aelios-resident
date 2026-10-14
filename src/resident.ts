@@ -21,7 +21,6 @@ import {
   type ThinkMessengers
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
-import { createFetchTools } from "@cloudflare/think/tools/fetch";
 import { createCompactFunction } from "agents/sessions";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "ai";
@@ -31,6 +30,7 @@ import { CHAT_RULES, LETTER_INSTRUCTIONS, SKIP, checkinPrompt, stamp } from "./p
 import { claudeSystemAsText } from "./claude-run";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
+import { webFetchTool, webFetchVia } from "./web/fetch";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -50,13 +50,6 @@ const PROMPT_CACHE = { anthropic: { cacheControl: { type: "ephemeral" } } };
 function num(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function list(value: string | undefined): string[] {
-  return (value ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
 }
 
 /** One line of the web page's conversation view. */
@@ -203,15 +196,19 @@ export class Resident extends Think<Env> {
     return { telegram: definition };
   }
 
+  // Searching costs a little Gateway credit per search, and needs the AI binding (absent in local tests).
+  private get webSearchOn(): boolean {
+    return Boolean(this.env.AI) && this.env.WEB_SEARCH?.trim().toLowerCase() !== "off";
+  }
+
   override getTools(): ToolSet {
     const tools: ToolSet = {};
     const memory = aeliosConfig(this.env);
     if (memory) tools.memory_recall = recallTool(memory);
-    if (this.env.WEB_SEARCH?.trim().toLowerCase() === "on") {
+    if (this.webSearchOn) {
       tools.web_search = webSearchTool({ binding: this.env.AI, gateway: this.env.AI_GATEWAY_ID?.trim() || undefined });
     }
-    const allowlist = list(this.env.FETCH_ALLOWLIST);
-    if (allowlist.length) Object.assign(tools, createFetchTools({ allowlist }));
+    if (this.env.WEB_FETCH?.trim().toLowerCase() !== "off") tools.web_fetch = webFetchTool(this.env);
     return tools;
   }
 
@@ -467,7 +464,7 @@ export class Resident extends Think<Env> {
       `交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
       `长期记忆 Aelios：${aeliosConfig(this.env) ? "开，每条消息先自动想一下相关的旧事" : "关"}`,
-      `查网页：搜索${on(this.env.WEB_SEARCH?.trim().toLowerCase() === "on")}，指定网站 ${list(this.env.FETCH_ALLOWLIST).length} 个`,
+      `查网页：搜索${on(this.webSearchOn)}，读网页${this.env.WEB_FETCH?.trim().toLowerCase() === "off" ? "关" : `开（${webFetchVia(this.env)}）`}`,
       `主动找你：${this.env.CHECKIN_SCHEDULE?.trim() || "关"}`
     ].join("\n");
   }
