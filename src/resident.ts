@@ -28,6 +28,7 @@ import { generateText, type ToolSet, type UIMessage } from "ai";
 import { aeliosConfig, fetchBoot, ingest, pin, recallTool, type IngestMessage } from "./aelios";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, LETTER_INSTRUCTIONS, SKIP, checkinPrompt, stamp } from "./prompts";
+import { claudeSystemAsText } from "./claude-run";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
@@ -157,6 +158,11 @@ export class Resident extends Think<Env> {
   override getGateway() {
     const id = this.env.AI_GATEWAY_ID?.trim();
     return id ? { id } : undefined;
+  }
+
+  // Claude on Cloudflare's run path wants `system` as one string (see claude-run.ts).
+  override getAIBinding(): Ai {
+    return claudeSystemAsText(super.getAIBinding());
   }
 
   // Think asks for this on every turn (nothing freezes it), so a persona saved on the web applies to the next message.
@@ -484,8 +490,11 @@ export class Resident extends Think<Env> {
       try {
         await generateText({
           model: this.resolveModel(this.modelFor(model)),
+          // Shaped like a real turn (a system prompt and the cache marker), so a model that would fail in the chat fails here.
+          system: "你是一个测试助手。",
           prompt: "只回一个字：好",
           maxOutputTokens: 64,
+          providerOptions: PROMPT_CACHE,
           abortSignal: AbortSignal.timeout(30_000)
         });
       } catch (error) {
