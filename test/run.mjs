@@ -22,13 +22,18 @@ const plain = (text) => text.replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, "$1");
 const sent = async () =>
   (await log()).filter((e) => e.kind === "tg.sendMessage").map((e) => plain(e.body.text ?? ""));
 
-async function post(text, { username = "her_test", messageId = nextId++, secret = SECRET, chatType = "private", chatId = 42 } = {}) {
+async function post(text, { username = "her_test", messageId = nextId++, secret = SECRET, chatType = "private", chatId = 42, photo } = {}) {
+  // A photo comes in two sizes, its text as the caption.
+  const picture = photo && {
+    photo: ["s", ""].map((size, i) => ({ file_id: `${photo}${size}`, file_unique_id: `u-${photo}${size}`, width: 90 * (i * 8 + 1), height: 90 * (i * 8 + 1), file_size: 12 + i })),
+    caption: text
+  };
   const update = {
     update_id: messageId,
     message: {
       message_id: messageId,
       date: Math.floor(Date.now() / 1000),
-      text,
+      ...(picture ?? { text }),
       from: { id: chatId, is_bot: false, username, first_name: "Her" },
       chat: { id: chatId, type: chatType, username, first_name: "Her" }
     }
@@ -270,6 +275,21 @@ if (phase === "main") {
     assert.match(reply.text, /^收到：\[[^\]]+\] 网页上说一句/);
     await sleep(1500);
     assert.equal((await sent()).length, before);
+  });
+
+  await step("a photo she sends reaches the model as a picture, and the web page shows it", async () => {
+    const before = (await sent()).length;
+    await post("看图", { photo: "photo-1" });
+    assert.deepEqual(await waitForSends(before, 1), ["看到 1 张图。"]);
+    assert.ok((await log()).some((e) => e.kind === "tg.file" && e.path === "photos/photo-1.jpg"), "the largest size was downloaded");
+    const { data } = await (await web("/web/messages", "test-web-key")).json();
+    assert.equal(data.findLast((l) => l.role === "user").text, "看图\n[图片]");
+  });
+
+  await step("a photo that cannot be downloaded stays a line of text", async () => {
+    const before = (await sent()).length;
+    await post("看图", { photo: "gone" });
+    assert.deepEqual(await waitForSends(before, 1), ["看到 0 张图，还有一行附件说明。"]);
   });
 
   await step("the heart keeps a line in Aelios' precious memories", async () => {

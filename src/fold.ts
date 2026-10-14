@@ -7,8 +7,10 @@ import type { CompactionFunction, SessionMessage } from "agents/sessions";
 const KEEP_HEAD = 3;
 /** Role and framing of one message. */
 const PER_MESSAGE = 4;
+/** A picture she sent, about what Claude charges for a photo of the size Telegram sends. */
+const PER_PICTURE = 1600;
 /** Chinese, Japanese and Korean characters (with their punctuation and full-width forms): about a token each. */
-const WIDE = /[⺀-鿿가-힯豈-﫿︰-﹏＀-￯]|[\u{20000}-\u{3134f}]/gu;
+const WIDE = /[\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]|[\u{20000}-\u{3134f}]/gu;
 
 /** Tokens in a piece of text: one for each wide character, one for each 4 other characters. */
 export function tokensIn(text: string): number {
@@ -27,13 +29,14 @@ function tokensOfValue(value: unknown): number {
 }
 
 /**
- * Tokens one message adds to a request: its text and its tool calls with their results. Thinking is left
+ * Tokens one message adds to a request: its text, pictures, and tool calls with their results. Thinking is left
  * out: earlier turns' thinking is not sent to Claude again (claude-run.ts).
  */
 export function tokensOf(message: SessionMessage): number {
   let tokens = PER_MESSAGE;
   for (const part of message.parts as { type: string; text?: string; input?: unknown; output?: unknown }[]) {
     if (part.type === "text") tokens += tokensIn(part.text ?? "");
+    else if (part.type === "file") tokens += PER_PICTURE;
     else if (part.type.startsWith("tool-") || part.type === "dynamic-tool") tokens += tokensOfValue(part.input) + tokensOfValue(part.output);
   }
   return tokens;

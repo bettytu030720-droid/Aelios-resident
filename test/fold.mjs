@@ -40,10 +40,12 @@ await step("a Chinese character counts as a token, other text as a quarter", () 
   assert.equal(tokensIn("𠀀𠀁"), 2, "characters outside the basic plane count once each");
 });
 
-await step("thinking does not count, tool calls and their results do", () => {
+await step("thinking does not count, pictures, tool calls and their results do", () => {
   const plain = tokensOf({ id: "a", role: "assistant", parts: [{ type: "text", text: "好" }] });
   const thought = tokensOf({ id: "a", role: "assistant", parts: [{ type: "reasoning", text: "x".repeat(4000) }, { type: "text", text: "好" }] });
   assert.equal(thought, plain);
+  const picture = tokensOf({ id: "u", role: "user", parts: [{ type: "file", mediaType: "image/jpeg", url: "data:image/jpeg;base64,AAAA" }] });
+  assert.equal(picture, 4 + 1600);
   const tool = tokensOf({ id: "a", role: "assistant", parts: [{ type: "tool-web_search", input: { query: "杭州天气" }, output: "多云转阵雨" }] });
   assert.ok(tool >= 4 + 4 + 5, `tool parts counted: ${tool}`);
 });

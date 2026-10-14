@@ -72,6 +72,13 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const earlier = users.slice(0, -1).filter(carries).length;
     return { text: `这条：${carries(user) ? "有" : "无"}，之前带着的：${earlier}` };
   }
+  // How many pictures came with her message, and whether Think's line of attachment text is still there.
+  if (said.includes("看图")) {
+    const asked = [...prompt].reverse().find((m) => m.role === "user");
+    const parts = Array.isArray(asked?.content) ? (asked.content as { type: string; mediaType?: string }[]) : [];
+    const pictures = parts.filter((part) => part.type === "file" && part.mediaType?.startsWith("image/")).length;
+    return { text: `看到 ${pictures} 张图${user.includes("Attachments:") ? "，还有一行附件说明" : ""}。` };
+  }
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // The first check-in says something; later ones pass, to exercise SKIP.
   if (said.includes("a scheduled check-in")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };

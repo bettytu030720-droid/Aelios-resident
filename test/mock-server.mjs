@@ -20,6 +20,14 @@ const server = http.createServer(async (req, res) => {
     return reply({ ok: true });
   }
 
+  // A file the bot downloads after getFile: a few bytes that start like a JPEG.
+  const file = url.pathname.match(/^\/file\/bot[^/]+\/(.+)$/);
+  if (file) {
+    log.push({ kind: "tg.file", path: file[1] });
+    res.writeHead(200, { "content-type": "image/jpeg" });
+    return res.end(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]));
+  }
+
   const tg = url.pathname.match(/^\/bot[^/]+\/(\w+)$/);
   if (tg) {
     const method = tg[1];
@@ -32,6 +40,10 @@ const server = http.createServer(async (req, res) => {
       case "sendMessage":
       case "editMessageText":
         return reply({ ok: true, result: message() });
+      case "getFile":
+        // "gone" stands for a file Telegram no longer has.
+        if (json?.file_id === "gone") return reply({ ok: false, error_code: 400, description: "Bad Request: invalid file_id" }, 400);
+        return reply({ ok: true, result: { file_id: json?.file_id, file_path: `photos/${json?.file_id}.jpg` } });
       case "sendChatAction":
       case "setWebhook":
       case "setMyCommands":

@@ -3,6 +3,7 @@
 
 import {
   Think,
+  type ChatOptions,
   type ChatResponseResult,
   type MessageMetadataCallback,
   type SessionMessage,
@@ -11,12 +12,14 @@ import {
   type ThinkScheduledTasks,
   type ThinkSession,
   type StepContext,
+  type StreamCallback,
   type TurnConfig,
   type TurnContext
 } from "@cloudflare/think";
 import {
   defaultChatSdkEvent,
   type MessengerConcurrency,
+  type MessengerContext,
   type MessengerEvent,
   type NormalizedMessengerDefinition,
   type ThinkMessengers
@@ -29,6 +32,7 @@ import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeOnRunPath } from "./claude-run";
 import { foldIntoLetter, tokensOf } from "./fold";
+import { withPictures, type Download } from "./pictures";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
@@ -96,6 +100,8 @@ export type WebPersona = {
 
 const RECALLED_BLOCK = /<(recalled|想起的旧事)>[\s\S]*?<\/\1>\n?/g;
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
+// What Think leaves of a picture once it has aged out of the conversation (its media eviction).
+const EVICTED_PICTURE = /\[evicted image\/[^\]]*\]/g;
 
 /** The letter in the letter turn's answer: its text after the last tool call, should the model have made one. */
 function letterText(answer: readonly { parts?: readonly { type: string; text?: string }[] }[]): string {
@@ -221,8 +227,26 @@ export class Resident extends Think<Env> {
       toEvent: (input) =>
         stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), timeZone)
     });
-    useBubbles(definition.adapter as unknown as BubbleAdapter);
+    const adapter = definition.adapter as unknown as BubbleAdapter & { downloadFile: Download };
+    useBubbles(adapter);
+    this.#telegramFile = (fileId) => adapter.downloadFile(fileId);
     return { telegram: definition };
+  }
+
+  /** Downloads a file she sent on Telegram (set by getMessengers). */
+  #telegramFile: Download | null = null;
+
+  /** A Telegram turn: the photos she sent go into her message as pictures (pictures.ts). */
+  override async chatWithMessengerContext(
+    userMessage: string | UIMessage,
+    callback: StreamCallback,
+    context: MessengerContext,
+    options?: ChatOptions
+  ): Promise<void> {
+    if (!this.#telegramFile) this.getMessengers();
+    const download = this.#telegramFile;
+    const message = typeof userMessage === "string" || !download ? userMessage : await withPictures(userMessage, context, download);
+    return super.chatWithMessengerContext(message, callback, context, options);
   }
 
   override getTools(): ToolSet {
@@ -618,7 +642,9 @@ export class Resident extends Think<Env> {
           continue;
         }
         via = meta?.messenger ? "telegram" : "web";
-        lines.push({ id: message.id, role: "user", kind: "chat", text: text.replace(STAMP_PREFIX, ""), at, via });
+        const pictures = message.parts.filter((part) => part.type === "file").length + (text.match(EVICTED_PICTURE)?.length ?? 0);
+        const said = text.replace(EVICTED_PICTURE, "").trim().replace(STAMP_PREFIX, "");
+        lines.push({ id: message.id, role: "user", kind: "chat", text: [said, ...Array(pictures).fill("[图片]")].filter(Boolean).join("\n"), at, via });
         continue;
       }
       if (message.role !== "assistant" || !text) continue;
