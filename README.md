@@ -31,6 +31,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - 主流程 25 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；`memory_remember` 走 Aelios 的 MCP；`web_fetch` 本机地址拒读；自动浮现（同一条记忆不重复浮现，之前浮现的原样留在那条后面，不存回 Aelios、网页上看不到）；每轮记进 Aelios；连发三条并成一轮；`/status`、`/letter`、`/handoff`（写信后对话里带着信；写信那一轮发给模型的前文和上一轮一字不差，所以吃得到缓存）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记（1 小时）；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
 - 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
 - 空闲交接信：把空闲时间调成 3 秒，聊 3 轮后自己写了信：没发 Telegram、记进 Aelios、网页上看得到信、写信的那一问一答撤掉了、前文和上一轮一字不差；之后再说一句会再写一封，不说话就不再写。
+- 发给 Claude 前的整理（`node test/claude-run.mjs`）4 项：system 合成一段；之前几轮的思考块拿掉、回复和工具调用留着、这一轮工具之间的思考留着、只有思考的那条整条去掉；第一轮和没思考块的原样发；别家模型不动。另外用真的 AI SDK 和 Cloudflare provider 核过：不整理时历史里的思考块会带着签名发出去，整理后没有。
 - 读网页（`node test/web.mjs`，不用起 Worker，网络全是假的）17 项：跳转先查再跟；跳到本机或内网（包括域名解析到内网）不跟；无限跳转会停；本机地址直接拒；JavaScript 空壳交给浏览器且不加载图片、浏览器里也拦内网 IP；没有浏览器时原样返回；404 和图片不送浏览器；读过的页面再问不重抓、同一页同一个问题连压缩结果也不重算；模型回 NOTHING_RELEVANT 的段落丢掉、只是提到这个词的留着；带问题的长页只留摘出来的部分（Qwen3 带 `/no_think`）；换成 Claude 之类的别家模型也能压、不带 `/no_think`；短页不送模型；回答里的 think 块去掉；模型挂了原样返回；工具超时会把模型调用一起取消；GBK 页面（GBK 在本地 workerd 里也核过能解）。
 - 回复写到一半把进程杀掉：重启后住户自己醒过来，发一句「刚才回到一半断了，再发一次好吗？」，不会把半截重发一遍。
 - 网页门在 Chromium 里点过（手机宽度夜间、电脑宽度白天）：错钥匙提示、手机宽度没有横向滚动、发消息收到回复（自己那条也带上时间和心形）、心形按钮、Telegram 那边发的消息 5 秒内自己出现且不重复、交接信折叠；换模型：搜 `opus` 只出 opus、调不通的不换并显示原因、目录里没有的 id 可以直接试、方向键和回车能选、Esc 关掉；人设：没填时的提醒、写了「Claude Code」会提示、保存后提醒消失。
@@ -80,7 +81,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **默认模型** `glm-4.7-flash`：免费档能用（DeepSeek v4、Kimi、GLM 5.3 这些在 Workers AI 上要付费账户）。按官方价目，每百万输入 token 5500 neurons、输出 36400 neurons，一万 neurons 大约够每天 80 到 200 轮，看对话多长（估算）。定时找你每次也算一轮。
 - **搜网**：用你自己的 Tavily、Brave、Perplexity key 时按那几家自己的免费额度和价格算。没填自己的 key 时走 AI Gateway 的 Web Search，用 Gateway 额度按次付费，默认的 Ceramic.ai 是每 1000 次 0.25 美元（10-14 查的官方价），没有额度就报错。读网页：普通抓不收钱；靠浏览器的页面用 Cloudflare 浏览器渲染，Workers Paid 每月含 10 小时，超出每小时 0.09 美元（免费档每天 10 分钟），一页几秒；长页压缩默认走 Workers AI 的 Qwen3 30B，每百万 token 输入 0.051、输出 0.335 美元（10-14 查的官方价），一页大约千分之一美元；`WEB_FETCH_MODEL` 换成 Claude 之类的收费模型时，按那家的价格从 AI Gateway 额度里扣，一页最多 6 段、每段约 6000 token 进、1500 token 出。
 - **Workers Paid（5 美元/月）**：超出包含额度才按量收，这个量级基本碰不到。
-- **换 Claude**：走 AI Gateway，花的是 Gateway 的预付额度；Gateway 里存了你自己的 Anthropic key 时用那把。每轮带缓存标记，命中的部分按缓存价算（读是输入价的 1/10）；1 小时缓存写入是输入价的 2 倍（5 分钟的是 1.25 倍），换来的是停一会儿再聊、写交接信都还能读缓存。Cloudflare 这条路只收一整段文字的 system，AI SDK 发的是一组文字块，所以住户在发出去前把它们合成一段（`src/claude-run.ts`），缓存标记照带。用 Max 附带的 API key 时，人设里别出现「Claude Code」这几个字。
+- **换 Claude**：走 AI Gateway，花的是 Gateway 的预付额度；Gateway 里存了你自己的 Anthropic key 时用那把。每轮带缓存标记，命中的部分按缓存价算（读是输入价的 1/10）；1 小时缓存写入是输入价的 2 倍（5 分钟的是 1.25 倍），换来的是停一会儿再聊、写交接信都还能读缓存。Cloudflare 这条路只收一整段文字的 system，AI SDK 发的是一组文字块，所以住户在发出去前把它们合成一段（`src/claude-run.ts`），缓存标记照带。Claude 的思考块签名绑着写下它时的系统提示、工具和前面每条消息，而住户会改这些（网页上换人设、开机包几小时刷新一次、交接信收掉旧聊天、部署了新规矩或新工具），旧思考块原样发回去就会报「bound to a different conversation」、之后每轮都失败；所以同一个文件里也把之前几轮的思考块拿掉，只回传这一轮工具调用之间的思考，回复本身都留着。用 Max 附带的 API key 时，人设里别出现「Claude Code」这几个字。
 
 ## 还没做
 
@@ -107,4 +108,4 @@ NO_PROXY=127.0.0.1 npx wrangler dev --config wrangler.test.jsonc --port 8787 &
 NO_PROXY=127.0.0.1 node test/run.mjs main
 ```
 
-`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），不需要登录 Cloudflare，也不花钱。定时和空闲交接信要另外起一次，见 `test/run.mjs` 开头的说明。读网页的测试 `node test/web.mjs` 不用起 Worker。
+`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），不需要登录 Cloudflare，也不花钱。定时和空闲交接信要另外起一次，见 `test/run.mjs` 开头的说明。读网页的测试 `node test/web.mjs` 和 `node test/claude-run.mjs` 不用起 Worker。

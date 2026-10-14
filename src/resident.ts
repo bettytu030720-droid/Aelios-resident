@@ -28,7 +28,7 @@ import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "a
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig, type IngestMessage } from "./aelios";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
-import { claudeSystemAsText } from "./claude-run";
+import { claudeOnRunPath } from "./claude-run";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
@@ -183,9 +183,9 @@ export class Resident extends Think<Env> {
     return id ? { id } : undefined;
   }
 
-  // Claude on Cloudflare's run path wants `system` as one string (see claude-run.ts).
+  // Claude on Cloudflare's run path: `system` as one string, no thinking from earlier turns (see claude-run.ts).
   override getAIBinding(): Ai {
-    return claudeSystemAsText(super.getAIBinding());
+    return claudeOnRunPath(super.getAIBinding());
   }
 
   // Think asks for this on every turn (nothing freezes it), so a persona saved on the web applies to the next message.
