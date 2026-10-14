@@ -5,6 +5,7 @@ import {
   Think,
   type ChatResponseResult,
   type MessageMetadataCallback,
+  type SessionMessage,
   type ThinkModel,
   type ThinkScheduledTask,
   type ThinkScheduledTasks,
@@ -24,28 +25,42 @@ import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { createCompactFunction } from "agents/sessions";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "ai";
-import { aeliosConfig, fetchBoot, ingest, pin, recall, recallTool, type AeliosConfig, type IngestMessage } from "./aelios";
+import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig, type IngestMessage } from "./aelios";
 import { fakeModel } from "./fake-model";
-import { CHAT_RULES, LETTER_INSTRUCTIONS, SKIP, checkinPrompt, stamp } from "./prompts";
+import { CHAT_RULES, DEFAULT_PERSONA, LETTER_PREFIX, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeSystemAsText } from "./claude-run";
 import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
-import { webFetchTool, webFetchVia } from "./web/fetch";
+import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
+import { searchEngines, searchSource } from "./web/search";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
-// Used until a persona is written on the web page.
-const DEFAULT_PERSONA = "你是她的伴侣，在 Telegram 和网页上陪她聊天。";
 const PERSONA_MAX_CHARS = 30000;
 // How many earlier personas the web page can bring back.
 const PERSONA_VERSIONS = 10;
 // How many models that passed their trial call the web page's picker lists first.
 const RECENT_MODELS = 8;
 const BOOT_REFRESH_MS = 6 * 60 * 60 * 1000;
+// How long a page web_fetch read is kept, so asking about it again costs no second fetch.
+const PAGE_KEEP_MS = 60 * 60 * 1000;
 // Claude models ("anthropic/…") go out on Anthropic's Messages API, where this asks for prompt caching:
-// persona, rules, boot packet and the earlier turns are read from cache on the next turn.
+// persona, rules, boot packet and the earlier turns are read from cache on the next turn, for an hour by
+// default (CACHE_TTL=5m for five minutes; an hour costs 2x the input price to write, five minutes 1.25x).
 // Other providers ignore options under "anthropic".
-const PROMPT_CACHE = { anthropic: { cacheControl: { type: "ephemeral" } } };
+function promptCache(env: Env) {
+  const ttl = env.CACHE_TTL?.trim() === "5m" ? "5m" : "1h";
+  return { anthropic: { cacheControl: { type: "ephemeral", ttl } } };
+}
+
+/** Minutes of quiet after which the letter is written, while the conversation is still in the cache. 0 = never. */
+function idleMinutes(env: Env): number {
+  const setting = env.LETTER_IDLE_MINUTES?.trim().toLowerCase();
+  if (setting === "off") return 0;
+  const minutes = Number(setting);
+  if (setting && Number.isFinite(minutes) && minutes >= 0) return minutes;
+  return env.CACHE_TTL?.trim() === "5m" ? 4 : 55;
+}
 
 function num(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -76,8 +91,8 @@ export type WebPersona = {
   versions: { at: number; text: string }[];
 };
 
+const RECALLED_BLOCK = /<(recalled|想起的旧事)>[\s\S]*?<\/\1>\n?/g;
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
-const CHECKIN_PREFIX = "（这条不是她发的，是定时提醒";
 
 function textOf(message: { parts?: readonly { type: string; text?: string }[] } | undefined): string {
   return (message?.parts ?? [])
@@ -196,20 +211,40 @@ export class Resident extends Think<Env> {
     return { telegram: definition };
   }
 
-  // Searching costs a little Gateway credit per search, and needs the AI binding (absent in local tests).
-  private get webSearchOn(): boolean {
-    return Boolean(this.env.AI) && this.env.WEB_SEARCH?.trim().toLowerCase() !== "off";
-  }
-
   override getTools(): ToolSet {
     const tools: ToolSet = {};
     const memory = aeliosConfig(this.env);
-    if (memory) tools.memory_recall = recallTool(memory);
-    if (this.webSearchOn) {
-      tools.web_search = webSearchTool({ binding: this.env.AI, gateway: this.env.AI_GATEWAY_ID?.trim() || undefined });
+    if (memory) Object.assign(tools, memoryTools(memory));
+    const source = searchSource(this.env);
+    if (source) {
+      tools.web_search = webSearchTool({
+        source,
+        description: "Search the web for current information: news, facts, prices, events. Open a result with web_fetch.",
+        maxDescriptionChars: 400
+      });
     }
-    if (this.env.WEB_FETCH?.trim().toLowerCase() !== "off") tools.web_fetch = webFetchTool(this.env);
+    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.env, this.pageCache()));
     return tools;
+  }
+
+  private webFetchOn(): boolean {
+    return this.env.WEB_FETCH?.trim().toLowerCase() !== "off";
+  }
+
+  /** Pages web_fetch read in the last hour, in this agent's SQLite. */
+  private pageCache(): PageCache {
+    this.sql`CREATE TABLE IF NOT EXISTS res_pages (url TEXT PRIMARY KEY, at INTEGER NOT NULL, page TEXT NOT NULL)`;
+    return {
+      get: (url) => {
+        const [row] = this.sql<{ at: number; page: string }>`SELECT at, page FROM res_pages WHERE url = ${url}`;
+        return row && Date.now() - row.at < PAGE_KEEP_MS ? (JSON.parse(row.page) as Page) : null;
+      },
+      put: (url, page) => {
+        const now = Date.now();
+        this.sql`DELETE FROM res_pages WHERE at < ${now - PAGE_KEEP_MS}`;
+        this.sql`INSERT OR REPLACE INTO res_pages (url, at, page) VALUES (${url}, ${now}, ${JSON.stringify(page)})`;
+      }
+    };
   }
 
   override async beforeTurn(ctx: TurnContext): Promise<TurnConfig> {
@@ -224,7 +259,7 @@ export class Resident extends Think<Env> {
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
-      providerOptions: PROMPT_CACHE,
+      providerOptions: promptCache(this.env),
       ...(messages ? { messages } : {})
     };
   }
@@ -242,7 +277,7 @@ export class Resident extends Think<Env> {
     if (!ctx.continuation && last?.role === "user") {
       const said = userText(last);
       const key = await keyOf(said);
-      if (!texts.has(key) && !said.startsWith(CHECKIN_PREFIX)) {
+      if (!texts.has(key) && !isNote(said)) {
         const { text, ids } = await this.recallFor(memory, said, kept);
         // Kept even when empty, so a retried turn sees the same thing.
         this.sql`INSERT OR REPLACE INTO res_surfaced (key, text, ids) VALUES (${key}, ${text}, ${JSON.stringify(ids)})`;
@@ -314,48 +349,85 @@ export class Resident extends Think<Env> {
   }
 
   override configureSession(session: ThinkSession) {
+    // No token limit: a letter is written when she has been quiet for a while (idleLetter) or on /handoff.
     return session
       .onCompaction(
         createCompactFunction({
           keepRecentTokens: num(this.env.KEEP_RECENT_TOKENS, 6000),
-          summarize: (prompt) => this.writeLetter(prompt)
+          summarize: () => this.letterTurn()
         })
       )
-      .compactAfter(num(this.env.LETTER_AFTER_TOKENS, 24000))
       .onCompactionError((error) => console.error("letter: compaction failed", { error: String(error) }));
   }
 
-  /** Set while /handoff runs, so the letter goes back as the command's answer instead of a notice. */
-  #quietLetter = false;
+  /** Why the letter being written is written. Set while compact() runs. */
+  #letterReason: "idle" | "handoff" = "handoff";
 
   /**
-   * Compaction folds older turns into one overlay. Ours is a handoff letter from
-   * the resident to itself: the compaction prompt brings the turns (and the last
-   * letter), and its English summary instructions are swapped for ours.
+   * The handoff letter, written as one more turn of the same conversation: the request is the chat's own
+   * (system prompt, tools, every earlier message, exactly as the last turn sent them) plus one prompt at the
+   * end, so all of it is read from the prompt cache. The prompt and the letter are then taken out of the
+   * conversation again, and compaction folds the older turns into the letter.
    */
-  private async writeLetter(prompt: string): Promise<string> {
-    const notify = !this.#quietLetter;
-    const cut = prompt.search(/\n\n(Use this structure:|Update the summary\.)/);
-    const turns = cut > 0 ? prompt.slice(0, cut) : prompt;
-    const { text } = await generateText({
-      model: this.resolveModel(),
-      system: this.getSystemPrompt(),
-      prompt: `${turns}\n\n${LETTER_INSTRUCTIONS}`
-    });
-    const letter = text.trim();
-    if (!letter) return "";
+  private async letterTurn(): Promise<string> {
+    const prompt: UIMessage = {
+      id: `letter_${crypto.randomUUID()}`,
+      role: "user",
+      parts: [{ type: "text", text: letterPrompt(stamp(new Date(), this.tz), this.#letterReason === "idle") }]
+    };
+    const result = await this.saveMessages([prompt]);
+    const history = await this.session.getHistory();
+    const at = history.findIndex((message) => message.id === prompt.id);
+    const answer: SessionMessage[] = [];
+    for (const message of at < 0 ? [] : history.slice(at + 1)) {
+      if (message.role === "user") break;
+      answer.push(message);
+    }
+    await this.session.deleteMessages([prompt.id, ...answer.map((message) => message.id)]);
+    if (result.status !== "completed") throw new Error(`the letter turn ended ${result.status}`);
+    const letter = answer.map((message) => textOf(message)).join("\n").trim();
+    if (!letter || letter === SKIP) return "";
     this.letters();
     this.sql`INSERT INTO res_letters (at, text) VALUES (${Date.now()}, ${letter})`;
-    this.ctx.waitUntil(this.afterLetter(letter, notify));
-    return `[交接信：之前的你在 ${stamp(new Date(), this.tz)} 写的]\n${letter}`;
+    await this.ctx.storage.put("wrote_since_letter", false);
+    const memory = aeliosConfig(this.env);
+    if (memory) this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: `（交接信）${letter}` }], "aelios-resident:letter"));
+    return `[Handoff letter you wrote on ${stamp(new Date(), this.tz)}]\n${letter}`;
   }
 
-  private async afterLetter(letter: string, notify: boolean): Promise<void> {
-    const memory = aeliosConfig(this.env);
-    if (memory) await ingest(memory, [{ role: "assistant", content: `（交接信）${letter}` }], "aelios-resident:letter");
-    if (notify && this.env.SHOW_LETTER?.trim() !== "false") {
-      await this.toTelegram(`（聊天有点长了，我给之后的自己写了封交接信，旧的聊天收起来了）\n\n${letter}`);
+  /** Fold the older turns into a letter now. False when there was nothing to fold. */
+  private async writeLetter(reason: "idle" | "handoff"): Promise<boolean> {
+    this.#letterReason = reason;
+    try {
+      return Boolean(await this.session.compact());
+    } finally {
+      this.#letterReason = "handoff";
     }
+  }
+
+  /** After a turn: plan the idle letter, replacing the one planned after the turn before. */
+  private async planIdleLetter(): Promise<void> {
+    const minutes = idleMinutes(this.env);
+    const previous = await this.ctx.storage.get<string>("idle_letter");
+    if (previous) await this.cancelSchedule(previous).catch(() => false);
+    if (!minutes || !(await this.ctx.storage.get<boolean>("wrote_since_letter"))) {
+      await this.ctx.storage.delete("idle_letter");
+      return;
+    }
+    const schedule = await this.schedule(minutes * 60, "idleLetter");
+    await this.ctx.storage.put("idle_letter", schedule.id);
+  }
+
+  /**
+   * Called LETTER_IDLE_MINUTES (55) after the last turn: she has gone quiet, and the conversation is
+   * still in the one-hour cache, so the letter costs little to write. Nothing more happens until she writes again.
+   */
+  async idleLetter(): Promise<void> {
+    await this.ctx.storage.delete("idle_letter");
+    // A turn that is running now will plan its own letter when it ends.
+    if (this.activeTurn) return;
+    if (!(await this.ctx.storage.get<boolean>("wrote_since_letter"))) return;
+    await this.writeLetter("idle");
   }
 
   private letters(): { at: number; text: string }[] {
@@ -377,8 +449,14 @@ export class Resident extends Think<Env> {
   }
 
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
+    const asked = this.userMessageBefore(result.message.id);
+    // The letter turn: letterTurn() takes the answer and removes both messages.
+    if (asked.startsWith(LETTER_PREFIX)) return;
+    if (asked && !isNote(asked)) await this.ctx.storage.put("wrote_since_letter", true);
+    await this.planIdleLetter();
     if (result.status !== "completed") return;
-    const reply = textOf(result.message).trim();
+    // Should the model ever repeat a <recalled> block, it does not go back into Aelios as something it said.
+    const reply = textOf(result.message).replace(RECALLED_BLOCK, "").trim();
     const trigger = this.activeTurn?.trigger;
     // A scheduled check-in has no messenger turn to reply into: post it ourselves.
     const proactive = trigger === "scheduled" || trigger === "submission";
@@ -388,10 +466,7 @@ export class Resident extends Think<Env> {
     const memory = aeliosConfig(this.env);
     if (!memory || !reply || reply === SKIP) return;
     const messages: IngestMessage[] = [];
-    if (!proactive) {
-      const user = this.userMessageBefore(result.message.id);
-      if (user) messages.push({ role: "user", content: user });
-    }
+    if (!proactive && asked) messages.push({ role: "user", content: asked });
     messages.push({ role: "assistant", content: reply });
     this.ctx.waitUntil(ingest(memory, messages, proactive ? "aelios-resident:checkin" : "aelios-resident"));
   }
@@ -433,12 +508,7 @@ export class Resident extends Think<Env> {
       }
       case "handoff": {
         const before = this.letters()[0]?.at;
-        this.#quietLetter = true;
-        try {
-          await this.session.compact();
-        } finally {
-          this.#quietLetter = false;
-        }
+        await this.writeLetter("handoff");
         const [latest] = this.letters();
         if (!latest || latest.at === before) return "现在聊得还不多，没什么要收起来的。";
         return `交接信写好了，旧的聊天收起来了：\n\n${latest.text}`;
@@ -453,18 +523,18 @@ export class Resident extends Think<Env> {
     const compactions = await this.session.getCompactions();
     const tokens = rows.reduce((sum, row) => sum + row.tokenEstimate, 0);
     const model = this.savedModel() || this.defaultModel;
-    const on = (flag: boolean) => (flag ? "开" : "关");
     const [persona] = this.personas(1);
     return [
       `模型：${model}`,
       persona?.text
         ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
         : "人设：还没填，先用默认的一句（网页门右上角的铅笔）",
-      `对话：${rows.length} 条，约 ${tokens} token（超过 ${num(this.env.LETTER_AFTER_TOKENS, 24000)} 写交接信）`,
-      `交接信：${compactions.length} 封`,
+      `对话：${rows.length} 条，约 ${tokens} token`,
+      `交接信：${idleMinutes(this.env) ? `没动静 ${idleMinutes(this.env)} 分钟后趁缓存还在写一封，` : ""}/handoff 随时写；缓存 ${promptCache(this.env).anthropic.cacheControl.ttl}`,
+      `已写交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
       `长期记忆 Aelios：${aeliosConfig(this.env) ? "开，每条消息先自动想一下相关的旧事" : "关"}`,
-      `查网页：搜索${on(this.webSearchOn)}，读网页${this.env.WEB_FETCH?.trim().toLowerCase() === "off" ? "关" : `开（${webFetchVia(this.env)}）`}`,
+      `查网页：搜索 ${searchEngines(this.env).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.env)) : "关"}`,
       `主动找你：${this.env.CHECKIN_SCHEDULE?.trim() || "关"}`
     ].join("\n");
   }
@@ -483,7 +553,7 @@ export class Resident extends Think<Env> {
         continue;
       }
       if (message.role === "user") {
-        if (text.startsWith(CHECKIN_PREFIX)) {
+        if (isCheckin(text)) {
           via = "checkin";
           continue;
         }
@@ -547,10 +617,10 @@ export class Resident extends Think<Env> {
         await generateText({
           model: this.resolveModel(this.modelFor(model)),
           // Shaped like a real turn (a system prompt and the cache marker), so a model that would fail in the chat fails here.
-          system: "你是一个测试助手。",
-          prompt: "只回一个字：好",
+          system: "You are a test assistant.",
+          prompt: "Reply with one word: ok",
           maxOutputTokens: 64,
-          providerOptions: PROMPT_CACHE,
+          providerOptions: promptCache(this.env),
           abortSignal: AbortSignal.timeout(30_000)
         });
       } catch (error) {

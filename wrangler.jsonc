@@ -8,6 +8,9 @@
   "keep_vars": true,
   // Workers AI, plus AI Gateway for vendor models such as anthropic/claude-* and for web search.
   "ai": { "binding": "AI" },
+  // Cloudflare's headless Chrome, for pages web_fetch can only read once their JavaScript has run.
+  // Workers Paid includes 10 browser hours a month; without this binding those pages come back nearly empty.
+  "browser": { "binding": "BROWSER" },
   // The web door (public/index.html). Everything else goes to the Worker first.
   "assets": {
     "directory": "public",
@@ -23,14 +26,14 @@
   // Dashboard on every push. Every setting has a default in the code; set the ones you need in
   // Dashboard → Worker → Settings → Variables and Secrets (type Text). See README for the list:
   //   AI_GATEWAY_ID, TG_BOT_USERNAME, TG_ALLOWED, TIME_ZONE, DEBOUNCE_SECONDS,
-  //   LETTER_AFTER_TOKENS, KEEP_RECENT_TOKENS, SHOW_LETTER, AELIOS_URL, AELIOS_NAMESPACE,
-  //   WEB_SEARCH, WEB_FETCH, WEB_FETCH_URL, CHECKIN_SCHEDULE
+  //   KEEP_RECENT_TOKENS, LETTER_IDLE_MINUTES, CACHE_TTL, AELIOS_URL, AELIOS_NAMESPACE,
+  //   WEB_SEARCH, WEB_FETCH, WEB_FETCH_MODEL, CHECKIN_SCHEDULE
   // Secrets (Dashboard → Worker → Settings → Variables and Secrets, type Secret):
   //   TG_BOT_TOKEN         from @BotFather
   //   TG_WEBHOOK_SECRET    any long random string you make up (letters, digits, _ and -)
   //   AELIOS_API_KEY       the value of your Aelios' CHATBOX_API_KEY, IM_API_KEY or MEMORY_MCP_API_KEY
   //                        (all read and write the "default" space; only CHATBOX_API_KEY lets AELIOS_NAMESPACE pick another)
   //   WEB_KEY              the password for the web door; unset = the web door stays shut
-  //   WEB_FETCH_KEY        one of the API_KEYS of your web-fetch Worker, if WEB_FETCH_URL points at one
+  //   TAVILY_API_KEY, BRAVE_API_KEY, PERPLEXITY_API_KEY   your own search keys, tried in that order
   // The model and the persona are not secrets or vars: pick them on the web door.
 }

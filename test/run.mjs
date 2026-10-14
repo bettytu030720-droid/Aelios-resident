@@ -3,7 +3,7 @@
 // Usage: node test/run.mjs [phase]
 //   main     (default) everything that needs one fresh Worker
 //   checkin  needs a schedule (start wrangler with --var CHECKIN_SCHEDULE:"every 1 minute")
-//   auto     needs LETTER_AFTER_TOKENS small (start wrangler with --var LETTER_AFTER_TOKENS:400)
+//   idle     needs a short quiet time (start wrangler with --var LETTER_IDLE_MINUTES:0.05)
 //   crash-1  sends a slow reply; kill workerd once the first bubble is out, restart, then run crash-2
 //   crash-2  checks what she got after the restart
 //   migrate  needs the old model variable (start wrangler with --var MODEL:fake)
@@ -14,7 +14,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, auto: 300, "crash-1": 500, "crash-2": 600, migrate: 700 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -125,27 +125,31 @@ if (phase === "main") {
     const before = (await sent()).length;
     await post("帮我查记忆");
     const out = await waitForSends(before, 1);
-    assert.match(out[0], /^我查到了：1\. 她的生日在春天/);
+    assert.match(out[0], /^我查到了：/);
+    assert.ok(out[0].includes("mem-birthday") && out[0].includes("她的生日在春天"), out[0]);
     const recall = (await log()).filter((e) => e.kind === "aelios.recall").at(-1);
     assert.equal(recall.body.namespace, "test-space");
     assert.equal(recall.auth, "Bearer test-key");
   });
 
-  await step("web_fetch reads a page through the web-fetch Worker, and refuses local addresses", async () => {
-    let before = (await sent()).length;
-    await post("帮我读新闻");
-    const out = (await waitForSends(before, 2)).join("\n");
-    assert.match(out, /^我查到了：/);
-    assert.ok(out.includes("测试新闻") && out.includes("今天的测试新闻：一切正常。"), out);
-    const call = (await log()).filter((e) => e.kind === "webfetch").at(-1);
-    assert.equal(call.auth, "Bearer test-fetch-key");
-    assert.equal(call.body.url, "https://example.com/news");
-    assert.equal(call.body.query, "今天发生了什么");
-    before = (await sent()).length;
+  await step("memory_remember saves through Aelios' MCP", async () => {
+    const before = (await sent()).length;
+    await post("这个记一下");
+    const [out] = await waitForSends(before, 1);
+    assert.ok(out.includes("mem-new"), out);
+    const call = (await log()).filter((e) => e.kind === "aelios.mcp").at(-1);
+    assert.equal(call.auth, "Bearer test-key");
+    assert.equal(call.body.method, "tools/call");
+    assert.equal(call.body.params.name, "remember");
+    assert.deepEqual(call.body.params.arguments, { content: "她喜欢春天", namespace: "test-space" });
+  });
+
+  // Reading real pages (redirects, the browser, compression, the cache) is covered by test/web.mjs.
+  await step("web_fetch refuses local addresses", async () => {
+    const before = (await sent()).length;
     await post("帮我读本机");
     const [refused] = await waitForSends(before, 1);
     assert.match(refused, /^我查到了：Cannot read this URL/);
-    assert.equal((await log()).filter((e) => e.kind === "webfetch").length, 1, "the local address never left the resident");
   });
 
   await step("a memory comes up by itself before the reply, once, and stays on its message", async () => {
@@ -161,10 +165,10 @@ if (phase === "main") {
     assert.deepEqual(await waitForSends(before, 1), ["这条：无，之前带着的：1"]);
     const recorded = (await log()).filter((e) => e.kind === "aelios.ingest").flatMap((e) => e.body.messages);
     assert.ok(recorded.some((m) => m.content.includes("生日那天想浮现一下")));
-    assert.ok(!recorded.some((m) => m.content.includes("想起的旧事")), "what came up is not recorded as hers");
+    assert.ok(!recorded.some((m) => m.content.includes("<recalled>")), "what came up is not recorded as hers");
     const page = await (await fetch(`${WORKER}/web/messages`, { headers: { "x-web-key": "test-web-key" } })).json();
     assert.ok(page.data.some((l) => l.text === "生日那天想浮现一下"), JSON.stringify(page.data));
-    assert.ok(!page.data.some((l) => l.text.includes("想起的旧事")), "what came up stays out of the page");
+    assert.ok(!page.data.some((l) => l.text.includes("<recalled>")), "what came up stays out of the page");
   });
 
   await step("each exchange is recorded in Aelios", async () => {
@@ -211,6 +215,7 @@ if (phase === "main") {
     await post("/handoff");
     const [out] = await waitForSends(before, 1, 30000);
     assert.match(out, /^交接信写好了，旧的聊天收起来了：\n\n亲爱的下一个我/);
+    assert.ok(out.includes("（前文和上一轮一字不差）"), `the letter turn must repeat the chat's request, to be read from cache: ${out}`);
     before = (await sent()).length;
     await post("交接信在吗");
     assert.deepEqual(await waitForSends(before, 1), ["交接信在。"]);
@@ -278,7 +283,7 @@ if (phase === "main") {
   await step("every turn asks for prompt caching (Claude's Messages API reads it)", async () => {
     const before = (await sent()).length;
     await post("缓存在吗");
-    assert.deepEqual(await waitForSends(before, 1), ["缓存标记在。"]);
+    assert.deepEqual(await waitForSends(before, 1), ["缓存标记在，1h。"]);
   });
 
   await step("the model is picked on the web, after one trial call, and remembered as recent", async () => {
@@ -380,21 +385,37 @@ if (phase === "checkin") {
   });
 }
 
-if (phase === "auto") {
-  await step("a long conversation writes its own letter and shows it", async () => {
-    const before = (await sent()).length;
-    for (let i = 0; i < 8; i += 1) {
+if (phase === "idle") {
+  await step("when she goes quiet, a letter is written by itself, silently, and carried on", async () => {
+    for (let i = 0; i < 3; i += 1) {
       const mark = (await sent()).length;
-      await post(`第 ${i} 句：${"今天也很想你。".repeat(20)}`);
+      await post(`第 ${i} 句：今天也很想你。`);
       await waitForSends(mark, 2);
     }
+    const before = (await sent()).length;
     const start = Date.now();
-    for (;;) {
-      const all = (await sent()).slice(before);
-      if (all.some((t) => t.startsWith("（聊天有点长了"))) break;
-      if (Date.now() - start > 20000) throw new Error(`no letter notice: ${JSON.stringify(all.slice(-3))}`);
+    let ingest = [];
+    while (!ingest.length) {
+      if (Date.now() - start > 20000) throw new Error("no letter after the quiet time");
       await sleep(300);
+      ingest = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
     }
+    assert.match(ingest[0].body.messages[0].content, /^（交接信）亲爱的下一个我.*（前文和上一轮一字不差）/);
+    assert.deepEqual((await sent()).slice(before), [], "the idle letter sends her nothing");
+    const { data: lines } = await (await fetch(`${WORKER}/web/messages`, { headers: { "x-web-key": "test-web-key" } })).json();
+    assert.ok(lines.some((l) => l.kind === "letter"), JSON.stringify(lines));
+    assert.ok(!lines.some((l) => l.text.includes("handoff letter")), "the letter prompt is gone again");
+    const mark = (await sent()).length;
+    await post("交接信在吗");
+    assert.deepEqual(await waitForSends(mark, 1), ["交接信在。"]);
+  });
+  await step("after a letter, nothing more happens until she writes again", async () => {
+    await sleep(8000);
+    const letters = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
+    assert.equal(letters.length, 2, "one letter per quiet time after she wrote");
+    await sleep(8000);
+    const later = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
+    assert.equal(later.length, 2);
   });
 }
 

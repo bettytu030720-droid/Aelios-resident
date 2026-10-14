@@ -1,38 +1,68 @@
-// web_fetch: read one page as Markdown.
+// web_fetch: read one page as Markdown. Built into the resident the way
+// https://github.com/sakisakisa-design/web-fetch reads pages, with nothing else to deploy:
 //
-// With WEB_FETCH_URL and WEB_FETCH_KEY set, pages go through a web-fetch Worker
-// (https://github.com/sakisakisa-design/web-fetch): it opens pages that need a real browser,
-// caches them, and with a `query` trims a long page down to the part that answers it.
-// Without it, the resident fetches the page itself and converts the HTML with that project's
-// converter (html-to-markdown.ts). Either way, private and local addresses are refused.
+//   1. A plain fetch first, every redirect checked before it is followed.
+//   2. A page that comes back nearly empty (built by JavaScript) or is refused is opened in
+//      Cloudflare's browser (browser.ts), when the BROWSER binding is there.
+//   3. What was read is kept for an hour (PageCache, in the resident's own storage), so asking
+//      something else about the same page costs no second fetch.
+//   4. A long page is shrunk by a small model before the resident sees it (compress.ts), down to
+//      the parts about `query` when one is given, so one page does not fill the conversation.
+//
+// Private and local addresses are refused at every step.
 
 import { tool } from "ai";
 import { z } from "zod";
+import { renderInBrowser } from "./browser";
+import { compressPage, DEFAULT_COMPRESS_MODEL, type Compressor } from "./compress";
 import { htmlToMarkdown } from "./html-to-markdown";
-import { validateUrl, validateUrlWithDns } from "./validate-url";
+import { validateUrlWithDns } from "./validate-url";
 
-// What the model gets back at most, so one long page does not crowd out the conversation.
-const MAX_CHARS = 12000;
-const TIMEOUT_MS = 20_000;
+// What the model gets back at most.
+const MAX_CHARS = 12_000;
+// What the cache keeps of a page: more than compression ever reads (8 sections of about 6000 tokens).
+const CACHE_CHARS = 200_000;
+// Bytes read from a response at most; the rest of a huge page is dropped.
+const MAX_BYTES = 5_000_000;
+// Below this much visible text, the plain fetch most likely got an empty JavaScript shell.
+const THIN_CHARS = 500;
+const MAX_REDIRECTS = 5;
+const FETCH_TIMEOUT_MS = 15_000;
+const BROWSER_TIMEOUT_MS = 20_000;
+const TOOL_TIMEOUT_MS = 60_000;
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-type Page = { url: string; title?: string; content: string };
-type Service = { url: string; key: string };
+export type Page = { url: string; title?: string; content: string; browser?: boolean };
 
-function service(env: Env): Service | null {
-  const url = env.WEB_FETCH_URL?.trim().replace(/\/+$/, "");
-  const key = env.WEB_FETCH_KEY?.trim();
-  return url && key ? { url, key } : null;
+/** Pages read in the last hour, by the URL that was asked for. */
+export type PageCache = { get(url: string): Page | null; put(url: string, page: Page): void };
+
+/** What web_fetch reads with. Missing parts are skipped: no browser, no compression, no cache. */
+export type Reader = { browser?: BrowserRun; compressor: Compressor | null; cache?: PageCache };
+
+/** A refusal the browser must not retry: the address is not allowed, or the page is not there or not text. */
+class Final extends Error {}
+
+export function readerFor(env: Env, cache?: PageCache): Reader {
+  const model = env.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
+  return {
+    // Undefined when the binding is not configured (the local test config has none).
+    browser: (env as { BROWSER?: BrowserRun }).BROWSER,
+    compressor: env.AI && model.toLowerCase() !== "off" ? { ai: env.AI, model, gateway: env.AI_GATEWAY_ID?.trim() || undefined } : null,
+    cache
+  };
 }
 
-/** Which way pages are read, for /status. */
-export function webFetchVia(env: Env): string {
-  return service(env) ? "web-fetch Worker" : "自己读";
+/** How pages are read, for /status. */
+export function webFetchVia(reader: Reader): string {
+  const browser = reader.browser ? "JS 页面用浏览器" : "没有浏览器绑定";
+  const compress = reader.compressor ? `长页用 ${reader.compressor.model} 压` : "长页不压";
+  return `自己读（${browser}，${compress}）`;
 }
 
-export function webFetchTool(env: Env) {
-  const via = service(env);
+export function webFetchTool(reader: Reader) {
   return tool({
     description:
       "Read one web page (a news article, a post, a link she sent) and get its text as Markdown. " +
@@ -43,12 +73,18 @@ export function webFetchTool(env: Env) {
       query: z.string().optional().describe("What you want from the page, in a few words. Optional.")
     }),
     async execute({ url, query }, { abortSignal }) {
-      // The web-fetch Worker checks where a name resolves to itself; reading directly, it is checked here.
-      const check = via ? validateUrl(url) : await validateUrlWithDns(url);
+      const check = await validateUrlWithDns(url);
       if (!check.valid) return `Cannot read this URL: ${check.error}`;
-      const signal = abortSignal ? AbortSignal.any([abortSignal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS);
+      const timeout = AbortSignal.timeout(TOOL_TIMEOUT_MS);
+      const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
       try {
-        return render(via ? await throughService(via, url, query, signal) : await directly(url, signal));
+        let page = cached(reader, url);
+        if (!page) {
+          page = await readPage(reader, url, signal);
+          remember(reader, url, page);
+        }
+        const shrunk = await compressPage(reader.compressor, page.content, query);
+        return render(page, shrunk.content, shrunk.note);
       } catch (error) {
         return `Could not read this page: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -56,50 +92,129 @@ export function webFetchTool(env: Env) {
   });
 }
 
-function render(page: Page): string {
-  const content = page.content.trim();
-  const body = content.length > MAX_CHARS ? `${content.slice(0, MAX_CHARS)}\n\n[cut off here, the page goes on]` : content;
-  const head = page.title ? `# ${page.title}\n${page.url}` : page.url;
-  return `${head}\n\n${body || "(no readable text on this page)"}`;
-}
-
-async function throughService(via: Service, url: string, query: string | undefined, signal: AbortSignal): Promise<Page> {
-  const response = await fetch(`${via.url}/fetch`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${via.key}`, "content-type": "application/json" },
-    body: JSON.stringify({ url, ...(query?.trim() ? { query: query.trim() } : {}), max_chars: MAX_CHARS }),
-    signal
-  });
-  const body = (await response.json().catch(() => null)) as { error?: string; url?: string; final_url?: string; title?: string; content?: string } | null;
-  if (!response.ok || typeof body?.content !== "string") {
-    throw new Error(body?.error || `web-fetch answered HTTP ${response.status}`);
+function cached(reader: Reader, url: string): Page | null {
+  try {
+    return reader.cache?.get(url) ?? null;
+  } catch {
+    return null;
   }
-  return { url: body.final_url ?? body.url ?? url, title: body.title, content: body.content };
 }
 
-async function directly(url: string, signal: AbortSignal): Promise<Page> {
-  const response = await fetch(url, {
-    headers: {
-      "user-agent": USER_AGENT,
-      accept: "text/html,application/xhtml+xml,text/markdown;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.5",
-      "accept-language": "zh-CN,zh;q=0.9,en;q=0.8"
-    },
-    redirect: "follow",
-    signal
-  });
-  if (!response.ok) throw new Error(`the site answered HTTP ${response.status}`);
-  const finalUrl = response.url || url;
-  if (finalUrl !== url) {
-    const check = await validateUrlWithDns(finalUrl);
-    if (!check.valid) throw new Error(`redirected somewhere it may not go: ${check.error}`);
+function remember(reader: Reader, url: string, page: Page): void {
+  try {
+    reader.cache?.put(url, { ...page, content: page.content.slice(0, CACHE_CHARS) });
+  } catch (error) {
+    console.error("web_fetch: could not cache the page", { error: String(error) });
+  }
+}
+
+function render(page: Page, content: string, note?: string): string {
+  const head = [page.title ? `# ${page.title}` : "", page.url, page.browser ? "(opened in a browser)" : "", note ? `(${note})` : ""]
+    .filter(Boolean)
+    .join("\n");
+  const body = content.trim();
+  const clipped = body.length > MAX_CHARS ? `${body.slice(0, MAX_CHARS)}\n\n[cut off here, the page goes on]` : body;
+  return `${head}\n\n${clipped || "(no readable text on this page)"}`;
+}
+
+/** Read a page: plainly first, in the browser when that comes back empty or refused. */
+export async function readPage(reader: Pick<Reader, "browser">, url: string, signal: AbortSignal): Promise<Page> {
+  let plain: (Page & { thin: boolean }) | null = null;
+  let failure = "";
+  try {
+    plain = await plainFetch(url, signal);
+    if (!plain.thin) return stripThin(plain);
+  } catch (error) {
+    if (error instanceof Final || signal.aborted) throw error;
+    failure = error instanceof Error ? error.message : String(error);
+  }
+  if (!reader.browser) {
+    if (plain) return stripThin(plain);
+    throw new Error(failure);
+  }
+  try {
+    const rendered = await renderInBrowser(reader.browser, url, USER_AGENT, BROWSER_TIMEOUT_MS);
+    const { markdown, title } = htmlToMarkdown(rendered.html, rendered.url);
+    const name = title || rendered.title;
+    return { url: rendered.url, ...(name ? { title: name } : {}), content: markdown, browser: true };
+  } catch (error) {
+    console.error("web_fetch: the browser could not open the page", { error: String(error) });
+    if (plain) return stripThin(plain);
+    throw new Error(`${failure}, and the browser could not open it either`);
+  }
+}
+
+function stripThin({ thin: _thin, ...page }: Page & { thin: boolean }): Page {
+  return page;
+}
+
+async function plainFetch(url: string, signal: AbortSignal): Promise<Page & { thin: boolean }> {
+  const fetchSignal = AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]);
+  const dns = new Map<string, Promise<string[]>>();
+  let current = url;
+  let response: Response;
+  for (let hop = 0; ; hop++) {
+    response = await fetch(current, {
+      headers: {
+        "user-agent": USER_AGENT,
+        accept: "text/html,application/xhtml+xml,text/markdown;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.5",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8"
+      },
+      redirect: "manual",
+      signal: fetchSignal
+    });
+    const location = REDIRECTS.has(response.status) ? response.headers.get("location") : null;
+    if (!location) break;
+    await response.body?.cancel();
+    if (hop === MAX_REDIRECTS) throw new Error(`it redirected more than ${MAX_REDIRECTS} times`);
+    const next = new URL(location, current).toString();
+    const check = await validateUrlWithDns(next, dns);
+    if (!check.valid) throw new Final(`it redirected somewhere it may not go: ${check.error}`);
+    current = next;
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    const message = `the site answered HTTP ${response.status}`;
+    throw response.status === 404 || response.status === 410 ? new Final(message) : new Error(message);
   }
   const type = (response.headers.get("content-type") ?? "").toLowerCase();
   if (type.includes("json") || type.includes("text/plain") || type.includes("text/markdown")) {
-    return { url: finalUrl, content: await response.text() };
+    return { url: current, content: await readText(response, type), thin: false };
   }
   if (type && !type.includes("html") && !type.includes("xml")) {
-    throw new Error(`it is ${type.split(";")[0]}, not a text page`);
+    await response.body?.cancel();
+    throw new Final(`it is ${type.split(";")[0]}, not a text page`);
   }
-  const { markdown, title } = htmlToMarkdown(await response.text(), finalUrl);
-  return { url: finalUrl, title, content: markdown };
+  const { markdown, title, textLength } = htmlToMarkdown(await readText(response, type), current);
+  return { url: current, ...(title ? { title } : {}), content: markdown, thin: textLength < THIN_CHARS };
+}
+
+/** The body as text, at most MAX_BYTES of it, in the charset the page declares (many Chinese sites still use GBK). */
+async function readText(response: Response, type: string): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  while (size < MAX_BYTES) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    size += value.byteLength;
+  }
+  await reader.cancel().catch(() => {});
+  const bytes = new Uint8Array(Math.min(size, MAX_BYTES));
+  let offset = 0;
+  for (const part of parts) {
+    const take = part.subarray(0, Math.min(part.byteLength, bytes.byteLength - offset));
+    bytes.set(take, offset);
+    offset += take.byteLength;
+    if (offset === bytes.byteLength) break;
+  }
+  const head = new TextDecoder("latin1").decode(bytes.subarray(0, 4096));
+  const declared = /charset=["']?([\w-]+)/i.exec(type)?.[1] ?? /<meta[^>]+charset=["']?([\w-]+)/i.exec(head)?.[1];
+  try {
+    return new TextDecoder(declared ?? "utf-8").decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
 }

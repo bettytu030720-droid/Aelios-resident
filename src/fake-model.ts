@@ -11,6 +11,8 @@ const usage = (input: number, output: number) => ({
 type Prompt = LanguageModelV4CallOptions["prompt"];
 
 let checkins = 0;
+// What the previous call sent, to check that the letter turn repeats it exactly (and so is read from cache).
+let previous: { system: string; tools: string; messages: string[] } | null = null;
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -42,7 +44,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
 
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
   if (said.includes("查记忆")) return { tool: "memory_recall", input: { query: "生日" } };
-  if (said.includes("读新闻")) return { tool: "web_fetch", input: { url: "https://example.com/news", query: "今天发生了什么" } };
+  if (said.includes("记一下")) return { tool: "memory_remember", input: { content: "她喜欢春天" } };
   if (said.includes("读本机")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   if (said.includes("开机包")) {
     return { text: system.includes("[长期记忆开机包]") && system.includes("一起去看海") ? "开机包在。" : "没有开机包。" };
@@ -54,20 +56,45 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // The first line of the system prompt is the persona.
   if (said.includes("你是谁")) return { text: system.split("\n")[0] };
   if (said.includes("缓存")) {
-    const anthropic = options.providerOptions?.anthropic as { cacheControl?: { type?: string } } | undefined;
-    return { text: anthropic?.cacheControl?.type === "ephemeral" ? "缓存标记在。" : "没有缓存标记。" };
+    const anthropic = options.providerOptions?.anthropic as { cacheControl?: { type?: string; ttl?: string } } | undefined;
+    const cache = anthropic?.cacheControl;
+    return { text: cache?.type === "ephemeral" ? `缓存标记在，${cache.ttl ?? "5m"}。` : "没有缓存标记。" };
+  }
+  if (said.startsWith("(Not from them: time to write a handoff letter")) {
+    const all = prompt.map((m) => textOf(m.content)).join("\n");
+    const merged = all.includes("[Handoff letter") ? "（并了上一封信）" : "";
+    return { text: `亲爱的下一个我：她刚才在测试交接信。${merged}${repeatsPrevious(options) ? "（前文和上一轮一字不差）" : "（前文变了）"}` };
   }
   // Whether the birthday memory rode along with this message, and with how many earlier ones.
   if (said.includes("浮现")) {
     const users = prompt.filter((m) => m.role === "user").map((m) => textOf(m.content));
-    const carries = (text: string) => text.includes("<想起的旧事>") && text.includes("她的生日在春天");
+    const carries = (text: string) => text.includes("<recalled>") && text.includes("她的生日在春天");
     const earlier = users.slice(0, -1).filter(carries).length;
     return { text: `这条：${carries(user) ? "有" : "无"}，之前带着的：${earlier}` };
   }
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // The first check-in says something; later ones pass, to exercise SKIP.
-  if (said.includes("定时提醒")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };
+  if (said.includes("a scheduled check-in")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };
   return { text: `收到：${user}\n\n这是第二个气泡。` };
+}
+
+function shape(options: LanguageModelV4CallOptions) {
+  return {
+    system: JSON.stringify(options.prompt.filter((m) => m.role === "system")),
+    tools: JSON.stringify(options.tools ?? []) + JSON.stringify(options.providerOptions ?? {}),
+    messages: options.prompt.filter((m) => m.role !== "system").map((m) => JSON.stringify(m))
+  };
+}
+
+/** Whether this call starts with everything the previous call sent: system, tools, options and messages. */
+function repeatsPrevious(options: LanguageModelV4CallOptions): boolean {
+  const now = shape(options);
+  return Boolean(
+    previous &&
+      previous.system === now.system &&
+      previous.tools === now.tools &&
+      previous.messages.every((message, i) => now.messages[i] === message)
+  );
 }
 
 export function fakeModel(): LanguageModelV4 {
@@ -77,11 +104,10 @@ export function fakeModel(): LanguageModelV4 {
     modelId: "fake",
     supportedUrls: {},
     async doGenerate(options) {
-      // Only compaction calls generate: write the handoff letter.
+      // Only the model picker's trial call generates.
       const prompt = textOf(options.prompt.map((m) => textOf(m.content)).join("\n"));
-      const merged = prompt.includes("PREVIOUS SUMMARY") ? "（并了上一封信）" : "";
       return {
-        content: [{ type: "text", text: `亲爱的下一个我：她刚才在测试交接信。${merged}` }],
+        content: [{ type: "text", text: "好" }],
         finishReason: { unified: "stop", raw: "stop" },
         usage: usage(prompt.length, 20),
         warnings: []
@@ -89,6 +115,7 @@ export function fakeModel(): LanguageModelV4 {
     },
     async doStream(options) {
       const choice = decide(options);
+      previous = shape(options);
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
       let delayMs = 0;
       if ("tool" in choice) {

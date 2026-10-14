@@ -8,14 +8,14 @@ interface Env {
   TG_ALLOWED?: string;
   TIME_ZONE?: string;
   DEBOUNCE_SECONDS?: string;
-  LETTER_AFTER_TOKENS?: string;
   KEEP_RECENT_TOKENS?: string;
-  SHOW_LETTER?: string;
+  LETTER_IDLE_MINUTES?: string;
+  CACHE_TTL?: string;
   AELIOS_URL?: string;
   AELIOS_NAMESPACE?: string;
   WEB_SEARCH?: string;
   WEB_FETCH?: string;
-  WEB_FETCH_URL?: string;
+  WEB_FETCH_MODEL?: string;
   CHECKIN_SCHEDULE?: string;
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
@@ -23,6 +23,8 @@ interface Env {
   // Local tests only: the default model is the scripted one.
   FAKE_MODEL?: string;
   AELIOS_API_KEY?: string;
-  WEB_FETCH_KEY?: string;
+  TAVILY_API_KEY?: string;
+  BRAVE_API_KEY?: string;
+  PERPLEXITY_API_KEY?: string;
   WEB_KEY?: string;
 }

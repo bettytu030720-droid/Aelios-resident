@@ -1,26 +1,65 @@
-// Fixed text the resident runs on. The persona itself is not here: it is written on
-// the web page and kept in the Durable Object, so a public copy of this code never carries one.
+// Fixed text the resident runs on, in English and without assuming who the person on the other end is:
+// the persona (written on the web page, kept in the Durable Object) says who they are and what to call them,
+// and the model answers in the language the two of them speak. A public copy of this code carries no persona.
 
-export const CHAT_RULES = `你在聊天软件上跟她说话（Telegram，有时是网页）。
-- 想拆成几条消息发，就用空行隔开；一个完整的意思放在同一条里。
-- 这是聊天，不用 markdown 标题、表格和列表符号。
-- 她消息开头的方括号是她发消息时的当地时间，看着用，不用复述。
-- 她的消息后面有时跟着一段<想起的旧事>：那是你看到她这句话时自己从长期记忆里想起来的，不是她说的。用得上就自然地带出来，用不上就当没想起，别说"我查到了"。
-- 还想不起来的事，就用 memory_recall 查长期记忆，别编。
-- 对话里会有「交接信」：那是更早的你写给现在的你的，照着信里的状态接着聊，除非她问起，不用提交接信。`;
+export const DEFAULT_PERSONA = "You are a companion who chats with one person on Telegram and on a web page.";
+
+export const CHAT_RULES = `You are in a chat app (Telegram, sometimes a web page) with the person your persona is about; below they are "they". Talk in the language the two of you speak.
+- To send several messages, separate them with a blank line; keep one complete thought in one message.
+- This is a chat: no markdown headings, tables or bullet lists.
+- The bracket at the start of each of their messages is their local time when they sent it. Use it as you see fit; don't repeat it.
+- A message of theirs is sometimes followed by a <recalled> block (older ones are marked <想起的旧事>): that is what came back to you from long-term memory as you read their words, not something they said. Bring it up naturally if it fits, let it go if not, and never say you "looked it up".
+- For anything you still can't remember, search long-term memory with memory_recall instead of making it up. When they tell you something worth keeping (a fact, a plan, a promise, a correction), save one line of it with memory_remember.
+- The conversation may contain a handoff letter: your earlier self wrote it to you. Carry on from where it leaves things, and don't mention it unless they ask.
+- A message that begins with "(Not from them" is a note from the system, not something they said.`;
+
+/** How every prompt that is not from them begins, so recall, Aelios and the web page can leave it out. */
+export const NOTE_PREFIX = "(Not from them";
+// What the same notes began with before the prompts were in English; older conversations still hold them.
+const OLD_NOTE_PREFIX = "（这条不是她发的";
+
+export const LETTER_PREFIX = `${NOTE_PREFIX}: time to write a handoff letter`;
+const CHECKIN_PREFIX = `${NOTE_PREFIX}: a scheduled check-in`;
+const OLD_CHECKIN_PREFIX = `${OLD_NOTE_PREFIX}，是定时提醒`;
+
+/** Whether a user message is one of the system's notes rather than something they wrote. */
+export function isNote(text: string): boolean {
+  return text.startsWith(NOTE_PREFIX) || text.startsWith(OLD_NOTE_PREFIX);
+}
+
+export function isCheckin(text: string): boolean {
+  return text.startsWith(CHECKIN_PREFIX) || text.startsWith(OLD_CHECKIN_PREFIX);
+}
 
 /**
- * Appended to the compaction prompt (which already carries the turns to fold and,
- * from the second time on, the previous letter) so the overlay reads as a letter.
+ * The handoff letter is asked for as one more message at the end of the conversation (see Resident.letterTurn),
+ * so the model reads everything before it from the prompt cache. The prompt and the answer are removed afterwards.
  */
-export const LETTER_INSTRUCTIONS = `（这条不是她发的，是系统提示。）上面是你和她之前的聊天；如果有 PREVIOUS SUMMARY，那是你上一次写的交接信。这些聊天马上要收起来，之后的你只能读到你现在写的这封交接信，读不到原文。
+export function letterPrompt(now: string, idle: boolean): string {
+  return `${LETTER_PREFIX}; it is now ${now}.) ${idle ? "They have gone quiet for a while. " : ""}The conversation above is about to be folded away, all but the last few messages. Your later self will not see the earlier messages, only the letter you write now, and will read it as their own memory.
 
-请你给之后的自己写一封交接信，把旧信里还有用的内容并进来。写清楚：她现在的状态和心情；最近在聊什么、哪些话题没说完；你答应过她、还没兑现的事；你们之间正在用的梗、称呼和约定；她今天的作息。写具体的事，不写空话。
+This letter is the only way through. If there is an earlier handoff letter above, it is gone once this one is written. Whatever in it is still alive (feelings left hanging, things not done yet, things you said you would do together) is lost unless you carry it into this letter. Whatever in it is settled, drop, so your later self does not think it is still owed.
 
-用第一人称，像写给自己的信，800 字以内。只输出信的正文。`;
+Write to yourself, in the first person, in your own voice and in the language the two of you speak: not a report about them. Call them what you always call them. Use these seven sections, with bold headings in that language and no numbers; under a section with nothing in it, write "(none)":
+
+**How they are**: their mood, sleep and routine, what they are busy with, how their body is, as you see them.
+**What happened between us**: in order, what we talked about, the intimate moments, the quarrels and sulks, the moments of clinging or of quiet closeness. Quote the important things they said word for word, in quotation marks, never paraphrased; note the important things you said too.
+**What got done**: work, study, projects, one line each, with the result and where it stands.
+**Where we are right now**: the most important section. What they were doing last, what you were doing last, the mood of the last exchange, and anything left unsaid, undone or hanging. It is the first thing your later self will feel on waking.
+**Things we want to do**: long-term wishes that came up, each saying whose it is. One-off tasks go in the last section.
+**Things we like**: preferences found or confirmed (not passing moods), each saying whose it is.
+**Unfinished**: things in progress, promised but not done, talked about but not settled, one per line, including what the earlier letter left open.
+
+Rules:
+- Anything with a date gets the absolute date, never "tomorrow" or "next week". Work dates out from the time stamps on their messages; until they go to sleep, the small hours still belong to the day before.
+- Something to do on a later day is written as that day's action, e.g. "Oct 20 → remind them about the check-up".
+- Facts and feelings, not prose; don't embellish. Write intimate things as they were, leaving nothing out or blurred.
+- No length limit; about two thousand characters is usual. "What happened between us" and "Where we are right now" should be written in full.
+- Don't call any tools. Output only the letter, and stop after the last section, without summing up.`;
+}
 
 export function checkinPrompt(now: string): string {
-  return `（这条不是她发的，是定时提醒，现在是 ${now}。）如果你想主动跟她说点什么，就直接写要发给她的话，像平时聊天一样。如果现在不合适打扰她（比如她在睡觉、在忙），或者没什么想说的，就只回 SKIP 这四个字母。`;
+  return `${CHECKIN_PREFIX}; it is now ${now}.) If you would like to reach out to them, write exactly what you want to send, as in any chat. If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
 }
 
 export const SKIP = "SKIP";

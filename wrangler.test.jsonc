@@ -16,19 +16,16 @@
     "TG_ALLOWED": "@her_test",
     "TIME_ZONE": "Asia/Shanghai",
     "DEBOUNCE_SECONDS": "1",
-    "LETTER_AFTER_TOKENS": "100000",
     "KEEP_RECENT_TOKENS": "10",
-    "SHOW_LETTER": "true",
+    "LETTER_IDLE_MINUTES": "off",
     "AELIOS_URL": "http://127.0.0.1:9999",
     "AELIOS_NAMESPACE": "test-space",
     "WEB_SEARCH": "off",
-    "WEB_FETCH_URL": "http://127.0.0.1:9999/web-fetch",
     "CHECKIN_SCHEDULE": "",
     "TG_API_BASE": "http://127.0.0.1:9999",
     "TG_BOT_TOKEN": "123456:test-token",
     "TG_WEBHOOK_SECRET": "test-secret",
     "AELIOS_API_KEY": "test-key",
-    "WEB_KEY": "test-web-key",
-    "WEB_FETCH_KEY": "test-fetch-key"
+    "WEB_KEY": "test-web-key"
   }
 }

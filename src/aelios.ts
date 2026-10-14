@@ -1,11 +1,14 @@
-// Aelios as long-term memory, over its REST API:
+// Aelios as long-term memory:
 //   POST /v1/memory/recall   the memory_recall tool, and the recall that comes up by itself before each reply
 //   POST /v1/memory/ingest   every exchange and every handoff letter, so Dream can digest them at night
 //   GET  /v1/memory_boot     yesterday's diary, precious notes and glossary, added to the system prompt
-// Unset AELIOS_URL or AELIOS_API_KEY and all three quietly do nothing.
+//   POST /mcp                remember, keep a moment, forget, learn a word, read the diary: Aelios' own MCP
+//                            tools, wrapped here with short descriptions so they cost few tokens per turn
+// Unset AELIOS_URL or AELIOS_API_KEY and all of it quietly does nothing.
 
-import { tool } from "ai";
+import { tool, type ToolSet } from "ai";
 import { z } from "zod";
+import { callMcpTool } from "./mcp";
 
 export type AeliosConfig = {
   url: string;
@@ -47,25 +50,63 @@ export async function recall(config: AeliosConfig, query: string, k: number, sig
   return (body.data ?? []).filter((hit): hit is RecallHit => typeof hit.content === "string" && hit.content.trim() !== "");
 }
 
-export function recallTool(config: AeliosConfig) {
-  return tool({
-    description:
-      "Search your long-term memory (Aelios) for things the two of you said or decided before: facts about her, " +
-      "promises, past events, names. Use it when she refers to something earlier that is not in this conversation. " +
-      "Query in the language the memory was said in.",
-    inputSchema: z.object({
-      query: z.string().describe("What to look for, in a few words.")
-    }),
-    async execute({ query }) {
-      let hits: RecallHit[];
-      try {
-        hits = await recall(config, query, 5);
-      } catch (error) {
-        return error instanceof Error ? error.message : "memory unavailable";
-      }
-      return hits.length ? hits.map((hit, i) => `${i + 1}. ${hit.content}`).join("\n") : "No matching memory.";
+const MCP_RESULT_MAX_CHARS = 4000;
+
+/** The memory tools the model gets: recall over REST, the rest through Aelios' MCP. */
+export function memoryTools(config: AeliosConfig): ToolSet {
+  const call = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    try {
+      const text = await callMcpTool(`${config.url}/mcp`, config.key, name, { ...args, namespace: config.namespace });
+      return text.length > MCP_RESULT_MAX_CHARS ? `${text.slice(0, MCP_RESULT_MAX_CHARS)}…` : text;
+    } catch (error) {
+      return `memory unavailable: ${error instanceof Error ? error.message : String(error)}`;
     }
-  });
+  };
+  return {
+    memory_recall: tool({
+      description: "Search long-term memory for something from before. Each hit starts with its [id].",
+      inputSchema: z.object({ query: z.string().describe("What to look for, in a few words.") }),
+      async execute({ query }) {
+        let hits: RecallHit[];
+        try {
+          hits = await recall(config, query, 5);
+        } catch (error) {
+          return error instanceof Error ? error.message : "memory unavailable";
+        }
+        return hits.length ? hits.map((hit) => `- [${hit.id ?? "?"}] ${hit.content}`).join("\n") : "No matching memory.";
+      }
+    }),
+    memory_remember: tool({
+      description:
+        "Save one self-contained sentence worth keeping: a fact about her, a plan, a promise, a correction. " +
+        "To update a memory, pass its id as replaces.",
+      inputSchema: z.object({
+        content: z.string(),
+        replaces: z.string().optional().describe("Id of the memory this one updates.")
+      }),
+      execute: ({ content, replaces }) => call("remember", { content, ...(replaces ? { replaces } : {}) })
+    }),
+    memory_keep_moment: tool({
+      description: "Keep a moment she will want to look back on, in her words.",
+      inputSchema: z.object({ content: z.string() }),
+      execute: ({ content }) => call("keep_moment", { content })
+    }),
+    memory_forget: tool({
+      description: "Archive a memory that is wrong or that she wants gone, by id. It can be brought back in Aelios.",
+      inputSchema: z.object({ id: z.string() }),
+      execute: ({ id }) => call("forget", { id })
+    }),
+    memory_learn_word: tool({
+      description: "Learn a private word, nickname or in-joke between you two.",
+      inputSchema: z.object({ term: z.string(), definition: z.string() }),
+      execute: ({ term, definition }) => call("learn_word", { term, definition })
+    }),
+    memory_read_diary: tool({
+      description: "Read the diary of a day (YYYY-MM-DD) or a week (like 2026-W42).",
+      inputSchema: z.object({ date: z.string().optional(), week: z.string().optional() }),
+      execute: ({ date, week }) => call("read_diary", { ...(date ? { date } : {}), ...(week ? { week } : {}) })
+    })
+  };
 }
 
 export type IngestMessage = { role: "user" | "assistant"; content: string };
