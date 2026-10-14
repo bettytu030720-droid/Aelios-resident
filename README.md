@@ -4,7 +4,7 @@
 
 ```
 Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
-网页门（public/index.html，WEB_KEY）──▶ Worker /web/* ──┤
+网页门（public/，WEB_KEY）────────────▶ Worker /web/* ──┤
                                                      ▼
                          Resident（一个 Durable Object，一段对话）
             模型（网页上选）← 人设（网页上填）+ 聊天规矩 + Aelios 开机包；工具：memory_recall、可选查网页
@@ -14,10 +14,9 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 ## 能做什么
 
 - **Telegram**：私聊才回，不在 `TG_ALLOWED` 里的人一个字都不回。连发几条会等 `DEBOUNCE_SECONDS` 秒并成一轮。回复按空行拆成几条消息，写完一段发一段，中间显示「正在输入」。她每条消息前面带上当地时间（`TIME_ZONE`），模型知道现在几点。Telegram 重发同一条消息不会回两次。
-- **网页门**：打开 Worker 的网址，填 `WEB_KEY` 进门。样子照 Aelios admin 的星空配色，左右气泡，夜间/白天可切。跟 Telegram 是同一段对话：两边说的话两边都看得到（网页每 5 秒刷新一次）；在网页上说的话只在网页上回。每条旁边的心形按钮把这句存进 Aelios 的「珍贵」。交接信折叠显示在它收起的位置。
-- **Aelios 看板里也能用**：Aelios 的 `/admin` → 设置 → 住户（可选），填这个 Worker 的网址和 `WEB_KEY`，导航里会多一个「住户」页，对话、模型、人设都跟网页门一样（Aelios 要更新到带住户页的版本）。地址和钥匙只存在那台设备的浏览器里。
-- **模型**：在网页门右上角的齿轮里选。换之前先让它说一个字试试，调不通（写错、档位不含、没额度）就不换，当场告诉你原因。没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。Claude 填 `anthropic/claude-opus-5.5` 这种（Cloudflare 的写法用点号），走 Anthropic 的 Messages 接口，每轮都带缓存标记，人设、规矩、开机包和之前的聊天下一轮从缓存读；`/status` 和设置页会显示上一次调用的缓存读了多少。以前填在 `MODEL` 变量里的模型，第一次用时自动搬过来，之后改 `MODEL` 不再起作用。
-- **人设**：也在齿轮里填，保存后下一句就按新的说。存在 Durable Object 里，不在代码和 Secret 里，所以公开仓库也不会带出去。最近 10 版都留着，可以一键放回去；没填时用一句默认的，网页门顶上会提醒你去填。
+- **网页门**：打开 Worker 的网址，填 `WEB_KEY` 进门。聊天界面用的是现成的 [deep-chat](https://github.com/OvidijusParsiunas/deep-chat)（MIT），星空配色，夜间/白天可切，手机上也好按。跟 Telegram 是同一段对话：两边说的话两边都看得到（网页每 5 秒刷新一次）；在网页上说的话只在网页上回。每条下面有时间、从哪边来的、心形按钮（存进 Aelios 的「珍贵」）。交接信折叠显示在它收起的位置。
+- **模型**：点网页门左上角的模型名换。弹出来的是一个搜索框，不是几千项的下拉菜单：上面是正在用的、最近用过的、常用的（Claude 几个和默认的 GLM），往下是 Cloudflare 模型目录里全部文字模型（110 个，按厂商分组），输入 `opus`、`kimi`、`qwen` 就筛出来；目录里没有的，直接填完整 id 也能用。紫点是 Cloudflare 自己跑的（Workers AI），橙点走 AI Gateway 的额度。换之前先让它说一个字试试，调不通（写错、档位不含、没额度）就不换，当场告诉你原因。没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。Claude 填 `anthropic/claude-opus-5.5` 这种（Cloudflare 的写法用点号），走 Anthropic 的 Messages 接口，每轮都带缓存标记，人设、规矩、开机包和之前的聊天下一轮从缓存读；`/status` 和人设页会显示上一次调用的缓存读了多少。以前填在 `MODEL` 变量里的模型，第一次用时自动搬过来，之后改 `MODEL` 不再起作用。
+- **人设**：点右上角的铅笔填，保存后下一句就按新的说。存在 Durable Object 里，不在代码和 Secret 里，所以公开仓库也不会带出去。最近 10 版都留着，可以一键放回去；没填时用一句默认的，网页门顶上会提醒你去填。
 - **Aelios 长期记忆**：`memory_recall` 工具查记忆；每一轮都记进 Aelios（夜里 Dream 照常整理）；Aelios 的开机包（昨天的日记、珍贵原话、黑话表）放进系统提示，最多 6 小时取一次。
 - **交接信**：对话超过 `LETTER_AFTER_TOKENS`，较早的部分由住户自己写成一封信（第一人称，写给之后的自己），最近 `KEEP_RECENT_TOKENS` 原样留着。信存在 Durable Object 里，也记进 Aelios；`SHOW_LETTER=true` 时会发到 Telegram 给你看。
 - **主动找你**：`CHECKIN_SCHEDULE` 填了（比如 `every day at 09:00`），到点住户自己想想要不要找你；不合适打扰就不发。
@@ -28,11 +27,11 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 本地用假 Telegram、假 Aelios、脚本模型跑 `test/run.mjs`：
 
-- 主流程 23 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；每轮记进 Aelios；连发三条并成一轮；`/status`、`/letter`、`/handoff`（写信后对话里带着信）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记；`/web/*` 允许别的网页（Aelios 看板）来调；模型在网页上换，写错或调不通的不换。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
+- 主流程 22 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；每轮记进 Aelios；连发三条并成一轮；`/status`、`/letter`、`/handoff`（写信后对话里带着信）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
 - 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
 - 自动交接信：把门槛调低连聊 8 轮，自己写了信、发到 Telegram、记进 Aelios。
 - 回复写到一半把进程杀掉：重启后住户自己醒过来，发一句「刚才回到一半断了，再发一次好吗？」，不会把半截重发一遍。
-- 网页门在 Chromium 里点过：错钥匙提示、手机宽度没有横向滚动、发消息收到回复、心形按钮；人设面板：没填时的提醒、写了「Claude Code」会提示、保存后网页上问「你是谁」按新人设回、旧版本放回去、没保存就返回会问一句。
+- 网页门在 Chromium 里点过（手机宽度夜间、电脑宽度白天）：错钥匙提示、手机宽度没有横向滚动、发消息收到回复（自己那条也带上时间和心形）、心形按钮、Telegram 那边发的消息 5 秒内自己出现且不重复、交接信折叠；换模型：搜 `opus` 只出 opus、调不通的不换并显示原因、目录里没有的 id 可以直接试、方向键和回车能选、Esc 关掉；人设：没填时的提醒、写了「Claude Code」会提示、保存后提醒消失。
 
 没测过：真的模型、真的 Telegram、部署到线上（免费档的 CPU 和启动时间只在线上能验）。
 
@@ -43,13 +42,13 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 3. **填密钥和设置**（Worker → Settings → Variables and Secrets）。`wrangler.jsonc` 里故意一个变量都不写，所以这里填的东西以后推代码不会被冲掉：
    - Secret `TG_BOT_TOKEN`：第 1 步的 token
    - Secret `TG_WEBHOOK_SECRET`：自己编一串长的（字母、数字、`_`、`-`）
-   - Secret `WEB_KEY`：网页门的钥匙，自己编一串长的；不填网页门就一直关着。拿到它就能看全部对话、改模型和人设，别截图别外发；怀疑漏了就在 Cloudflare 里换一个，网页门和 Aelios 看板重新填一次
+   - Secret `WEB_KEY`：网页门的钥匙，自己编一串长的；不填网页门就一直关着。拿到它就能看全部对话、改模型和人设，别截图别外发；怀疑漏了就在 Cloudflare 里换一个，网页门重新填一次
    - Secret `AELIOS_API_KEY`：跟你 Aelios 那边 `CHATBOX_API_KEY`、`IM_API_KEY`、`MEMORY_MCP_API_KEY` 任意一把同一个值。三把都读写 `default` 空间；想用别的空间（`AELIOS_NAMESPACE`）只能用 `CHATBOX_API_KEY`
    - 变量 `TG_BOT_USERNAME`：bot 的用户名（不带 @）
    - 变量 `TG_ALLOWED`：你的 Telegram 用户名，比如 `@your_name`（也可以填 chat id，逗号隔开）
    - 变量 `AELIOS_URL`：Aelios 的地址，比如 `https://companion-memory-proxy.xxx.workers.dev`
 4. **接上 Telegram**：浏览器打开一次 `https://aelios-resident.<你的子域>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>`，两个 `"ok":true` 就接好了（顺便把三个命令登记到 bot 的菜单里）。
-5. 打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进网页门，点右上角的齿轮：选模型、把人设贴进去、保存。
+5. 打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进网页门，点左上角的模型名选模型，点右上角的铅笔把人设贴进去、保存。
 6. 给 bot 发条消息。
 
 ## 设置
@@ -83,6 +82,15 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 - 看图、听语音。
 - 网页门逐字显示（现在是写完一整条再出现）。
+
+## 网页用到的现成东西
+
+都放在 `public/vendor/`，网页不用连外面的 CDN：
+
+- [deep-chat](https://github.com/OvidijusParsiunas/deep-chat) 2.5.1，聊天界面，MIT（`deep-chat-LICENSE.txt`）
+- [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9，换模型和人设页，MIT（`alpine-LICENSE.txt`）
+
+换模型用的目录在 `public/models.json`，从 [Cloudflare 模型目录](https://developers.cloudflare.com/ai/models/)里挑的文字模型。Cloudflare 上了新模型想让它出现在列表里，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
 
 ## 本地测试
 

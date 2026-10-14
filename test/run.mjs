@@ -245,23 +245,11 @@ if (phase === "main") {
     assert.deepEqual(await waitForSends(before, 1), ["缓存标记在。"]);
   });
 
-  await step("the web API answers other origins (Aelios' admin page)", async () => {
-    const preflight = await fetch(`${WORKER}/web/messages`, {
-      method: "OPTIONS",
-      headers: { origin: "https://aelios.example", "access-control-request-headers": "x-web-key" }
-    });
-    assert.equal(preflight.status, 204);
-    assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
-    assert.match(preflight.headers.get("access-control-allow-headers"), /x-web-key/);
-    const response = await web("/web/check", "test-web-key");
-    assert.equal(response.headers.get("access-control-allow-origin"), "*");
-    assert.equal((await web("/web/check", "wrong")).headers.get("access-control-allow-origin"), "*");
-  });
-
-  await step("the model is picked on the web, after one trial call", async () => {
+  await step("the model is picked on the web, after one trial call, and remembered as recent", async () => {
     let model = await (await web("/web/model", "test-web-key")).json();
     assert.equal(model.model, "");
     assert.equal(model.fallback, "fake");
+    assert.deepEqual(model.recent, []);
     assert.equal(typeof model.lastUsage.input, "number");
     assert.equal((await web("/web/model", "wrong", { text: "fake" })).status, 401);
     let response = await web("/web/model", "test-web-key", { text: "gpt" });
@@ -277,6 +265,8 @@ if (phase === "main") {
     model = await response.json();
     assert.equal(model.model, "fake");
     assert.equal(typeof model.at, "number");
+    // Only models that passed their trial call are offered again in the picker.
+    assert.deepEqual(model.recent, ["fake"]);
     const before = (await sent()).length;
     await post("/status");
     const [out] = await waitForSends(before, 1);

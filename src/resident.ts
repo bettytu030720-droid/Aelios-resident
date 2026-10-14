@@ -37,6 +37,8 @@ const DEFAULT_PERSONA = "你是她的伴侣，在 Telegram 和网页上陪她聊
 const PERSONA_MAX_CHARS = 30000;
 // How many earlier personas the web page can bring back.
 const PERSONA_VERSIONS = 10;
+// How many models that passed their trial call the web page's picker lists first.
+const RECENT_MODELS = 8;
 const BOOT_REFRESH_MS = 6 * 60 * 60 * 1000;
 // Claude models ("anthropic/…") go out on Anthropic's Messages API, where this asks for prompt caching:
 // persona, rules, boot packet and the earlier turns are read from cache on the next turn.
@@ -69,7 +71,7 @@ export type WebLine = {
 export type LastUsage = { at: number; input: number; cacheRead: number; cacheWrite: number; output: number };
 
 /** The model as the web page edits it. An empty model means the default is in use. */
-export type WebModel = { model: string; at: number | null; fallback: string; lastUsage: LastUsage | null };
+export type WebModel = { model: string; at: number | null; fallback: string; recent: string[]; lastUsage: LastUsage | null };
 
 /** The persona as the web page edits it. An empty text means the default line is in use. */
 export type WebPersona = {
@@ -140,7 +142,7 @@ export class Resident extends Think<Env> {
     return id === "fake" && this.env.FAKE_MODEL === "true" ? fakeModel() : id;
   }
 
-  /** Small settings written on the web page (the model), one row per key. */
+  /** Small settings written on the web page (the model, the recently used ones), one row per key. */
   private settings(key: string): { value: string; at: number } | undefined {
     this.sql`CREATE TABLE IF NOT EXISTS res_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, at INTEGER NOT NULL)`;
     return this.sql<{ value: string; at: number }>`SELECT value, at FROM res_settings WHERE key = ${key}`[0];
@@ -395,7 +397,7 @@ export class Resident extends Think<Env> {
       `模型：${model}`,
       persona?.text
         ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
-        : "人设：还没填，先用默认的一句（在网页门右上角填）",
+        : "人设：还没填，先用默认的一句（网页门右上角的铅笔）",
       `对话：${rows.length} 条，约 ${tokens} token（超过 ${num(this.env.LETTER_AFTER_TOKENS, 24000)} 写交接信）`,
       `交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
@@ -452,7 +454,23 @@ export class Resident extends Think<Env> {
   async webModel(): Promise<WebModel> {
     this.savedModel();
     const saved = this.settings("model");
-    return { model: saved?.value ?? "", at: saved?.at ?? null, fallback: this.defaultModel, lastUsage: await this.lastUsage() };
+    return {
+      model: saved?.value ?? "",
+      at: saved?.at ?? null,
+      fallback: this.defaultModel,
+      recent: this.recentModels(),
+      lastUsage: await this.lastUsage()
+    };
+  }
+
+  /** Models that passed their trial call here, newest first. */
+  private recentModels(): string[] {
+    try {
+      const list: unknown = JSON.parse(this.settings("recent_models")?.value ?? "[]");
+      return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -476,6 +494,10 @@ export class Resident extends Think<Env> {
       }
     }
     this.saveSetting("model", model);
+    if (model) {
+      const recent = [model, ...this.recentModels().filter((id) => id !== model)].slice(0, RECENT_MODELS);
+      this.saveSetting("recent_models", JSON.stringify(recent));
+    }
     return this.webModel();
   }
 

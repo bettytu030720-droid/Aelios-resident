@@ -3,10 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Resident</title>
+<title>住户</title>
 <link rel="icon" href="data:,">
 <script>
-// Follows Aelios admin's palette and theme switch, so the two pages feel like one place.
 (function () {
   var saved = null;
   try { saved = localStorage.getItem('resident.theme'); } catch (e) {}
@@ -14,7 +13,9 @@
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
 })();
 </script>
-<script defer src="https://unpkg.com/alpinejs@3.14.9/dist/cdn.min.js"></script>
+<!-- Chat surface: deep-chat (MIT), Alpine.js (MIT) for the rest. Both live in vendor/ so the page needs no CDN. -->
+<script type="module" src="/vendor/deep-chat-2.5.1.js"></script>
+<script defer src="/vendor/alpine-3.14.9.min.js"></script>
 <style>
   :root {
     color-scheme: dark;
@@ -32,7 +33,6 @@
     --on-accent: #251304;
     --coral: #F4A07C;
     --violet: #8b7cf6;
-    --cyan: #67e8f9;
     --err: #f87171;
     --nebula-1: rgba(124, 93, 250, .13);
     --nebula-2: rgba(56, 189, 248, .09);
@@ -40,6 +40,7 @@
     --star-2: rgba(190, 205, 255, .7);
     --star-3: rgba(244, 160, 124, .55);
     --stars-opacity: .9;
+    --font: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -65,7 +66,7 @@
   [x-cloak] { display: none !important; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg-deep); color: var(--text-1); }
-  body { font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.6; }
+  body { font-family: var(--font); line-height: 1.6; }
   button, input, textarea { font: inherit; color: inherit; }
   :focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
 
@@ -83,47 +84,31 @@
       radial-gradient(1.5px 1.5px at 268px 356px, var(--star-1), transparent); }
 
   .shell { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100dvh; max-width: 760px; margin: 0 auto; }
-  header { display: flex; align-items: center; gap: 8px; padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top)); }
+  header { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; padding-top: max(12px, env(safe-area-inset-top)); }
   header h1 { margin: 0; font-size: 17px; font-weight: 600; }
   header .sub { font-size: 12px; color: var(--text-4); }
   .spacer { flex: 1; }
-  .icon-btn { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px; border: 1px solid var(--panel-border);
+  .icon-btn { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px; border: 1px solid var(--panel-border);
     background: var(--panel-bg); color: var(--text-3); cursor: pointer; }
   .icon-btn:hover { color: var(--text-1); border-color: var(--coral); }
   .icon-btn svg { width: 18px; height: 18px; }
 
-  .stream { flex: 1; overflow-y: auto; padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
-  .empty { margin: auto; color: var(--text-3); font-size: 14px; text-align: center; }
-  .row { display: flex; flex-direction: column; gap: 4px; max-width: 82%; }
-  .row.user { align-self: flex-end; align-items: flex-end; }
-  .row.assistant { align-self: flex-start; align-items: flex-start; }
-  .bubble { padding: 9px 13px; border-radius: 18px; border: 1px solid var(--panel-border); background: var(--panel-bg);
-    box-shadow: var(--panel-glow); backdrop-filter: blur(8px); white-space: pre-wrap; word-break: break-word; font-size: 15px; }
-  .row.user .bubble { background: var(--mine-bg); border-color: var(--mine-border); border-bottom-right-radius: 6px; }
-  .row.assistant .bubble:last-of-type { border-bottom-left-radius: 6px; }
-  .meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-4); padding: 0 4px; }
-  .badge { border: 1px solid var(--panel-border); border-radius: 999px; padding: 0 7px; }
-  .heart { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 10px; border: 0; background: transparent;
-    color: var(--text-4); cursor: pointer; }
-  .heart:hover, .heart.done { color: var(--coral); }
-  .heart svg { width: 15px; height: 15px; }
+  /* The model chip in the header: tap to open the picker. */
+  .chip { min-width: 0; max-width: 46vw; display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px; border-radius: 14px;
+    border: 1px solid var(--panel-border); background: var(--panel-bg); color: var(--text-2); cursor: pointer; font-size: 13px; }
+  .chip:hover { border-color: var(--coral); color: var(--text-1); }
+  .chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip svg { flex: none; width: 14px; height: 14px; color: var(--text-4); }
+  .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--violet); }
+  .dot.gateway { background: var(--coral); }
 
-  .letter { align-self: stretch; border: 1px dashed var(--panel-border); border-radius: 18px; padding: 10px 14px; background: var(--panel-bg); font-size: 13px; color: var(--text-3); }
-  .letter summary { cursor: pointer; color: var(--text-2); }
-  .letter p { white-space: pre-wrap; margin: 8px 0 0; color: var(--text-2); }
-
-  .typing { align-self: flex-start; display: flex; gap: 4px; padding: 13px 15px; border-radius: 18px; background: var(--panel-bg); border: 1px solid var(--panel-border); }
-  .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: blink 1.2s infinite; }
-  .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
-  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
-
-  .composer { display: flex; align-items: flex-end; gap: 8px; padding: 10px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .composer textarea { flex: 1; min-height: 44px; max-height: 40vh; resize: none; padding: 10px 14px; border-radius: 18px;
-    border: 1px solid var(--panel-border); background: var(--panel-bg-strong); outline: none; font-size: 16px; line-height: 1.5; }
-  .composer textarea:focus { border-color: var(--coral); }
-  .send { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 16px; border: 0; background: var(--coral); color: var(--on-accent); cursor: pointer; }
-  .send:disabled { opacity: .45; cursor: default; }
-  .send svg { width: 18px; height: 18px; }
+  .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .chat-host { flex: 1; min-height: 0; }
+  .chat-host deep-chat { display: block; width: 100%; height: 100%; }
+  .nudge { align-self: center; margin: 2px 16px 0; padding: 6px 12px; border-radius: 14px; border: 1px dashed var(--panel-border); background: var(--panel-bg);
+    font-size: 13px; color: var(--text-3); cursor: pointer; }
+  .nudge:hover { color: var(--text-1); border-color: var(--coral); }
+  .empty { align-self: center; margin: 8px 16px 0; color: var(--text-3); font-size: 13px; text-align: center; }
 
   .login { margin: auto; width: min(360px, calc(100% - 32px)); padding: 22px; border-radius: 22px; border: 1px solid var(--panel-border);
     background: var(--panel-bg-strong); box-shadow: var(--panel-glow); }
@@ -133,21 +118,16 @@
   .login input:focus { border-color: var(--coral); }
   .login button { margin-top: 12px; width: 100%; height: 44px; border: 0; border-radius: 14px; background: var(--coral); color: var(--on-accent); font-weight: 600; cursor: pointer; }
   .error { margin-top: 10px; font-size: 13px; color: var(--err); }
-  .nudge { align-self: center; padding: 6px 12px; border-radius: 14px; border: 1px dashed var(--panel-border); background: var(--panel-bg);
-    font-size: 13px; color: var(--text-3); cursor: pointer; }
-  .nudge:hover { color: var(--text-1); border-color: var(--coral); }
 
-  .persona { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  .settings { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
     padding: 4px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .persona .hint { margin: 0; font-size: 13px; color: var(--text-3); }
-  .persona .label { font-size: 14px; font-weight: 600; color: var(--text-2); }
-  .persona input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--panel-border);
-    background: var(--panel-bg-strong); outline: none; font-size: 15px; }
-  .persona input:focus { border-color: var(--coral); }
-  .persona .model { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--panel-border); }
-  .persona textarea { flex: 1; min-height: 38vh; resize: vertical; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--panel-border);
+  .settings .hint { margin: 0; font-size: 13px; color: var(--text-3); }
+  .settings .label { font-size: 14px; font-weight: 600; color: var(--text-2); }
+  .settings .model { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--panel-border); }
+  .settings textarea { flex: 1; min-height: 38vh; resize: vertical; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--panel-border);
     background: var(--panel-bg-strong); outline: none; font-size: 15px; line-height: 1.6; }
-  .persona textarea:focus { border-color: var(--coral); }
+  .settings textarea:focus { border-color: var(--coral); }
+  .current { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; color: var(--text-2); word-break: break-all; }
   .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .count { font-size: 12px; color: var(--text-4); }
   .warn { margin: 0; font-size: 13px; color: var(--coral); }
@@ -162,14 +142,38 @@
   .version .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
   .version .btn { height: 32px; padding: 0 10px; font-size: 13px; }
 
-  .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 5; padding: 8px 14px; border-radius: 12px;
+  /* Model picker: a sheet with a search box, not a dropdown. */
+  .backdrop { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
+    padding: max(56px, env(safe-area-inset-top)) 12px 12px; background: rgba(4, 6, 16, .55); backdrop-filter: blur(2px); }
+  .sheet { width: min(560px, 100%); max-height: calc(100dvh - 80px); display: flex; flex-direction: column; border-radius: 20px;
+    border: 1px solid var(--panel-border); background: var(--panel-bg-strong); box-shadow: var(--panel-glow); overflow: hidden; }
+  .sheet .search { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--panel-border); }
+  .sheet .search input { flex: 1; min-width: 0; height: 42px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--panel-border);
+    background: var(--bg-deep); outline: none; font-size: 16px; }
+  .sheet .search input:focus { border-color: var(--coral); }
+  .sheet .list { overflow-y: auto; padding: 4px 6px 8px; overscroll-behavior: contain; }
+  .group { padding: 10px 10px 4px; font-size: 12px; color: var(--text-4); }
+  .option { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: 0; border-radius: 12px; background: transparent;
+    text-align: left; cursor: pointer; }
+  .option:hover, .option.active { background: var(--panel-bg); }
+  .option .dot { margin-top: 8px; }
+  .option .body { flex: 1; min-width: 0; }
+  .option .title { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 14px; color: var(--text-1); }
+  .option .id, .option .desc { display: block; }
+  .option .id { font-size: 12px; color: var(--text-4); word-break: break-all; }
+  .option .desc { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .option .tag { font-size: 11px; color: var(--text-3); border: 1px solid var(--panel-border); border-radius: 999px; padding: 0 7px; }
+  .option .state { flex: none; font-size: 12px; color: var(--coral); margin-top: 2px; }
+  .sheet .foot { padding: 8px 14px 12px; border-top: 1px solid var(--panel-border); font-size: 12px; color: var(--text-4); }
+  .sheet .foot .warn { margin-bottom: 4px; }
+
+  .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 20; max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 12px;
     background: var(--panel-bg-strong); border: 1px solid var(--panel-border); font-size: 13px; color: var(--text-2); }
 </style>
 </head>
 <body>
 <div class="starfield"></div>
 <div class="shell" x-data="resident()" x-init="start()" x-cloak>
-
   <template x-if="!authed">
     <form class="login" @submit.prevent="login()">
       <h1>住户的网页门</h1>
@@ -180,108 +184,112 @@
     </form>
   </template>
 
-  <template x-if="authed">
-    <div style="display:contents">
-      <header>
-        <button class="icon-btn" type="button" x-show="view === 'persona'" @click="closePersona()" aria-label="回到聊天" title="回到聊天">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-        </button>
-        <div>
-          <h1 x-text="view === 'persona' ? '设置' : '住户'"></h1>
-          <div class="sub" x-text="view === 'persona' ? '模型和人设，改完下一句就生效' : '跟 Telegram 是同一段对话'"></div>
-        </div>
-        <div class="spacer"></div>
-        <button class="icon-btn" type="button" x-show="view === 'chat'" @click="openPersona()" aria-label="设置" title="模型和人设">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-        </button>
-        <button class="icon-btn" type="button" @click="toggleTheme()" :aria-label="theme === 'dark' ? '切到白天' : '切到夜间'" :title="theme === 'dark' ? '切到白天' : '切到夜间'">
-          <svg x-show="theme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-          <svg x-show="theme !== 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-        </button>
-        <button class="icon-btn" type="button" @click="logout()" aria-label="锁上" title="锁上">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-        </button>
-      </header>
+  <header x-show="authed">
+    <button class="icon-btn" type="button" x-show="view === 'settings'" @click="closeSettings()" aria-label="回到聊天" title="回到聊天">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <div x-show="view === 'settings'">
+      <h1>人设</h1>
+      <div class="sub">改完下一句就生效</div>
+    </div>
+    <button class="chip" type="button" x-show="view === 'chat'" @click="openPicker()" :title="'现在用 ' + currentModel() + '，点这里换'" aria-label="换模型">
+      <span class="dot" :class="isGateway(currentModel()) ? 'gateway' : ''"></span>
+      <span class="name" x-text="shortName(currentModel())"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <div class="spacer"></div>
+    <button class="icon-btn" type="button" x-show="view === 'chat'" @click="openSettings()" aria-label="人设" title="人设">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+    </button>
+    <button class="icon-btn" type="button" @click="toggleTheme()" :aria-label="theme === 'dark' ? '切到白天' : '切到夜间'" :title="theme === 'dark' ? '切到白天' : '切到夜间'">
+      <svg x-show="theme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <svg x-show="theme !== 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <button class="icon-btn" type="button" @click="logout()" aria-label="锁上" title="锁上">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    </button>
+  </header>
 
-      <main class="stream" x-show="view === 'chat'" @scroll="nearBottom = isNearBottom()">
-        <button class="nudge" type="button" x-show="personaLoaded && !persona.text" @click="openPersona()">还没填人设，现在用的是默认的一句。点这里填</button>
-        <div class="empty" x-show="!lines.length && !sending">还没有聊天。说句话吧，Telegram 那边也看得到。</div>
-        <template x-for="line in lines" :key="line.id">
-          <div style="display:contents">
-            <template x-if="line.kind === 'letter'">
-              <details class="letter">
-                <summary>更早的聊天收进了一封交接信</summary>
-                <p x-text="line.text"></p>
-              </details>
-            </template>
-            <template x-if="line.kind === 'chat'">
-              <div class="row" :class="line.role">
-                <template x-for="(bubble, index) in bubbles(line)" :key="index">
-                  <div class="bubble" x-text="bubble"></div>
-                </template>
-                <div class="meta">
-                  <span x-show="line.at" x-text="fmt(line.at)"></span>
-                  <span class="badge" x-show="line.via" x-text="viaLabel(line.via)"></span>
-                  <button class="heart" type="button" x-show="aelios && !line.pending" :class="pinned[line.id] ? 'done' : ''" @click="pin(line)" aria-label="存进珍贵" title="存进 Aelios 的珍贵">
-                    <svg viewBox="0 0 24 24" :fill="pinned[line.id] ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>
-                  </button>
-                </div>
-              </div>
+  <main class="chat" x-show="authed && view === 'chat'">
+    <button class="nudge" type="button" x-show="personaLoaded && !persona.text" @click="openSettings()">还没填人设，现在用的是默认的一句。点这里填</button>
+    <div class="empty" x-show="loaded && !lineCount">还没有聊天。说句话吧，Telegram 那边也看得到。</div>
+    <div class="chat-host"></div>
+  </main>
+
+  <section class="settings" x-show="authed && view === 'settings'">
+    <div class="model">
+      <span class="label">模型</span>
+      <div class="current">
+        <span class="dot" :class="isGateway(currentModel()) ? 'gateway' : ''"></span>
+        <span x-text="currentModel() + (model.model ? '' : '（默认）')"></span>
+        <div class="spacer"></div>
+        <button class="btn" type="button" @click="openPicker()">换模型</button>
+      </div>
+      <p class="hint" x-show="model.lastUsage" x-text="usageText(model.lastUsage)"></p>
+    </div>
+    <span class="label">人设</span>
+    <p class="hint">它是谁、怎么叫你、说话什么样，都写在这里。只存在你自己的 Worker 里，不进代码仓库。留空保存就回到默认的一句。</p>
+    <textarea x-model="personaDraft" :maxlength="PERSONA_MAX" :placeholder="'没填时用的是：' + persona.fallback" aria-label="人设"></textarea>
+    <p class="warn" x-show="/claude\s*code/i.test(personaDraft)">用 Max 附带的 API key 时，人设里有「Claude Code」这几个字会报错，换个说法。</p>
+    <div class="bar">
+      <span class="count" x-text="personaDraft.trim().length + ' / ' + PERSONA_MAX + ' 字'"></span>
+      <span class="count" x-show="persona.at" x-text="'上次改：' + fmt(persona.at)"></span>
+      <div class="spacer"></div>
+      <button class="btn" type="button" @click="closeSettings()">返回</button>
+      <button class="btn primary" type="button" @click="savePersona()" :disabled="savingPersona || !personaDirty">保存</button>
+    </div>
+    <details class="versions" x-show="persona.versions.length">
+      <summary x-text="'之前的版本（' + persona.versions.length + '）'"></summary>
+      <template x-for="version in persona.versions" :key="version.at">
+        <div class="version">
+          <span class="when" x-text="fmt(version.at)"></span>
+          <span class="text" x-text="version.text"></span>
+          <button class="btn" type="button" @click="personaDraft = version.text">放回去</button>
+        </div>
+      </template>
+    </details>
+  </section>
+
+  <div class="backdrop" x-show="picker.open" x-transition.opacity @click.self="closePicker()" @keydown.escape.window="closePicker()">
+    <div class="sheet" role="dialog" aria-label="换模型">
+      <div class="search">
+        <input x-model="picker.q" @input="picker.active = 0; picker.error = ''" @keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)"
+          @keydown.enter.prevent="chooseActive()" type="search" enterkeyhint="go" autocomplete="off" autocapitalize="off" spellcheck="false"
+          placeholder="搜模型，或直接填 id" aria-label="搜模型">
+        <button class="icon-btn" type="button" @click="closePicker()" aria-label="关上" title="关上">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="list" role="listbox">
+        <template x-for="group in pickerGroups()" :key="group.title">
+          <div>
+            <div class="group" x-text="group.title"></div>
+            <template x-for="item in group.items" :key="group.title + item.id">
+              <button class="option" type="button" role="option" :class="item.index === picker.active ? 'active' : ''" :disabled="Boolean(picker.busy)"
+                @click="chooseModel(item.id)" @mouseenter="picker.active = item.index" :aria-selected="item.id === currentModel()">
+                <span class="dot" :class="isGateway(item.id) ? 'gateway' : ''"></span>
+                <span class="body">
+                  <span class="title">
+                    <span x-text="item.custom ? '直接用这个 id' : item.name"></span>
+                    <span class="tag" x-show="item.provider" x-text="item.provider"></span>
+                    <span class="tag" x-text="isGateway(item.id) ? 'Gateway 额度' : 'Workers AI'"></span>
+                  </span>
+                  <span class="id" x-text="item.id"></span>
+                  <span class="desc" x-show="item.desc" x-text="item.desc"></span>
+                </span>
+                <span class="state" x-text="picker.busy === item.id ? '试调中…' : (item.id === currentModel() ? '正在用' : '')"></span>
+              </button>
             </template>
           </div>
         </template>
-        <div class="typing" x-show="sending" aria-label="正在输入"><i></i><i></i><i></i></div>
-      </main>
-
-      <section class="persona" x-show="view === 'persona'">
-        <div class="model">
-          <span class="label">模型</span>
-          <div class="bar">
-            <input x-model="modelDraft" list="model-choices" :placeholder="'没选时用：' + model.fallback" aria-label="模型" @keydown.enter.prevent="saveModel()">
-            <button class="btn primary" type="button" @click="saveModel()" :disabled="savingModel || modelDraft.trim() === model.model" x-text="savingModel ? '试调中' : '换上'"></button>
-          </div>
-          <datalist id="model-choices">
-            <option value="anthropic/claude-opus-5.5"></option>
-            <option value="anthropic/claude-sonnet-5.5"></option>
-            <option value="anthropic/claude-fable-5.1"></option>
-            <option value="@cf/zai-org/glm-4.7-flash"></option>
-          </datalist>
-          <p class="hint">换之前先让它说一个字试试，调不通就不换。Claude 填 anthropic/ 开头的，走 AI Gateway 的额度。留空换上就回到默认。</p>
-          <p class="warn" x-show="modelError" x-text="modelError"></p>
-          <p class="hint" x-show="model.lastUsage" x-text="usageText(model.lastUsage)"></p>
-        </div>
-        <span class="label">人设</span>
-        <p class="hint">它是谁、怎么叫你、说话什么样，都写在这里。只存在你自己的 Worker 里，不进代码仓库。留空保存就回到默认的一句。</p>
-        <textarea x-model="personaDraft" :maxlength="PERSONA_MAX" :placeholder="'没填时用的是：' + persona.fallback" aria-label="人设"></textarea>
-        <p class="warn" x-show="/claude\s*code/i.test(personaDraft)">用 Max 附带的 API key 时，人设里有「Claude Code」这几个字会报错，换个说法。</p>
-        <div class="bar">
-          <span class="count" x-text="personaDraft.trim().length + ' / ' + PERSONA_MAX + ' 字'"></span>
-          <span class="count" x-show="persona.at" x-text="'上次改：' + fmt(persona.at)"></span>
-          <div class="spacer"></div>
-          <button class="btn" type="button" @click="closePersona()">返回</button>
-          <button class="btn primary" type="button" @click="savePersona()" :disabled="savingPersona || !personaDirty">保存</button>
-        </div>
-        <details class="versions" x-show="persona.versions.length">
-          <summary x-text="'之前的版本（' + persona.versions.length + '）'"></summary>
-          <template x-for="version in persona.versions" :key="version.at">
-            <div class="version">
-              <span class="when" x-text="fmt(version.at)"></span>
-              <span class="text" x-text="version.text"></span>
-              <button class="btn" type="button" @click="personaDraft = version.text">放回去</button>
-            </div>
-          </template>
-        </details>
-      </section>
-
-      <form class="composer" x-show="view === 'chat'" @submit.prevent="send()">
-        <textarea x-model="draft" rows="1" placeholder="说点什么" aria-label="消息"
-          @input="grow()" @keydown.enter="if (!$event.shiftKey && !$event.isComposing && $event.keyCode !== 229) { $event.preventDefault(); send(); }"></textarea>
-        <button class="send" type="submit" :disabled="sending || !draft.trim()" aria-label="发送">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
-        </button>
-      </form>
+        <div class="group" x-show="!pickerGroups().length">没找到。完整的 id 可以直接填，比如 anthropic/claude-opus-5.5</div>
+      </div>
+      <div class="foot">
+        <p class="warn" x-show="picker.error" x-text="picker.error"></p>
+        <span x-text="'换之前先让它说一个字试试，调不通就不换。紫点是 Cloudflare 自己跑的，橙点走 AI Gateway 的额度。目录 ' + catalog.length + ' 个文字模型（' + (catalogUpdated || '没取到') + '）。'"></span>
+      </div>
     </div>
-  </template>
+  </div>
 
   <div class="toast" x-show="toast" x-text="toast" x-transition.opacity></div>
 </div>
@@ -290,29 +298,79 @@
 function resident() {
   var POLL_MS = 5000;
   var PERSONA_MAX = 30000;
+  var RESULTS_MAX = 60;
+  // Shown first in the picker, under the ones used recently.
+  var FAVORITES = ['anthropic/claude-opus-5.5', 'anthropic/claude-sonnet-5.5', 'anthropic/claude-fable-5.1', 'anthropic/claude-haiku-5.5', '@cf/zai-org/glm-4.7-flash'];
+  var HEART = '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>';
+  // Styles inside deep-chat's shadow root. CSS variables from :root reach in, so the theme switch applies there too.
+  var CHAT_CSS = [
+    '#messages { padding: 4px 4px 12px; }',
+    '.inner-message-container { width: calc(100% - 24px); }',
+    '.message-bubble { max-width: 82%; margin-top: 8px; padding: 9px 13px; border-radius: 18px; line-height: 1.6; font-size: 15px;',
+    '  border: 1px solid var(--panel-border); background: var(--panel-bg); color: var(--text-1); box-shadow: var(--panel-glow); backdrop-filter: blur(8px); }',
+    '.user-message-text { background: var(--mine-bg); border-color: var(--mine-border); border-bottom-right-radius: 6px; color: var(--text-1); }',
+    '.ai-message-text { color: var(--text-1); }',
+    '.html-message { max-width: 82%; }',
+    '.message-bubble:has(> .letter) { max-width: 100%; width: 100%; border-style: dashed; box-shadow: none; }',
+    '.text { white-space: pre-wrap; word-break: break-word; }',
+    '.meta { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 2px -4px -4px 0; font-size: 11px; line-height: 1; color: var(--text-4); }',
+    '.badge { border: 1px solid var(--panel-border); border-radius: 999px; padding: 2px 7px; }',
+    '.pin { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--text-4); cursor: pointer; }',
+    '.pin:hover, .pin.done { color: var(--coral); }',
+    '.pin svg { width: 14px; height: 14px; fill: none; }',
+    '.pin.done svg { fill: currentColor; }',
+    '.letter { font-size: 13px; color: var(--text-3); }',
+    '.letter summary { cursor: pointer; color: var(--text-2); }',
+    '.letter .text { margin-top: 8px; color: var(--text-2); }',
+    '.error-message-text { background: var(--panel-bg-strong); color: var(--err); border-color: var(--err); }',
+    '#input { box-sizing: border-box; padding: 0 12px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }',
+    '#text-input-container { width: 100%; margin: 8px 0 0; border-radius: 18px; border: 1px solid var(--panel-border); background: var(--panel-bg-strong); box-shadow: none; max-height: 40vh; }',
+    '#text-input-container:focus-within { border-color: var(--coral); }',
+    '#text-input { color: var(--text-1); font-size: 16px; line-height: 1.5; padding: 10px 50px 10px 14px; }',
+    '.text-input-placeholder { color: var(--text-4) !important; }',
+    '#scroll-button { background: var(--panel-bg-strong); border: 1px solid var(--panel-border); color: var(--text-2); }'
+  ].join('\n');
+
   function readKey() { try { return localStorage.getItem('resident.key') || ''; } catch (e) { return ''; } }
   function writeKey(value) { try { value ? localStorage.setItem('resident.key', value) : localStorage.removeItem('resident.key'); } catch (e) {} }
+  function esc(text) {
+    return String(text).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+  }
+  // Same rule as Telegram: a blank line starts a new bubble.
+  function bubbles(line) {
+    if (line.role !== 'assistant') return [line.text];
+    var parts = line.text.split(/\n[^\S\n]*\n\s*/).filter(function (part) { return part.trim(); });
+    return parts.length ? parts : [line.text];
+  }
+
+  // The deep-chat element and what it shows live outside Alpine's reactive state.
+  var chat = null;
+  var shown = {};
+  var serverIds = [];
+  var lineText = {};
+  // Lines typed on this page whose server copy has not come back yet (deep-chat shows them at once).
+  var typed = [];
+
   return {
     key: readKey(),
     keyInput: '',
     authed: false,
     loginError: '',
     aelios: false,
-    lines: [],
+    loaded: false,
+    lineCount: 0,
     pinned: {},
-    draft: '',
     sending: false,
-    nearBottom: true,
     toast: '',
     theme: document.documentElement.dataset.theme,
     timer: null,
     view: 'chat',
     PERSONA_MAX: PERSONA_MAX,
     persona: { text: '', at: null, fallback: '', versions: [] },
-    model: { model: '', at: null, fallback: '', lastUsage: null },
-    modelDraft: '',
-    modelError: '',
-    savingModel: false,
+    model: { model: '', at: null, fallback: '', recent: [], lastUsage: null },
+    catalog: [],
+    catalogUpdated: '',
+    picker: { open: false, q: '', active: 0, busy: '', error: '' },
     personaLoaded: false,
     personaDraft: '',
     savingPersona: false,
@@ -320,9 +378,14 @@ function resident() {
     get personaDirty() { return this.personaDraft.trim() !== this.persona.text; },
 
     async start() {
-      if (this.key) await this.check(this.key);
       var self = this;
-      document.addEventListener('visibilitychange', function () { if (!document.hidden && self.authed) self.refresh(); });
+      document.addEventListener('visibilitychange', function () { if (!document.hidden && self.authed) self.refresh().catch(function () {}); });
+      fetch('/models.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
+        if (!data) return;
+        self.catalog = data.models || [];
+        self.catalogUpdated = data.updated || '';
+      }).catch(function () {});
+      if (this.key) await this.check(this.key);
     },
     async api(path, options) {
       var opts = options || {};
@@ -340,11 +403,18 @@ function resident() {
       this.key = key;
       try {
         var data = await this.api('/web/check');
-        this.authed = true;
         this.aelios = Boolean(data.aelios);
+        var lines = (await this.api('/web/messages')).data || [];
+        var ready = await Promise.race([
+          customElements.whenDefined('deep-chat').then(function () { return true; }),
+          new Promise(function (resolve) { setTimeout(resolve, 10000, false); })
+        ]);
+        if (!ready) throw new Error('聊天界面没加载出来，刷新一下试试');
+        this.authed = true;
         writeKey(key);
         this.loadPersona().catch(function () {});
-        await this.refresh(true);
+        this.loadModel().catch(function () {});
+        this.$nextTick(() => this.mount(lines));
         this.poll();
       } catch (error) {
         this.authed = false;
@@ -360,10 +430,131 @@ function resident() {
       this.key = '';
       this.keyInput = '';
       this.authed = false;
-      this.lines = [];
+      this.loaded = false;
       this.view = 'chat';
       this.personaLoaded = false;
+      this.picker.open = false;
       clearTimeout(this.timer);
+      if (chat) chat.remove();
+      chat = null;
+    },
+
+    // ---- chat (deep-chat) ----
+    toMessages(line) {
+      lineText[line.id] = line.text;
+      if (line.kind === 'letter') {
+        return [{ role: 'ai', html: '<details class="letter"><summary>更早的聊天收进了一封交接信</summary><div class="text">' + esc(line.text) + '</div></details>' }];
+      }
+      var parts = bubbles(line);
+      var self = this;
+      return parts.map(function (text, index) {
+        var last = index === parts.length - 1;
+        return { role: line.role === 'user' ? 'user' : 'ai', html: '<div class="text">' + esc(text) + '</div>' + (last ? self.metaHtml(line) : '') };
+      });
+    },
+    metaHtml(line) {
+      var bits = [];
+      if (line.at) bits.push('<span>' + esc(this.fmt(line.at)) + '</span>');
+      if (line.via) bits.push('<span class="badge">' + esc(this.viaLabel(line.via)) + '</span>');
+      if (this.aelios) {
+        var done = this.pinned[line.id] ? ' done' : '';
+        bits.push('<button class="pin' + done + '" type="button" data-line="' + esc(line.id) + '" aria-label="存进珍贵" title="存进 Aelios 的珍贵">' + HEART + '</button>');
+      }
+      return bits.length ? '<div class="meta">' + bits.join('') + '</div>' : '';
+    },
+    // A fresh element each time the whole conversation is shown (first load, or after a letter folded the old chat away).
+    mount(lines) {
+      var self = this;
+      var el = document.createElement('deep-chat');
+      el.setAttribute('aria-label', '聊天');
+      el.chatStyle = { width: '100%', height: '100%', border: 'none', backgroundColor: 'transparent', fontFamily: 'var(--font)' };
+      el.auxiliaryStyle = CHAT_CSS;
+      el.textInput = { placeholder: { text: '说点什么' }, characterLimit: 4000 };
+      var button = { borderRadius: '12px', width: '32px', height: '32px', bottom: '7px', right: '7px', padding: '6px', boxSizing: 'border-box' };
+      var dark = { filter: 'brightness(0) saturate(100%)', opacity: '.75' };
+      el.submitButtonStyles = {
+        submit: { container: { default: Object.assign({ backgroundColor: 'var(--coral)' }, button) }, svg: { styles: { default: dark } } },
+        loading: { container: { default: Object.assign({ backgroundColor: 'var(--coral)', opacity: '.6' }, button) } },
+        disabled: { container: { default: Object.assign({ backgroundColor: 'var(--panel-border)' }, button) }, svg: { styles: { default: { opacity: '.6' } } } }
+      };
+      el.errorMessages = { displayServiceErrorMessages: true };
+      el.scrollButton = true;
+      el.htmlClassUtilities = { pin: { events: { click: function (event) { self.pinFrom(event); } } } };
+      el.connect = { handler: function (body, signals) { self.say(body, signals); } };
+      shown = {};
+      typed = [];
+      var history = [];
+      lines.forEach(function (line) { shown[line.id] = true; history = history.concat(self.toMessages(line)); });
+      el.history = history;
+      serverIds = lines.map(function (line) { return line.id; });
+      this.lineCount = lines.length;
+      document.querySelector('.chat-host').replaceChildren(el);
+      chat = el;
+      this.loaded = true;
+    },
+    // Lines the server has that the page has not shown yet. A known line gone missing means a letter folded them away.
+    diff(lines) {
+      var ids = {};
+      lines.forEach(function (line) { ids[line.id] = true; });
+      var folded = serverIds.some(function (id) { return !ids[id]; });
+      return { folded: folded, fresh: lines.filter(function (line) { return !shown[line.id]; }) };
+    },
+    async say(body, signals) {
+      var list = (body && body.messages) || [];
+      var text = ((list[list.length - 1] || {}).text || '').trim();
+      if (!text) { await signals.onResponse({ error: '空的' }); return; }
+      this.sending = true;
+      typed.push(text);
+      var self = this;
+      try {
+        var result = await this.api('/web/say', { method: 'POST', body: { text: text } });
+        var lines = (await this.api('/web/messages')).data || [];
+        var change = this.diff(lines);
+        var replies = [];
+        var own = [];
+        var reordered = false;
+        change.fresh.forEach(function (line) {
+          shown[line.id] = true;
+          if (self.takeTyped(line)) { own.push(line); return; }
+          // Someone else's line (say, from Telegram) landed before this one: deep-chat would show it after.
+          if (!own.length) reordered = true;
+          replies = replies.concat(self.toMessages(line));
+        });
+        serverIds = lines.map(function (line) { return line.id; });
+        this.lineCount = lines.length;
+        if (!replies.some(function (m) { return m.role === 'ai'; })) {
+          replies.push({ error: result.status === 'completed' ? '它这次没说话' : '这句没回出来（' + result.status + '），再发一次试试' });
+        }
+        await signals.onResponse(replies);
+        // After the reply: deep-chat cannot update a message while its typing bubble is showing.
+        if (change.folded || (reordered && own.length)) this.mount(lines);
+        else own.forEach(function (line) { self.decorateOwn(line); });
+        this.loadModel().catch(function () {});
+      } catch (error) {
+        // The line stays in typed: if the server did get it, polling dresses it up instead of showing it twice.
+        await signals.onResponse({ error: error.message });
+      } finally {
+        this.sending = false;
+      }
+    },
+    takeTyped(line) {
+      if (line.role !== 'user' || line.via !== 'web') return false;
+      var at = typed.indexOf(line.text.trim());
+      if (at < 0) return false;
+      typed.splice(at, 1);
+      return true;
+    },
+    // Give a line typed here its time and heart, once the server copy is back.
+    decorateOwn(line) {
+      if (!chat) return;
+      var messages = chat.getMessages();
+      for (var i = messages.length - 1; i >= 0; i--) {
+        var message = messages[i];
+        if (message.role === 'user' && !message.html && (message.text || '').trim() === line.text.trim()) {
+          try { chat.updateMessage({ html: this.toMessages(line)[0].html }, i); } catch (e) {}
+          return;
+        }
+      }
     },
     poll() {
       var self = this;
@@ -373,89 +564,165 @@ function resident() {
         if (self.authed) self.poll();
       }, POLL_MS);
     },
-    async refresh(scroll) {
-      var data = await this.api('/web/messages');
-      var next = data.data || [];
-      var changed = next.length !== this.lines.length || (next.length && next[next.length - 1].id !== this.lines[this.lines.length - 1].id);
-      var stick = scroll || this.isNearBottom();
-      this.lines = next;
-      if (changed && stick) this.scrollSoon();
+    async refresh() {
+      if (!chat || this.sending) return;
+      var lines = (await this.api('/web/messages')).data || [];
+      if (this.sending) return;
+      var change = this.diff(lines);
+      if (change.folded) { this.mount(lines); return; }
+      var self = this;
+      change.fresh.forEach(function (line) {
+        shown[line.id] = true;
+        if (self.takeTyped(line)) { self.decorateOwn(line); return; }
+        self.toMessages(line).forEach(function (message) { chat.addMessage(message); });
+      });
+      serverIds = lines.map(function (line) { return line.id; });
+      this.lineCount = lines.length;
     },
-    async send() {
-      var text = this.draft.trim();
-      if (!text || this.sending) return;
-      this.sending = true;
-      this.draft = '';
-      this.$nextTick(() => this.grow());
-      this.lines = this.lines.concat([{ id: 'pending-' + Date.now(), role: 'user', kind: 'chat', text: text, at: Date.now(), via: 'web', pending: true }]);
-      this.scrollSoon();
+    async pinFrom(event) {
+      var button = (event.currentTarget && event.currentTarget.closest) ? event.currentTarget.closest('.pin') : null;
+      if (!button && event.target && event.target.closest) button = event.target.closest('.pin');
+      if (!button) return;
+      var id = button.getAttribute('data-line');
+      if (!id || this.pinned[id]) return;
       try {
-        var result = await this.api('/web/say', { method: 'POST', body: { text: text } });
-        if (result.status !== 'completed') this.notify('这句没回出来（' + result.status + '）');
-      } catch (error) {
-        this.notify(error.message);
-      } finally {
-        this.sending = false;
-        await this.refresh(true).catch(() => {});
-        var input = document.querySelector('.composer textarea');
-        if (input) input.focus();
-      }
-    },
-    async pin(line) {
-      if (this.pinned[line.id]) return;
-      try {
-        var result = await this.api('/web/pin', { method: 'POST', body: { text: line.text } });
+        var result = await this.api('/web/pin', { method: 'POST', body: { text: lineText[id] || '' } });
         if (!result.ok) throw new Error('没存上');
-        this.pinned[line.id] = true;
+        this.pinned[id] = true;
+        button.classList.add('done');
         this.notify('已存进珍贵');
       } catch (error) {
         this.notify(error.message);
       }
     },
+
+    // ---- model picker ----
+    async loadModel() {
+      this.model = await this.api('/web/model');
+    },
+    currentModel() { return this.model.model || this.model.fallback || ''; },
+    isGateway(id) { return Boolean(id) && id.charAt(0) !== '@' && id !== 'fake'; },
+    shortName(id) {
+      if (!id) return '模型';
+      var parts = id.split('/');
+      return parts[parts.length - 1];
+    },
+    entry(id) {
+      for (var i = 0; i < this.catalog.length; i++) if (this.catalog[i].id === id) return this.catalog[i];
+      return { id: id, name: this.shortName(id), provider: '', desc: '' };
+    },
+    pickerGroups() {
+      var self = this;
+      var groups = [];
+      var used = {};
+      var index = 0;
+      function group(title, items) {
+        var fresh = items.filter(function (item) { return item && !used[item.id] && (used[item.id] = true); });
+        if (!fresh.length) return;
+        groups.push({ title: title, items: fresh.map(function (item) { return Object.assign({}, item, { index: index++ }); }) });
+      }
+      var q = this.picker.q.trim().toLowerCase();
+      if (!q) {
+        group('正在用', [this.entry(this.currentModel())]);
+        group('最近用过', (this.model.recent || []).map(function (id) { return self.entry(id); }));
+        group('常用', FAVORITES.map(function (id) { return self.entry(id); }));
+        var providers = [];
+        var byProvider = {};
+        this.catalog.forEach(function (item) {
+          var name = item.hosted ? 'Workers AI · ' + item.provider : item.provider;
+          if (!byProvider[name]) { byProvider[name] = []; providers.push(name); }
+          byProvider[name].push(item);
+        });
+        providers.forEach(function (name) { group(name, byProvider[name]); });
+        return groups;
+      }
+      var words = q.split(/\s+/);
+      var pool = this.catalog.concat((this.model.recent || []).map(function (id) { return self.entry(id); }));
+      var hits = pool.filter(function (item) {
+        var hay = (item.id + ' ' + item.name + ' ' + item.provider).toLowerCase();
+        return words.every(function (word) { return hay.indexOf(word) >= 0; });
+      });
+      function rank(item) {
+        var id = item.id.toLowerCase();
+        var name = item.name.toLowerCase();
+        if (id === q || name === q) return 0;
+        if (name.indexOf(q) === 0 || id.indexOf(q) === 0) return 1;
+        return 2;
+      }
+      hits.sort(function (a, b) { return rank(a) - rank(b); });
+      var raw = this.picker.q.trim();
+      var exact = hits.some(function (item) { return item.id === raw; });
+      if (!exact && /^\S+\/\S+$/.test(raw)) group('目录里没有', [{ id: raw, name: raw, provider: '', desc: '', custom: true }]);
+      group('搜到的', hits.slice(0, RESULTS_MAX));
+      return groups;
+    },
+    flatPicker() {
+      return this.pickerGroups().reduce(function (all, group) { return all.concat(group.items); }, []);
+    },
+    move(step) {
+      var count = this.flatPicker().length;
+      if (count) this.picker.active = (this.picker.active + step + count) % count;
+      this.$nextTick(function () {
+        var el = document.querySelector('.option.active');
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      });
+    },
+    chooseActive() {
+      var items = this.flatPicker();
+      var item = items[this.picker.active] || items[0];
+      if (item) this.chooseModel(item.id);
+    },
+    async openPicker() {
+      this.picker.q = '';
+      this.picker.active = 0;
+      this.picker.error = '';
+      this.picker.open = true;
+      this.$nextTick(function () { if (matchMedia('(pointer: fine)').matches) document.querySelector('.sheet input').focus(); });
+      this.loadModel().catch(function () {});
+    },
+    closePicker() {
+      if (this.picker.busy) return;
+      this.picker.open = false;
+    },
+    async chooseModel(id) {
+      if (this.picker.busy) return;
+      if (id === this.currentModel()) { this.picker.open = false; return; }
+      this.picker.busy = id;
+      this.picker.error = '';
+      try {
+        this.model = await this.api('/web/model', { method: 'POST', body: { text: id } });
+        this.picker.open = false;
+        this.notify('换好了，下一句开始用 ' + this.shortName(this.currentModel()));
+      } catch (error) {
+        this.picker.error = error.message;
+      } finally {
+        this.picker.busy = '';
+      }
+    },
+
+    // ---- persona ----
     async loadPersona() {
       this.persona = await this.api('/web/persona');
       this.personaLoaded = true;
     },
-    async openPersona() {
+    async openSettings() {
       try {
         await this.loadPersona();
-        this.model = await this.api('/web/model');
+        await this.loadModel();
       } catch (error) {
         this.notify(error.message);
         return;
       }
       this.personaDraft = this.persona.text;
-      this.modelDraft = this.model.model;
-      this.modelError = '';
-      this.view = 'persona';
+      this.view = 'settings';
       this.$nextTick(function () {
-        var el = document.querySelector('.persona textarea');
-        if (el) el.focus();
+        var el = document.querySelector('.settings textarea');
+        if (el && matchMedia('(pointer: fine)').matches) el.focus();
       });
     },
-    closePersona() {
+    closeSettings() {
       if (this.personaDirty && !confirm('改的还没保存，不要了吗？')) return;
       this.view = 'chat';
-      this.scrollSoon();
-    },
-    async saveModel() {
-      if (this.savingModel) return;
-      this.savingModel = true;
-      this.modelError = '';
-      try {
-        this.model = await this.api('/web/model', { method: 'POST', body: { text: this.modelDraft } });
-        this.modelDraft = this.model.model;
-        this.notify('换好了，下一句开始用 ' + (this.model.model || this.model.fallback));
-      } catch (error) {
-        this.modelError = error.message;
-      } finally {
-        this.savingModel = false;
-      }
-    },
-    usageText(usage) {
-      if (!usage) return '';
-      var share = usage.input ? Math.round(usage.cacheRead / usage.input * 100) : 0;
-      return '上一次调用：输入 ' + usage.input + ' token，其中缓存读 ' + usage.cacheRead + '（' + share + '%），输出 ' + usage.output + '（' + this.fmt(usage.at) + '）';
     },
     async savePersona() {
       if (this.savingPersona) return;
@@ -465,17 +732,19 @@ function resident() {
         this.personaDraft = this.persona.text;
         this.notify(this.persona.text ? '人设存好了，下一句就按这个说' : '清空了，先用默认的一句');
         this.view = 'chat';
-        this.scrollSoon();
       } catch (error) {
         this.notify(error.message);
       } finally {
         this.savingPersona = false;
       }
     },
-    bubbles(line) {
-      if (line.role !== 'assistant') return [line.text];
-      return line.text.split(/\n[^\S\n]*\n\s*/).filter(function (part) { return part.trim(); });
+    usageText(usage) {
+      if (!usage) return '';
+      var share = usage.input ? Math.round(usage.cacheRead / usage.input * 100) : 0;
+      return '上一次调用：输入 ' + usage.input + ' token，其中缓存读 ' + usage.cacheRead + '（' + share + '%），输出 ' + usage.output + '（' + this.fmt(usage.at) + '）';
     },
+
+    // ---- small things ----
     viaLabel(via) {
       return { telegram: 'Telegram', web: '网页', checkin: '主动找你' }[via] || '';
     },
@@ -485,28 +754,6 @@ function resident() {
       var time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
       if (date.toDateString() === now.toDateString()) return time;
       return (date.getMonth() + 1) + '-' + date.getDate() + ' ' + time;
-    },
-    grow() {
-      var el = document.querySelector('.composer textarea');
-      if (!el) return;
-      el.style.height = 'auto';
-      el.style.height = el.scrollHeight + 'px';
-    },
-    // Elements inside x-if templates are looked up directly: $refs there are not ready on first render.
-    isNearBottom() {
-      var el = document.querySelector('.stream');
-      return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    },
-    toBottom() {
-      var el = document.querySelector('.stream');
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-    scrollSoon() {
-      var self = this;
-      this.$nextTick(function () {
-        requestAnimationFrame(function () { self.toBottom(); });
-        setTimeout(function () { self.toBottom(); }, 150);
-      });
     },
     toggleTheme() {
       this.theme = this.theme === 'dark' ? 'light' : 'dark';

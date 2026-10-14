@@ -31,5 +31,5 @@
   //   AELIOS_API_KEY       the value of your Aelios' CHATBOX_API_KEY, IM_API_KEY or MEMORY_MCP_API_KEY
   //                        (all read and write the "default" space; only CHATBOX_API_KEY lets AELIOS_NAMESPACE pick another)
   //   WEB_KEY              the password for the web door; unset = the web door stays shut
-  // The model and the persona are not secrets or vars: pick them on the web door (or Aelios' admin page).
+  // The model and the persona are not secrets or vars: pick them on the web door.
 }
