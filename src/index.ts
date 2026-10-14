@@ -1,7 +1,8 @@
 // The Worker in front of the resident:
 //   POST /messengers/telegram/webhook   Telegram → secret check, allowlist, slash commands → the resident
 //   GET  /tg/setup?secret=…             points the bot's webhook here (open once after deploy)
-//   /web/*                              the web page's API (same conversation as Telegram, and the persona), behind WEB_KEY
+//   /web/*                              the web page's API (same conversation as Telegram, the model and the persona),
+//                                       behind WEB_KEY; open to other origins so Aelios' admin page can use it too
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
@@ -65,6 +66,20 @@ async function handleSetup(env: Env, url: URL): Promise<Response> {
   return Response.json(await setWebhook(telegram(env), `${url.origin}${WEBHOOK_PATH}`, secret));
 }
 
+// The web API answers any page that holds WEB_KEY, so Aelios' admin page (another origin) can host the chat too.
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "content-type, x-web-key",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-max-age": "86400"
+};
+
+function withCors(response: Response): Response {
+  const copy = new Response(response.body, response);
+  for (const [name, value] of Object.entries(CORS)) copy.headers.set(name, value);
+  return copy;
+}
+
 /** The web door is open only with WEB_KEY, sent by the page as the x-web-key header. */
 function webAllowed(env: Env, request: Request): boolean {
   const key = env.WEB_KEY?.trim();
@@ -84,6 +99,12 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json(await agent.webSay(String(body.text ?? "")));
     case "POST /web/pin":
       return Response.json({ ok: await agent.webPin(String(body.text ?? "")) });
+    case "GET /web/model":
+      return Response.json(await agent.webModel());
+    case "POST /web/model": {
+      const saved = await agent.webSetModel(String(body.text ?? ""));
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
     case "GET /web/persona":
       return Response.json(await agent.webPersona());
     case "POST /web/persona": {
@@ -101,7 +122,10 @@ export default {
     try {
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
       if (url.pathname === "/tg/setup") return await handleSetup(env, url);
-      if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);
+      if (url.pathname.startsWith("/web/")) {
+        if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+        return withCors(await handleWeb(request, env, url));
+      }
       return new Response("not found", { status: 404 });
     } catch (error) {
       // Non-2xx makes Telegram redeliver; the messenger dedupes by message id.

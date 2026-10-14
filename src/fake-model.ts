@@ -1,4 +1,4 @@
-// A scripted model for local tests (MODEL=fake): no AI binding, no login, no cost.
+// A scripted model for local tests (FAKE_MODEL=true): no AI binding, no login, no cost.
 // It answers from the last user message so the tests can drive every path.
 
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -33,7 +33,8 @@ function lastOf(prompt: Prompt, role: string): string {
 }
 
 /** What the fake model says, or a tool it calls. */
-function decide(prompt: Prompt): { text: string; delayMs?: number } | { tool: string; input: unknown } {
+function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown } {
+  const prompt = options.prompt;
   const system = prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
   const user = lastOf(prompt, "user");
   const last = prompt[prompt.length - 1];
@@ -50,6 +51,10 @@ function decide(prompt: Prompt): { text: string; delayMs?: number } | { tool: st
   }
   // The first line of the system prompt is the persona.
   if (said.includes("你是谁")) return { text: system.split("\n")[0] };
+  if (said.includes("缓存")) {
+    const anthropic = options.providerOptions?.anthropic as { cacheControl?: { type?: string } } | undefined;
+    return { text: anthropic?.cacheControl?.type === "ephemeral" ? "缓存标记在。" : "没有缓存标记。" };
+  }
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // The first check-in says something; later ones pass, to exercise SKIP.
   if (said.includes("定时提醒")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };
@@ -74,7 +79,7 @@ export function fakeModel(): LanguageModelV4 {
       };
     },
     async doStream(options) {
-      const choice = decide(options.prompt);
+      const choice = decide(options);
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
       let delayMs = 0;
       if ("tool" in choice) {

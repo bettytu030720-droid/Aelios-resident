@@ -11,7 +11,7 @@
   "durable_objects": { "bindings": [{ "name": "RESIDENT", "class_name": "Resident" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Resident"] }],
   "vars": {
-    "MODEL": "fake",
+    "FAKE_MODEL": "true",
     "TG_BOT_USERNAME": "resident_test_bot",
     "TG_ALLOWED": "@her_test",
     "TIME_ZONE": "Asia/Shanghai",

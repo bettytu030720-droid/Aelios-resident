@@ -6,6 +6,7 @@
 //   auto     needs LETTER_AFTER_TOKENS small (start wrangler with --var LETTER_AFTER_TOKENS:400)
 //   crash-1  sends a slow reply; kill workerd once the first bubble is out, restart, then run crash-2
 //   crash-2  checks what she got after the restart
+//   migrate  needs the old model variable (start wrangler with --var MODEL:fake)
 import assert from "node:assert/strict";
 
 const WORKER = "http://127.0.0.1:8787";
@@ -13,7 +14,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, auto: 300, "crash-1": 500, "crash-2": 600 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, auto: 300, "crash-1": 500, "crash-2": 600, migrate: 700 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -159,6 +160,7 @@ if (phase === "main") {
     assert.match(out, /\n对话：\d+ 条/);
     assert.match(out, /交接信：0 封/);
     assert.match(out, /人设：还没填/);
+    assert.match(out, /\n上一次调用模型：输入 \d+ token，其中缓存读 \d+/);
     assert.match(out, /主动找你：关/);
   });
 
@@ -235,6 +237,50 @@ if (phase === "main") {
     const precious = (await log()).filter((e) => e.kind === "aelios.precious").at(-1);
     assert.equal(precious.body.content, "这是第二个气泡。");
     assert.equal(precious.body.namespace, "test-space");
+  });
+
+  await step("every turn asks for prompt caching (Claude's Messages API reads it)", async () => {
+    const before = (await sent()).length;
+    await post("缓存在吗");
+    assert.deepEqual(await waitForSends(before, 1), ["缓存标记在。"]);
+  });
+
+  await step("the web API answers other origins (Aelios' admin page)", async () => {
+    const preflight = await fetch(`${WORKER}/web/messages`, {
+      method: "OPTIONS",
+      headers: { origin: "https://aelios.example", "access-control-request-headers": "x-web-key" }
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+    assert.match(preflight.headers.get("access-control-allow-headers"), /x-web-key/);
+    const response = await web("/web/check", "test-web-key");
+    assert.equal(response.headers.get("access-control-allow-origin"), "*");
+    assert.equal((await web("/web/check", "wrong")).headers.get("access-control-allow-origin"), "*");
+  });
+
+  await step("the model is picked on the web, after one trial call", async () => {
+    let model = await (await web("/web/model", "test-web-key")).json();
+    assert.equal(model.model, "");
+    assert.equal(model.fallback, "fake");
+    assert.equal(typeof model.lastUsage.input, "number");
+    assert.equal((await web("/web/model", "wrong", { text: "fake" })).status, 401);
+    let response = await web("/web/model", "test-web-key", { text: "gpt" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /^这个模型用不了：/);
+    // No AI binding in the local test, so a real model fails its trial call and is not saved.
+    response = await web("/web/model", "test-web-key", { text: "anthropic/claude-opus-5.5" });
+    assert.equal(response.status, 400);
+    model = await (await web("/web/model", "test-web-key")).json();
+    assert.equal(model.model, "");
+    response = await web("/web/model", "test-web-key", { text: " fake " });
+    assert.equal(response.status, 200);
+    model = await response.json();
+    assert.equal(model.model, "fake");
+    assert.equal(typeof model.at, "number");
+    const before = (await sent()).length;
+    await post("/status");
+    const [out] = await waitForSends(before, 1);
+    assert.match(out, /^模型：fake\n/);
   });
 
   let fallback;
@@ -323,6 +369,17 @@ if (phase === "auto") {
       if (Date.now() - start > 20000) throw new Error(`no letter notice: ${JSON.stringify(all.slice(-3))}`);
       await sleep(300);
     }
+  });
+}
+
+if (phase === "migrate") {
+  await fetch(`${MOCK}/__reset`);
+  await step("the old MODEL variable is carried onto the web setting once", async () => {
+    const model = await (await fetch(`${WORKER}/web/model`, { headers: { "x-web-key": "test-web-key" } })).json();
+    assert.equal(model.model, "fake");
+    assert.equal(typeof model.at, "number");
+    await post("你好");
+    await waitForSends(0, 2);
   });
 }
 

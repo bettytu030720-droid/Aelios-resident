@@ -140,7 +140,12 @@
   .persona { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
     padding: 4px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   .persona .hint { margin: 0; font-size: 13px; color: var(--text-3); }
-  .persona textarea { flex: 1; min-height: 45vh; resize: vertical; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--panel-border);
+  .persona .label { font-size: 14px; font-weight: 600; color: var(--text-2); }
+  .persona input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--panel-border);
+    background: var(--panel-bg-strong); outline: none; font-size: 15px; }
+  .persona input:focus { border-color: var(--coral); }
+  .persona .model { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--panel-border); }
+  .persona textarea { flex: 1; min-height: 38vh; resize: vertical; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--panel-border);
     background: var(--panel-bg-strong); outline: none; font-size: 15px; line-height: 1.6; }
   .persona textarea:focus { border-color: var(--coral); }
   .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -182,12 +187,12 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
         <div>
-          <h1 x-text="view === 'persona' ? '人设' : '住户'"></h1>
-          <div class="sub" x-text="view === 'persona' ? '改完下一句就按新的说' : '跟 Telegram 是同一段对话'"></div>
+          <h1 x-text="view === 'persona' ? '设置' : '住户'"></h1>
+          <div class="sub" x-text="view === 'persona' ? '模型和人设，改完下一句就生效' : '跟 Telegram 是同一段对话'"></div>
         </div>
         <div class="spacer"></div>
-        <button class="icon-btn" type="button" x-show="view === 'chat'" @click="openPersona()" aria-label="人设" title="人设">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        <button class="icon-btn" type="button" x-show="view === 'chat'" @click="openPersona()" aria-label="设置" title="模型和人设">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
         </button>
         <button class="icon-btn" type="button" @click="toggleTheme()" :aria-label="theme === 'dark' ? '切到白天' : '切到夜间'" :title="theme === 'dark' ? '切到白天' : '切到夜间'">
           <svg x-show="theme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
@@ -229,6 +234,23 @@
       </main>
 
       <section class="persona" x-show="view === 'persona'">
+        <div class="model">
+          <span class="label">模型</span>
+          <div class="bar">
+            <input x-model="modelDraft" list="model-choices" :placeholder="'没选时用：' + model.fallback" aria-label="模型" @keydown.enter.prevent="saveModel()">
+            <button class="btn primary" type="button" @click="saveModel()" :disabled="savingModel || modelDraft.trim() === model.model" x-text="savingModel ? '试调中' : '换上'"></button>
+          </div>
+          <datalist id="model-choices">
+            <option value="anthropic/claude-opus-5.5"></option>
+            <option value="anthropic/claude-sonnet-5.5"></option>
+            <option value="anthropic/claude-fable-5.1"></option>
+            <option value="@cf/zai-org/glm-4.7-flash"></option>
+          </datalist>
+          <p class="hint">换之前先让它说一个字试试，调不通就不换。Claude 填 anthropic/ 开头的，走 AI Gateway 的额度。留空换上就回到默认。</p>
+          <p class="warn" x-show="modelError" x-text="modelError"></p>
+          <p class="hint" x-show="model.lastUsage" x-text="usageText(model.lastUsage)"></p>
+        </div>
+        <span class="label">人设</span>
         <p class="hint">它是谁、怎么叫你、说话什么样，都写在这里。只存在你自己的 Worker 里，不进代码仓库。留空保存就回到默认的一句。</p>
         <textarea x-model="personaDraft" :maxlength="PERSONA_MAX" :placeholder="'没填时用的是：' + persona.fallback" aria-label="人设"></textarea>
         <p class="warn" x-show="/claude\s*code/i.test(personaDraft)">用 Max 附带的 API key 时，人设里有「Claude Code」这几个字会报错，换个说法。</p>
@@ -287,6 +309,10 @@ function resident() {
     view: 'chat',
     PERSONA_MAX: PERSONA_MAX,
     persona: { text: '', at: null, fallback: '', versions: [] },
+    model: { model: '', at: null, fallback: '', lastUsage: null },
+    modelDraft: '',
+    modelError: '',
+    savingModel: false,
     personaLoaded: false,
     personaDraft: '',
     savingPersona: false,
@@ -393,11 +419,14 @@ function resident() {
     async openPersona() {
       try {
         await this.loadPersona();
+        this.model = await this.api('/web/model');
       } catch (error) {
         this.notify(error.message);
         return;
       }
       this.personaDraft = this.persona.text;
+      this.modelDraft = this.model.model;
+      this.modelError = '';
       this.view = 'persona';
       this.$nextTick(function () {
         var el = document.querySelector('.persona textarea');
@@ -408,6 +437,25 @@ function resident() {
       if (this.personaDirty && !confirm('改的还没保存，不要了吗？')) return;
       this.view = 'chat';
       this.scrollSoon();
+    },
+    async saveModel() {
+      if (this.savingModel) return;
+      this.savingModel = true;
+      this.modelError = '';
+      try {
+        this.model = await this.api('/web/model', { method: 'POST', body: { text: this.modelDraft } });
+        this.modelDraft = this.model.model;
+        this.notify('换好了，下一句开始用 ' + (this.model.model || this.model.fallback));
+      } catch (error) {
+        this.modelError = error.message;
+      } finally {
+        this.savingModel = false;
+      }
+    },
+    usageText(usage) {
+      if (!usage) return '';
+      var share = usage.input ? Math.round(usage.cacheRead / usage.input * 100) : 0;
+      return '上一次调用：输入 ' + usage.input + ' token，其中缓存读 ' + usage.cacheRead + '（' + share + '%），输出 ' + usage.output + '（' + this.fmt(usage.at) + '）';
     },
     async savePersona() {
       if (this.savingPersona) return;

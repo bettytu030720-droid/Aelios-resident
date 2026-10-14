@@ -9,6 +9,7 @@ import {
   type ThinkScheduledTask,
   type ThinkScheduledTasks,
   type ThinkSession,
+  type StepContext,
   type TurnConfig,
   type TurnContext
 } from "@cloudflare/think";
@@ -29,6 +30,7 @@ import { fakeModel } from "./fake-model";
 import { CHAT_RULES, LETTER_INSTRUCTIONS, SKIP, checkinPrompt, stamp } from "./prompts";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 
+// Used until a model is picked on the web page. Free on the Workers Free plan.
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
 // Used until a persona is written on the web page.
 const DEFAULT_PERSONA = "你是她的伴侣，在 Telegram 和网页上陪她聊天。";
@@ -36,6 +38,10 @@ const PERSONA_MAX_CHARS = 30000;
 // How many earlier personas the web page can bring back.
 const PERSONA_VERSIONS = 10;
 const BOOT_REFRESH_MS = 6 * 60 * 60 * 1000;
+// Claude models ("anthropic/…") go out on Anthropic's Messages API, where this asks for prompt caching:
+// persona, rules, boot packet and the earlier turns are read from cache on the next turn.
+// Other providers ignore options under "anthropic".
+const PROMPT_CACHE = { anthropic: { cacheControl: { type: "ephemeral" } } };
 
 function num(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -59,6 +65,12 @@ export type WebLine = {
   via: "telegram" | "web" | "checkin" | null;
 };
 
+/** Token use of the latest model call. Input includes the cached part. */
+export type LastUsage = { at: number; input: number; cacheRead: number; cacheWrite: number; output: number };
+
+/** The model as the web page edits it. An empty model means the default is in use. */
+export type WebModel = { model: string; at: number | null; fallback: string; lastUsage: LastUsage | null };
+
 /** The persona as the web page edits it. An empty text means the default line is in use. */
 export type WebPersona = {
   text: string;
@@ -75,6 +87,12 @@ function textOf(message: { parts?: readonly { type: string; text?: string }[] } 
     .filter((part) => part.type === "text")
     .map((part) => part.text ?? "")
     .join("");
+}
+
+function usageLine(usage: LastUsage | null): string {
+  if (!usage) return "上一次调用模型：还没有";
+  const share = Math.round((usage.cacheRead / usage.input) * 100);
+  return `上一次调用模型：输入 ${usage.input} token，其中缓存读 ${usage.cacheRead}（${share}%）、写 ${usage.cacheWrite}，输出 ${usage.output}`;
 }
 
 /** Put her local time in front of the first message of a burst, so the model knows when she wrote. */
@@ -100,8 +118,38 @@ export class Resident extends Think<Env> {
   }
 
   override getModel(): ThinkModel {
-    const model = this.env.MODEL?.trim() || DEFAULT_MODEL;
-    return model === "fake" ? fakeModel() : model;
+    return this.modelFor(this.savedModel() || this.defaultModel);
+  }
+
+  /** The model picked on the web page, or "" for the default. */
+  private savedModel(): string {
+    const saved = this.settings("model");
+    if (saved) return saved.value;
+    // The model used to be the MODEL variable: carry it over once, so the switch does not drop back to the default.
+    const old = this.env.MODEL?.trim();
+    if (old) this.saveSetting("model", old);
+    return old ?? "";
+  }
+
+  /** Local tests run on a scripted model, which also becomes a valid choice there. */
+  private get defaultModel(): string {
+    return this.env.FAKE_MODEL === "true" ? "fake" : DEFAULT_MODEL;
+  }
+
+  private modelFor(id: string): ThinkModel {
+    return id === "fake" && this.env.FAKE_MODEL === "true" ? fakeModel() : id;
+  }
+
+  /** Small settings written on the web page (the model), one row per key. */
+  private settings(key: string): { value: string; at: number } | undefined {
+    this.sql`CREATE TABLE IF NOT EXISTS res_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, at INTEGER NOT NULL)`;
+    return this.sql<{ value: string; at: number }>`SELECT value, at FROM res_settings WHERE key = ${key}`[0];
+  }
+
+  private saveSetting(key: string, value: string): void {
+    this.settings(key);
+    this.sql`INSERT INTO res_settings (key, value, at) VALUES (${key}, ${value}, ${Date.now()})
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value, at = excluded.at`;
   }
 
   override getGateway() {
@@ -168,8 +216,26 @@ export class Resident extends Think<Env> {
     const own = Object.keys(this.getTools());
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
-      activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name))
+      activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
+      providerOptions: PROMPT_CACHE
     };
+  }
+
+  /** Token use of the latest model step, so /status and the web page can show whether the prompt cache is hit. */
+  override async onStepFinish(step: StepContext): Promise<void> {
+    const usage = step.usage;
+    if (!usage?.inputTokens) return;
+    await this.ctx.storage.put<LastUsage>("last_usage", {
+      at: Date.now(),
+      input: usage.inputTokens,
+      cacheRead: usage.inputTokenDetails?.cacheReadTokens ?? 0,
+      cacheWrite: usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+      output: usage.outputTokens ?? 0
+    });
+  }
+
+  private async lastUsage(): Promise<LastUsage | null> {
+    return (await this.ctx.storage.get<LastUsage>("last_usage")) ?? null;
   }
 
   /** Aelios' boot packet, fetched at most every six hours. */
@@ -322,7 +388,7 @@ export class Resident extends Think<Env> {
     const rows = await this.session.getHistoryRowStats();
     const compactions = await this.session.getCompactions();
     const tokens = rows.reduce((sum, row) => sum + row.tokenEstimate, 0);
-    const model = this.env.MODEL?.trim() || DEFAULT_MODEL;
+    const model = this.savedModel() || this.defaultModel;
     const on = (flag: boolean) => (flag ? "开" : "关");
     const [persona] = this.personas(1);
     return [
@@ -332,6 +398,7 @@ export class Resident extends Think<Env> {
         : "人设：还没填，先用默认的一句（在网页门右上角填）",
       `对话：${rows.length} 条，约 ${tokens} token（超过 ${num(this.env.LETTER_AFTER_TOKENS, 24000)} 写交接信）`,
       `交接信：${compactions.length} 封`,
+      usageLine(await this.lastUsage()),
       `长期记忆 Aelios：${on(Boolean(aeliosConfig(this.env)))}`,
       `查网页：搜索${on(this.env.WEB_SEARCH?.trim().toLowerCase() === "on")}，指定网站 ${list(this.env.FETCH_ALLOWLIST).length} 个`,
       `主动找你：${this.env.CHECKIN_SCHEDULE?.trim() || "关"}`
@@ -380,6 +447,36 @@ export class Resident extends Think<Env> {
       }
     ]);
     return { status: result.status };
+  }
+
+  async webModel(): Promise<WebModel> {
+    this.savedModel();
+    const saved = this.settings("model");
+    return { model: saved?.value ?? "", at: saved?.at ?? null, fallback: this.defaultModel, lastUsage: await this.lastUsage() };
+  }
+
+  /**
+   * Pick the model from the web page. It is tried with one tiny call first, so a typo,
+   * a model the plan does not include, or a missing key is reported here instead of in the chat.
+   * Empty goes back to the default.
+   */
+  async webSetModel(id: string): Promise<WebModel | { error: string }> {
+    const model = id.trim();
+    if (model) {
+      try {
+        await generateText({
+          model: this.resolveModel(this.modelFor(model)),
+          prompt: "只回一个字：好",
+          maxOutputTokens: 64,
+          abortSignal: AbortSignal.timeout(30_000)
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return { error: `这个模型用不了：${reason.slice(0, 300)}` };
+      }
+    }
+    this.saveSetting("model", model);
+    return this.webModel();
   }
 
   /** The persona panel on the web page: the current persona and the ones before it. */

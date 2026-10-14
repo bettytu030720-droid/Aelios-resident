@@ -22,7 +22,7 @@
   // No "vars" here on purpose: a value written in this file would overwrite what you set in the
   // Dashboard on every push. Every setting has a default in the code; set the ones you need in
   // Dashboard → Worker → Settings → Variables and Secrets (type Text). See README for the list:
-  //   MODEL, AI_GATEWAY_ID, TG_BOT_USERNAME, TG_ALLOWED, TIME_ZONE, DEBOUNCE_SECONDS,
+  //   AI_GATEWAY_ID, TG_BOT_USERNAME, TG_ALLOWED, TIME_ZONE, DEBOUNCE_SECONDS,
   //   LETTER_AFTER_TOKENS, KEEP_RECENT_TOKENS, SHOW_LETTER, AELIOS_URL, AELIOS_NAMESPACE,
   //   WEB_SEARCH, FETCH_ALLOWLIST, CHECKIN_SCHEDULE
   // Secrets (Dashboard → Worker → Settings → Variables and Secrets, type Secret):
@@ -31,5 +31,5 @@
   //   AELIOS_API_KEY       the value of your Aelios' CHATBOX_API_KEY, IM_API_KEY or MEMORY_MCP_API_KEY
   //                        (all read and write the "default" space; only CHATBOX_API_KEY lets AELIOS_NAMESPACE pick another)
   //   WEB_KEY              the password for the web door; unset = the web door stays shut
-  // The persona is not a secret or a var: write it on the web door (the person button, top right).
+  // The model and the persona are not secrets or vars: pick them on the web door (or Aelios' admin page).
 }
