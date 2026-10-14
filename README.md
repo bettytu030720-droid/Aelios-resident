@@ -15,6 +15,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 - **Telegram**：私聊才回，不在 `TG_ALLOWED` 里的人一个字都不回。连发几条会等 `DEBOUNCE_SECONDS` 秒并成一轮。回复按空行拆成几条消息，写完一段发一段，中间显示「正在输入」。她每条消息前面带上当地时间（`TIME_ZONE`），模型知道现在几点。Telegram 重发同一条消息不会回两次。
 - **网页门**：打开 Worker 的网址，填 `WEB_KEY` 进门。样子照 Aelios admin 的星空配色，左右气泡，夜间/白天可切。跟 Telegram 是同一段对话：两边说的话两边都看得到（网页每 5 秒刷新一次）；在网页上说的话只在网页上回。每条旁边的心形按钮把这句存进 Aelios 的「珍贵」。交接信折叠显示在它收起的位置。
+- **Aelios 看板里也能用**：Aelios 的 `/admin` → 设置 → 住户（可选），填这个 Worker 的网址和 `WEB_KEY`，导航里会多一个「住户」页，对话、模型、人设都跟网页门一样（Aelios 要更新到带住户页的版本）。地址和钥匙只存在那台设备的浏览器里。
 - **模型**：在网页门右上角的齿轮里选。换之前先让它说一个字试试，调不通（写错、档位不含、没额度）就不换，当场告诉你原因。没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。Claude 填 `anthropic/claude-opus-5.5` 这种（Cloudflare 的写法用点号），走 Anthropic 的 Messages 接口，每轮都带缓存标记，人设、规矩、开机包和之前的聊天下一轮从缓存读；`/status` 和设置页会显示上一次调用的缓存读了多少。以前填在 `MODEL` 变量里的模型，第一次用时自动搬过来，之后改 `MODEL` 不再起作用。
 - **人设**：也在齿轮里填，保存后下一句就按新的说。存在 Durable Object 里，不在代码和 Secret 里，所以公开仓库也不会带出去。最近 10 版都留着，可以一键放回去；没填时用一句默认的，网页门顶上会提醒你去填。
 - **Aelios 长期记忆**：`memory_recall` 工具查记忆；每一轮都记进 Aelios（夜里 Dream 照常整理）；Aelios 的开机包（昨天的日记、珍贵原话、黑话表）放进系统提示，最多 6 小时取一次。
@@ -42,7 +43,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 3. **填密钥和设置**（Worker → Settings → Variables and Secrets）。`wrangler.jsonc` 里故意一个变量都不写，所以这里填的东西以后推代码不会被冲掉：
    - Secret `TG_BOT_TOKEN`：第 1 步的 token
    - Secret `TG_WEBHOOK_SECRET`：自己编一串长的（字母、数字、`_`、`-`）
-   - Secret `WEB_KEY`：网页门的钥匙，自己编；不填网页门就一直关着
+   - Secret `WEB_KEY`：网页门的钥匙，自己编一串长的；不填网页门就一直关着。拿到它就能看全部对话、改模型和人设，别截图别外发；怀疑漏了就在 Cloudflare 里换一个，网页门和 Aelios 看板重新填一次
    - Secret `AELIOS_API_KEY`：跟你 Aelios 那边 `CHATBOX_API_KEY`、`IM_API_KEY`、`MEMORY_MCP_API_KEY` 任意一把同一个值。三把都读写 `default` 空间；想用别的空间（`AELIOS_NAMESPACE`）只能用 `CHATBOX_API_KEY`
    - 变量 `TG_BOT_USERNAME`：bot 的用户名（不带 @）
    - 变量 `TG_ALLOWED`：你的 Telegram 用户名，比如 `@your_name`（也可以填 chat id，逗号隔开）
