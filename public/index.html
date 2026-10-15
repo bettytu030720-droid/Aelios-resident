@@ -447,6 +447,11 @@ function resident() {
     '.letter summary { cursor: pointer; color: var(--text-2); }',
     '.letter .text { margin-top: 8px; color: var(--text-2); }',
     '.error-message-text { background: var(--panel-bg-strong); color: var(--err); border-color: var(--err); }',
+    // The typing dots: deep-chat centres them with uneven padding, which the bubble padding above replaces.
+    // The middle dot is the element, its neighbours sit .7em either side, so the padding makes room for them.
+    '.message-bubble.deep-chat-loading-message-dots-container { width: .45em; padding: 9px calc(13px + .7em); }',
+    // The stop square: deep-chat pins it to the corner of its own smaller button.
+    '.input-button #stop-icon { inset: 0; margin: auto; width: 12px; height: 12px; border-radius: 3px; background-color: #000; opacity: .75; }',
     '#input { box-sizing: border-box; padding: 0 12px; padding-bottom: max(10px, env(safe-area-inset-bottom), var(--tg-bottom, 0px)); }',
     '#text-input-container { width: 100%; margin: 8px 0 0; border-radius: 18px; border: 1px solid var(--panel-border); background: var(--panel-bg-strong); box-shadow: none; max-height: 40vh; }',
     '#text-input-container:focus-within { border-color: var(--coral); }',
