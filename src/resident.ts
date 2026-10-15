@@ -166,7 +166,7 @@ export class Resident extends Think<Env> {
   override messageMetadata: MessageMetadataCallback = ({ part }) => (part.type === "start" ? { at: Date.now() } : undefined);
 
   get tz(): string {
-    return this.cfg.TIME_ZONE?.trim() || "Asia/Shanghai";
+    return this.cfg.TIME_ZONE?.trim() || "Asia/Singapore";
   }
 
   /** The settings in effect: those saved on the web page's settings page over the Worker's own (config.ts). */

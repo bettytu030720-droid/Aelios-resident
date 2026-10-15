@@ -26,7 +26,7 @@ const timeZone = (value: string) => {
     new Intl.DateTimeFormat("en", { timeZone: value });
     return null;
   } catch {
-    return "不认识这个时区，写成 Asia/Shanghai 这样";
+    return "不认识这个时区，写成 Asia/Singapore 这样";
   }
 };
 

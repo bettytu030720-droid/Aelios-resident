@@ -288,11 +288,9 @@
             <p class="hint" x-show="meta.help" x-text="meta.help"></p>
             <template x-if="field(meta.key) && field(meta.key).kind === 'choice'">
               <div class="choices">
-                <button class="choice" type="button" :class="!field(meta.key).value ? 'on' : ''" :disabled="Boolean(configBusy)"
-                  @click="saveConfig(meta.key, '')" x-text="field(meta.key).fromWorker ? '跟 Cloudflare 一样' : '默认'"></button>
                 <template x-for="choice in field(meta.key).choices" :key="choice">
-                  <button class="choice" type="button" :class="field(meta.key).value === choice ? 'on' : ''" :disabled="Boolean(configBusy)"
-                    @click="saveConfig(meta.key, choice)" x-text="choice"></button>
+                  <button class="choice" type="button" :class="inEffect(meta) === choice ? 'on' : ''" :disabled="Boolean(configBusy)"
+                    @click="pickChoice(meta, choice)" x-text="choice"></button>
                 </template>
               </div>
             </template>
@@ -382,7 +380,7 @@ function resident() {
       { key: 'TG_ALLOWED', label: '谁能跟它说话', help: '@用户名或 chat id，逗号隔开。都不填就谁都不回。', placeholder: '@your_name' }
     ] },
     { title: '时间', fields: [
-      { key: 'TIME_ZONE', label: '时区', def: 'Asia/Shanghai' },
+      { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' },
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: 'every day at 09:00、every weekday at 21:30、every 3 hours 这种写法。不填就不主动找。', def: '不主动找' }
     ] },
     { title: '交接信和缓存', fields: [
@@ -881,6 +879,17 @@ function resident() {
       var draft = (this.configDraft[key] || '').trim();
       if (!f) return false;
       return f.kind === 'secret' ? Boolean(draft) : draft !== f.value;
+    },
+    // A choice in effect: saved here, else the Worker's own, else the default.
+    inEffect(meta) {
+      var f = this.field(meta.key);
+      return f ? (f.value || f.fromWorker.toLowerCase() || meta.def || '') : '';
+    },
+    // Picking what the Worker or the default would give anyway saves nothing, so a later change there still applies.
+    pickChoice(meta, choice) {
+      var f = this.field(meta.key);
+      if (!f || choice === this.inEffect(meta)) return;
+      this.saveConfig(meta.key, choice === (f.fromWorker.toLowerCase() || meta.def) ? '' : choice);
     },
     placeholderFor(meta) {
       var f = this.field(meta.key);

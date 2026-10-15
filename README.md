@@ -69,7 +69,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | `AI_GATEWAY_ID` | 空（用账户的 `default`） | Claude 这类厂商模型和搜索走哪个 AI Gateway |
 | `TG_BOT_USERNAME` | 空 | bot 的用户名 |
 | `TG_ALLOWED` | 空（谁都不回） | 允许的 chat id 和 @用户名 |
-| `TIME_ZONE` | `Asia/Shanghai` | 消息前的时间、定时用哪个时区 |
+| `TIME_ZONE` | `Asia/Singapore` | 消息前的时间、定时用哪个时区 |
 | `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
 | `LETTER_IDLE_MINUTES` | `55`（`CACHE_TTL=5m` 时 `4`） | 你没动静多少分钟写交接信（定时找你那几轮不算，不往后推）；最多比缓存时长少 1 分钟，填多了也按这个算；`off` 只靠 `/handoff` |
 | `KEEP_RECENT_TOKENS` | `6000` | 写信后最近多少 token 原样留着（中文一字约 1 token）；比这更早的聊天才收进信里，想聊得少也写信就调小 |
