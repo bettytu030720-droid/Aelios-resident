@@ -13,6 +13,8 @@ interface Env {
   CACHE_TTL?: string;
   AELIOS_URL?: string;
   AELIOS_NAMESPACE?: string;
+  // The identity in Aelios' admin page the chat goes out as (via-aelios.ts); empty for the key's first one.
+  AELIOS_IDENTITY?: string;
   WEB_SEARCH?: string;
   WEB_FETCH?: string;
   WEB_FETCH_MODEL?: string;

@@ -84,33 +84,28 @@ const server = http.createServer(async (req, res) => {
       }
     });
   }
-  // A provider of your own (custom/…): OpenAI chat completions, and Anthropic messages.
-  // Her words only: what came up from Aelios rides along as a later text part.
+  // Models: a provider of your own (custom/…), and Aelios' model endpoint (/v1/… or /<identity>/v1/…).
+  // Both answer OpenAI chat completions and Anthropic messages with a line saying what they got.
   const textOf = (content) => (typeof content === "string" ? content : (content ?? []).find((p) => p.type === "text")?.text ?? "");
-  const sse = (events) => {
-    res.writeHead(200, { "content-type": "text/event-stream" });
+  const sse = (events, headers = {}) => {
+    res.writeHead(200, { "content-type": "text/event-stream", ...headers });
     for (const [event, data] of events) res.write(`${event ? `event: ${event}\n` : ""}data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`);
     res.end();
   };
-  if (url.pathname === "/custom/v1/chat/completions") {
-    log.push({ kind: "custom.chat", auth: req.headers.authorization, body: json });
-    const said = textOf(json.messages.filter((m) => m.role === "user").at(-1)?.content);
-    const text = `自己的供应商（OpenAI 格式）收到：${said}`;
+  const chat = (text, headers = {}) => {
     const usage = { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 };
     if (!json.stream) {
-      return reply({ id: "c1", object: "chat.completion", created: 0, model: json.model, choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }], usage });
+      res.writeHead(200, { "content-type": "application/json", ...headers });
+      return res.end(JSON.stringify({ id: "c1", object: "chat.completion", created: 0, model: json.model, choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }], usage }));
     }
     const chunk = (delta, finish, extra = {}) => ({ id: "c1", object: "chat.completion.chunk", created: 0, model: json.model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra });
-    return sse([[null, chunk({ role: "assistant", content: text }, null)], [null, chunk({}, "stop", { usage })], [null, "[DONE]"]]);
-  }
-  if (url.pathname === "/custom/v1/messages") {
-    log.push({ kind: "custom.messages", apiKey: req.headers["x-api-key"], body: json });
-    const oldThinking = json.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "thinking").length;
-    const cached = Boolean(json.cache_control) || JSON.stringify(json).includes('"cache_control"');
-    const text = `自己的供应商（Anthropic 格式）收到 ${json.messages.length} 条，缓存标记${cached ? "有" : "无"}，旧思考块 ${oldThinking} 个`;
+    return sse([[null, chunk({ role: "assistant", content: text }, null)], [null, chunk({}, "stop", { usage })], [null, "[DONE]"]], headers);
+  };
+  const messages = (text, headers = {}) => {
     const usage = { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
     if (!json.stream) {
-      return reply({ id: "msg_1", type: "message", role: "assistant", model: json.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage });
+      res.writeHead(200, { "content-type": "application/json", ...headers });
+      return res.end(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model: json.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage }));
     }
     return sse([
       ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: json.model, content: [], stop_reason: null, stop_sequence: null, usage } }],
@@ -123,7 +118,35 @@ const server = http.createServer(async (req, res) => {
       ["content_block_stop", { type: "content_block_stop", index: 1 }],
       ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } }],
       ["message_stop", { type: "message_stop" }]
-    ]);
+    ], headers);
+  };
+  const said = () => textOf(json.messages.filter((m) => m.role === "user").at(-1)?.content);
+  const thinkingCount = () => json.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "thinking").length;
+  const cached = () => (Boolean(json.cache_control) || JSON.stringify(json).includes('"cache_control"') ? "有" : "无");
+
+  if (url.pathname === "/custom/v1/chat/completions") {
+    log.push({ kind: "custom.chat", auth: req.headers.authorization, body: json });
+    return chat(`自己的供应商（OpenAI 格式）收到：${said()}`);
+  }
+  if (url.pathname === "/custom/v1/messages") {
+    log.push({ kind: "custom.messages", apiKey: req.headers["x-api-key"], body: json });
+    return messages(`自己的供应商（Anthropic 格式）收到 ${json.messages.length} 条，缓存标记${cached()}，旧思考块 ${thinkingCount()} 个`);
+  }
+  const gateway = url.pathname.match(/^(?:\/([^/]+))?\/v1\/(messages|chat\/completions)$/);
+  if (gateway) {
+    const purpose = req.headers["x-aelios-purpose"] ?? null;
+    log.push({ kind: `aelios.${gateway[2] === "messages" ? "messages" : "chat"}`, identity: gateway[1] ?? null, purpose,
+      apiKey: req.headers["x-api-key"], auth, body: json });
+    // Like Aelios: a model needs its provider prefix; one outside the identity's main models gets no memory.
+    // "dropped" stands for a model taken off the main list after it was picked: its trial call passed.
+    if (!json.model.includes("/")) return reply({ error: { message: `"${json.model}" has no provider prefix; use the author/model form` } }, 400);
+    const off = json.model.includes("plain") || (json.model.includes("dropped") && purpose !== "auxiliary");
+    const memory = off ? "off" : purpose === "auxiliary" ? "skipped" : "injected";
+    const headers = { "x-aelios-memory": memory };
+    if (gateway[2] === "messages") {
+      return messages(`Aelios 收到 ${json.messages.length} 条，缓存标记${cached()}，旧思考块 ${thinkingCount()} 个`, headers);
+    }
+    return chat(`Aelios（${json.model}）收到：${said()}`, headers);
   }
   res.writeHead(404);
   res.end();

@@ -1,6 +1,7 @@
-// Aelios as long-term memory:
-//   POST /v1/memory/recall   the memory_recall tool, and the recall that comes up by itself before each reply
-//   POST /v1/memory/ingest   every exchange and every handoff letter, so Dream can digest them at night
+// Aelios as long-term memory. The chat itself goes out through Aelios' model endpoint (via-aelios.ts), where
+// Aelios recalls for her message and records the exchange. Besides that:
+//   POST /v1/memory/recall   the memory_recall tool
+//   POST /v1/memory/ingest   handoff letters and check-ins, which Aelios does not record as conversation
 //   GET  /v1/memory_boot     yesterday's diary, precious notes and glossary, added to the system prompt
 //   POST /mcp                remember, keep a moment, forget, learn a word, read the diary: Aelios' own MCP
 //                            tools, wrapped here with short descriptions so they cost few tokens per turn
@@ -14,6 +15,8 @@ export type AeliosConfig = {
   url: string;
   key: string;
   namespace: string;
+  /** The identity set up in Aelios' admin page that the chat goes out as; "" for the key's first one. */
+  identity: string;
 };
 
 const BOOT_MAX_CHARS = 3000;
@@ -22,7 +25,12 @@ export function aeliosConfig(env: Env): AeliosConfig | null {
   const url = env.AELIOS_URL?.trim().replace(/\/+$/, "");
   const key = env.AELIOS_API_KEY?.trim();
   if (!url || !key) return null;
-  return { url, key, namespace: env.AELIOS_NAMESPACE?.trim() || "default" };
+  return {
+    url,
+    key,
+    namespace: env.AELIOS_NAMESPACE?.trim() || "default",
+    identity: env.AELIOS_IDENTITY?.trim().replace(/^\/+|\/+$/g, "") ?? ""
+  };
 }
 
 async function aelios(config: AeliosConfig, path: string, init: RequestInit = {}): Promise<Response> {

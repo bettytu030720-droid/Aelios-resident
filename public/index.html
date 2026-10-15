@@ -143,6 +143,30 @@
   .version .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
   .version .btn { height: 32px; padding: 0 10px; font-size: 13px; }
 
+  /* Settings page: one card per group, one row per setting. */
+  .config { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+    padding: 4px 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .config .hint { margin: 0; font-size: 13px; color: var(--text-3); }
+  .card { padding: 12px 14px; border-radius: 18px; border: 1px solid var(--panel-border); background: var(--panel-bg); }
+  .card h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; color: var(--text-1); }
+  .card > .hint { margin-bottom: 4px; }
+  .field { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--panel-border); }
+  .card h2 + .field, .card > .hint + .field { border-top: 0; }
+  .field .name { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--text-2); }
+  .field .var { font-size: 11px; color: var(--text-4); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .field .row { display: flex; gap: 8px; }
+  .field input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--panel-border);
+    background: var(--bg-deep); outline: none; font-size: 15px; }
+  .field input:focus { border-color: var(--coral); }
+  .field .btn { flex: none; }
+  .field .now { font-size: 12px; color: var(--text-4); word-break: break-all; }
+  .field .error { margin: 0; }
+  .choices { display: flex; gap: 6px; flex-wrap: wrap; }
+  .choice { height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--panel-border); background: transparent; cursor: pointer; font-size: 13px; color: var(--text-2); }
+  .choice:hover { border-color: var(--coral); }
+  .choice.on { border-color: var(--coral); background: var(--mine-bg); color: var(--text-1); }
+  .choice:disabled { opacity: .45; cursor: default; }
+
   /* Model picker: a sheet with a search box, not a dropdown. */
   .backdrop { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
     padding: max(56px, env(safe-area-inset-top)) 12px 12px; background: rgba(4, 6, 16, .55); backdrop-filter: blur(2px); }
@@ -186,11 +210,11 @@
   </template>
 
   <header x-show="authed">
-    <button class="icon-btn" type="button" x-show="view === 'settings'" @click="closeSettings()" aria-label="回到聊天" title="回到聊天">
+    <button class="icon-btn" type="button" x-show="view !== 'chat'" @click="view === 'config' ? closeConfig() : closeSettings()" aria-label="回到聊天" title="回到聊天">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
-    <div x-show="view === 'settings'">
-      <h1>人设</h1>
+    <div x-show="view !== 'chat'">
+      <h1 x-text="view === 'config' ? '设置' : '人设'"></h1>
       <div class="sub">改完下一句就生效</div>
     </div>
     <button class="chip" type="button" x-show="view === 'chat'" @click="openPicker()" :title="'现在用 ' + currentModel() + '，点这里换'" aria-label="换模型">
@@ -202,17 +226,18 @@
     <button class="icon-btn" type="button" x-show="view === 'chat'" @click="openSettings()" aria-label="人设" title="人设">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
     </button>
+    <button class="icon-btn" type="button" x-show="view === 'chat'" @click="openConfig()" aria-label="设置" title="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
     <button class="icon-btn" type="button" @click="toggleTheme()" :aria-label="theme === 'dark' ? '切到白天' : '切到夜间'" :title="theme === 'dark' ? '切到白天' : '切到夜间'">
       <svg x-show="theme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
       <svg x-show="theme !== 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-    </button>
-    <button class="icon-btn" type="button" @click="logout()" aria-label="锁上" title="锁上">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
     </button>
   </header>
 
   <main class="chat" x-show="authed && view === 'chat'">
     <button class="nudge" type="button" x-show="personaLoaded && !persona.text" @click="openSettings()">还没填人设，现在用的是默认的一句。点这里填</button>
+    <button class="nudge" type="button" x-show="model.memoryOff" @click="openPicker()">这个模型不在 Aelios 那个身份的主模型里，聊的不会被记住。去 Aelios 后台加进去，或者点这里换一个</button>
     <div class="empty" x-show="loaded && !lineCount">还没有聊天。说句话吧，Telegram 那边也看得到。</div>
     <div class="chat-host"></div>
   </main>
@@ -251,6 +276,49 @@
     </details>
   </section>
 
+  <section class="config" x-show="authed && view === 'config'">
+    <p class="hint">这里存的优先；空着的用 Cloudflare 里同名的变量，那边也没有就用默认。key 只能填不能看。只有 TG_BOT_TOKEN、TG_WEBHOOK_SECRET、WEB_KEY 还得在 Cloudflare 里填。</p>
+    <template x-for="group in CONFIG_GROUPS" :key="group.title">
+      <div class="card">
+        <h2 x-text="group.title"></h2>
+        <p class="hint" x-show="group.hint" x-text="group.hint"></p>
+        <template x-for="meta in group.fields" :key="meta.key">
+          <div class="field" x-show="field(meta.key)">
+            <div class="name"><span x-text="meta.label"></span><span class="var" x-text="meta.key"></span></div>
+            <p class="hint" x-show="meta.help" x-text="meta.help"></p>
+            <template x-if="field(meta.key) && field(meta.key).kind === 'choice'">
+              <div class="choices">
+                <button class="choice" type="button" :class="!field(meta.key).value ? 'on' : ''" :disabled="Boolean(configBusy)"
+                  @click="saveConfig(meta.key, '')" x-text="field(meta.key).fromWorker ? '跟 Cloudflare 一样' : '默认'"></button>
+                <template x-for="choice in field(meta.key).choices" :key="choice">
+                  <button class="choice" type="button" :class="field(meta.key).value === choice ? 'on' : ''" :disabled="Boolean(configBusy)"
+                    @click="saveConfig(meta.key, choice)" x-text="choice"></button>
+                </template>
+              </div>
+            </template>
+            <template x-if="field(meta.key) && field(meta.key).kind !== 'choice'">
+              <div class="row">
+                <input x-model="configDraft[meta.key]" :type="field(meta.key).kind === 'secret' ? 'password' : 'text'"
+                  :placeholder="placeholderFor(meta)" autocomplete="off" autocapitalize="off" spellcheck="false" :aria-label="meta.label"
+                  @keydown.enter.prevent="saveConfig(meta.key, configDraft[meta.key])">
+                <button class="btn primary" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)"
+                  @click="saveConfig(meta.key, configDraft[meta.key])">存</button>
+                <button class="btn" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)"
+                  @click="saveConfig(meta.key, '')">清掉</button>
+              </div>
+            </template>
+            <span class="now" x-text="nowText(meta)"></span>
+            <p class="error" x-show="configError[meta.key]" x-text="configError[meta.key]"></p>
+          </div>
+        </template>
+      </div>
+    </template>
+    <div class="bar">
+      <div class="spacer"></div>
+      <button class="btn" type="button" @click="logout()">锁上网页门</button>
+    </div>
+  </section>
+
   <div class="backdrop" x-show="picker.open" x-transition.opacity @click.self="closePicker()" @keydown.escape.window="closePicker()">
     <div class="sheet" role="dialog" aria-label="换模型">
       <div class="search">
@@ -273,7 +341,7 @@
                   <span class="title">
                     <span x-text="item.custom ? '直接用这个 id' : item.name"></span>
                     <span class="tag" x-show="item.provider" x-text="item.provider"></span>
-                    <span class="tag" x-text="{ gateway: 'Gateway 额度', own: '自己的供应商', '': 'Workers AI' }[dotFor(item.id)]"></span>
+                    <span class="tag" x-text="tagFor(item.id)"></span>
                   </span>
                   <span class="id" x-text="item.id"></span>
                   <span class="desc" x-show="item.desc" x-text="item.desc"></span>
@@ -287,7 +355,7 @@
       </div>
       <div class="foot">
         <p class="warn" x-show="picker.error" x-text="picker.error"></p>
-        <span x-text="'换之前先让它说一个字试试，调不通就不换。紫点是 Cloudflare 自己跑的，橙点走 AI Gateway 的额度。目录 ' + catalog.length + ' 个文字模型（' + (catalogUpdated || '没取到') + '）。'"></span>
+        <span x-text="'换之前先让它说一个字试试，调不通就不换。' + (aelios ? '接了 Aelios，都从 Aelios 过，用它那边配的供应商和 key；要在它的主模型里才记得住。' : '紫点是 Cloudflare 自己跑的，橙点走 AI Gateway 的额度。') + '目录 ' + catalog.length + ' 个文字模型（' + (catalogUpdated || '没取到') + '）。'"></span>
       </div>
     </div>
   </div>
@@ -302,6 +370,43 @@ function resident() {
   var RESULTS_MAX = 60;
   // Shown first in the picker, under the ones used recently.
   var FAVORITES = ['anthropic/claude-opus-5.5', 'anthropic/claude-sonnet-5.5', 'anthropic/claude-fable-5.1', 'anthropic/claude-haiku-5.5', '@cf/zai-org/glm-4.7-flash'];
+  // The settings page, in the order shown. Defaults are the code's (README, 设置).
+  var CONFIG_GROUPS = [
+    { title: '长期记忆 Aelios', hint: '填了地址和 key，聊天就从 Aelios 过：它想起旧事、它记下来，模型用它那边配好的供应商和 key。不填就没有长期记忆。', fields: [
+      { key: 'AELIOS_URL', label: '地址', placeholder: 'https://….workers.dev' },
+      { key: 'AELIOS_API_KEY', label: 'key', help: '跟 Aelios 那边 CHATBOX_API_KEY、IM_API_KEY、MEMORY_MCP_API_KEY 任意一把同一个值；用别的空间只能用 CHATBOX_API_KEY。' },
+      { key: 'AELIOS_NAMESPACE', label: '记忆空间', help: '工具、开机包、交接信用这个空间；聊天记进哪个空间看下面那个身份在 Aelios 里的设置，两边对上。', def: 'default' },
+      { key: 'AELIOS_IDENTITY', label: '身份', help: 'Aelios 后台给住户建的身份名。聊天以它的身份从 Aelios 过，用的模型要在它的主模型里。', def: '这把 key 的第一个身份' }
+    ] },
+    { title: 'Telegram', fields: [
+      { key: 'TG_ALLOWED', label: '谁能跟它说话', help: '@用户名或 chat id，逗号隔开。都不填就谁都不回。', placeholder: '@your_name' }
+    ] },
+    { title: '时间', fields: [
+      { key: 'TIME_ZONE', label: '时区', def: 'Asia/Shanghai' },
+      { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: 'every day at 09:00、every weekday at 21:30、every 3 hours 这种写法。不填就不主动找。', def: '不主动找' }
+    ] },
+    { title: '交接信和缓存', fields: [
+      { key: 'CACHE_TTL', label: 'Claude 的缓存留多久', help: '1 小时的缓存写入是输入价的 2 倍，5 分钟的是 1.25 倍。', def: '1h' },
+      { key: 'LETTER_IDLE_MINUTES', label: '没动静多少分钟写交接信', help: '最多比缓存时长少 1 分钟。填 off 只靠 /handoff。', def: '55（缓存 5m 时 4）' },
+      { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token。比这更早的才收进信里。', def: '6000' }
+    ] },
+    { title: '自己的供应商', hint: '没接 Aelios 时才用：模型填 custom/模型名 时用这里的地址和 key。接了 Aelios 就在 Aelios 后台配。', fields: [
+      { key: 'CUSTOM_BASE_URL', label: '地址', help: '写到 /v1 为止。', placeholder: 'https://…/v1' },
+      { key: 'CUSTOM_API_KEY', label: 'key' },
+      { key: 'CUSTOM_FORMAT', label: '格式', help: 'openai 是 chat completions；anthropic 是 Messages，带缓存。', def: 'openai' }
+    ] },
+    { title: 'Cloudflare', fields: [
+      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', help: '搜网走哪个 Gateway；没接 Aelios 时 Claude 这类厂商模型也走它。', def: 'default' }
+    ] },
+    { title: '搜网和读网页', hint: '自己的搜索 key 按 Tavily、Brave、Perplexity 的顺序轮着用，都没填才用 Cloudflare 的 Web Search。', fields: [
+      { key: 'WEB_SEARCH', label: '搜网', help: 'off 关掉；ceramic、exa、linkup 是自己的 key 都失败后用 Cloudflare 的哪一家。', def: 'on' },
+      { key: 'TAVILY_API_KEY', label: 'Tavily key' },
+      { key: 'BRAVE_API_KEY', label: 'Brave key' },
+      { key: 'PERPLEXITY_API_KEY', label: 'Perplexity key' },
+      { key: 'WEB_FETCH', label: '读网页', def: 'on' },
+      { key: 'WEB_FETCH_MODEL', label: '压长网页用的模型', help: '主模型能填的 id 这里都能填：@cf/ 开头的在 Cloudflare 上跑，别的接了 Aelios 就从 Aelios 过（不记）。off 不压，只截断。', def: '@cf/qwen/qwen3-30b-a3b-fp8' }
+    ] }
+  ];
   var HEART = '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>';
   // Styles inside deep-chat's shadow root. CSS variables from :root reach in, so the theme switch applies there too.
   var CHAT_CSS = [
@@ -367,8 +472,13 @@ function resident() {
     timer: null,
     view: 'chat',
     PERSONA_MAX: PERSONA_MAX,
+    CONFIG_GROUPS: CONFIG_GROUPS,
+    config: { fields: [] },
+    configDraft: {},
+    configError: {},
+    configBusy: '',
     persona: { text: '', at: null, fallback: '', versions: [] },
-    model: { model: '', at: null, fallback: '', recent: [], lastUsage: null },
+    model: { model: '', at: null, fallback: '', recent: [], lastUsage: null, memoryOff: false },
     catalog: [],
     catalogUpdated: '',
     picker: { open: false, q: '', active: 0, busy: '', error: '' },
@@ -434,6 +544,8 @@ function resident() {
       this.loaded = false;
       this.view = 'chat';
       this.personaLoaded = false;
+      this.config = { fields: [] };
+      this.configDraft = {};
       this.picker.open = false;
       clearTimeout(this.timer);
       if (chat) chat.remove();
@@ -607,6 +719,11 @@ function resident() {
       if (!id || id.charAt(0) === '@' || id === 'fake') return '';
       return id.indexOf('custom/') === 0 ? 'own' : 'gateway';
     },
+    tagFor(id) {
+      if (id === 'fake') return '测试';
+      if (this.aelios) return '从 Aelios 过';
+      return { gateway: 'Gateway 额度', own: '自己的供应商', '': 'Workers AI' }[this.dotFor(id)];
+    },
     shortName(id) {
       if (!id) return '模型';
       var parts = id.split('/');
@@ -747,6 +864,78 @@ function resident() {
       if (!usage) return '';
       var share = usage.input ? Math.round(usage.cacheRead / usage.input * 100) : 0;
       return '上一次调用：输入 ' + usage.input + ' token，其中缓存读 ' + usage.cacheRead + '（' + share + '%），输出 ' + usage.output + '（' + this.fmt(usage.at) + '）';
+    },
+
+    // ---- settings ----
+    field(key) {
+      for (var i = 0; i < this.config.fields.length; i++) if (this.config.fields[i].key === key) return this.config.fields[i];
+      return null;
+    },
+    savedHere(key) {
+      var f = this.field(key);
+      return Boolean(f && (f.kind === 'secret' ? f.saved : f.value));
+    },
+    // A secret's box starts empty (it cannot be read back), so anything typed there is a change.
+    configDirty(key) {
+      var f = this.field(key);
+      var draft = (this.configDraft[key] || '').trim();
+      if (!f) return false;
+      return f.kind === 'secret' ? Boolean(draft) : draft !== f.value;
+    },
+    placeholderFor(meta) {
+      var f = this.field(meta.key);
+      if (f && f.kind === 'secret') return f.saved || f.workerHas ? '已填，要换就填新的' : '没填';
+      if (f && f.fromWorker) return f.fromWorker;
+      return meta.placeholder || meta.def || '';
+    },
+    nowText(meta) {
+      var f = this.field(meta.key);
+      if (!f) return '';
+      if (f.kind === 'secret') return f.saved ? '用的是这里存的' : (f.workerHas ? '用的是 Cloudflare 里填的' : '没填');
+      if (f.value) return '用的是这里存的：' + f.value;
+      if (f.fromWorker) return '没存，用 Cloudflare 里填的：' + f.fromWorker;
+      return '没存，用默认' + (meta.def ? '：' + meta.def : '');
+    },
+    fillDrafts() {
+      var drafts = {};
+      this.config.fields.forEach(function (f) { drafts[f.key] = f.kind === 'secret' ? '' : f.value; });
+      this.configDraft = drafts;
+    },
+    async openConfig() {
+      try {
+        this.config = await this.api('/web/config');
+      } catch (error) {
+        this.notify(error.message);
+        return;
+      }
+      this.fillDrafts();
+      this.configError = {};
+      this.view = 'config';
+    },
+    closeConfig() {
+      var self = this;
+      var dirty = this.config.fields.some(function (f) { return self.configDirty(f.key); });
+      if (dirty && !confirm('有没存的，不要了吗？')) return;
+      this.view = 'chat';
+    },
+    async saveConfig(key, value) {
+      if (this.configBusy) return;
+      this.configBusy = key;
+      this.configError[key] = '';
+      try {
+        var keep = Object.assign({}, this.configDraft);
+        this.config = await this.api('/web/config', { method: 'POST', body: { key: key, text: value || '' } });
+        // Only this setting's box is reset; anything typed in the others stays.
+        var f = this.field(key);
+        keep[key] = f && f.kind !== 'secret' ? f.value : '';
+        this.configDraft = keep;
+        this.notify(value ? '存好了，下一句开始用' : '清掉了，用回 Cloudflare 里的或默认的');
+        if (key.indexOf('AELIOS_') === 0) this.aelios = Boolean((await this.api('/web/check')).aelios);
+      } catch (error) {
+        this.configError[key] = error.message;
+      } finally {
+        this.configBusy = '';
+      }
     },
 
     // ---- small things ----

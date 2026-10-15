@@ -7,7 +7,7 @@
 //   crash-1  sends a slow reply; kill workerd once the first bubble is out, restart, then run crash-2
 //   crash-2  checks what she got after the restart
 //   migrate  needs the old model variable (start wrangler with --var MODEL:fake)
-//   custom-anthropic  your own provider on the Messages API (start wrangler with --var CUSTOM_FORMAT:anthropic)
+//   custom   your own provider, without Aelios (start wrangler with --var AELIOS_URL:)
 import assert from "node:assert/strict";
 
 const WORKER = "http://127.0.0.1:8787";
@@ -165,34 +165,6 @@ if (phase === "main") {
     assert.match(refused, /^我查到了：Cannot read this URL/);
   });
 
-  await step("a memory comes up by itself before the reply, once, and stays on its message", async () => {
-    let before = (await sent()).length;
-    await post("生日那天想浮现一下");
-    assert.deepEqual(await waitForSends(before, 1), ["这条：有，之前带着的：0"]);
-    const asked = (await log()).filter((e) => e.kind === "aelios.recall" && e.body.query === "生日那天想浮现一下");
-    assert.equal(asked.length, 1, "searched with her words, time stamp left out");
-    assert.equal(asked[0].body.namespace, "test-space");
-    // The same memory does not come up again, and the earlier one is still where it was.
-    before = (await sent()).length;
-    await post("还是生日，再浮现");
-    assert.deepEqual(await waitForSends(before, 1), ["这条：无，之前带着的：1"]);
-    const recorded = (await log()).filter((e) => e.kind === "aelios.ingest").flatMap((e) => e.body.messages);
-    assert.ok(recorded.some((m) => m.content.includes("生日那天想浮现一下")));
-    assert.ok(!recorded.some((m) => m.content.includes("<recalled>")), "what came up is not recorded as hers");
-    const page = await (await fetch(`${WORKER}/web/messages`, { headers: { "x-web-key": "test-web-key" } })).json();
-    assert.ok(page.data.some((l) => l.text === "生日那天想浮现一下"), JSON.stringify(page.data));
-    assert.ok(!page.data.some((l) => l.text.includes("<recalled>")), "what came up stays out of the page");
-  });
-
-  await step("each exchange is recorded in Aelios", async () => {
-    const ingests = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident");
-    assert.ok(ingests.length >= 3);
-    const one = ingests[0].body;
-    assert.equal(one.conversation_id, "test-space:aelios-resident");
-    assert.deepEqual(one.messages.map((m) => m.role), ["user", "assistant"]);
-    assert.match(one.messages[0].content, /你好$/);
-  });
-
   await step("three quick messages are answered once, together", async () => {
     const before = (await sent()).length;
     await post("一");
@@ -314,12 +286,10 @@ if (phase === "main") {
     assert.deepEqual(model.recent, []);
     assert.equal(typeof model.lastUsage.input, "number");
     assert.equal((await web("/web/model", "wrong", { text: "fake" })).status, 401);
+    // Aelios turns down a name without its provider, so the trial call fails and nothing is saved.
     let response = await web("/web/model", "test-web-key", { text: "gpt" });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /^这个模型用不了：/);
-    // No AI binding in the local test, so a real model fails its trial call and is not saved.
-    response = await web("/web/model", "test-web-key", { text: "anthropic/claude-opus-5.5" });
-    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /^这个模型用不了：.*provider prefix/);
     model = await (await web("/web/model", "test-web-key")).json();
     assert.equal(model.model, "");
     response = await web("/web/model", "test-web-key", { text: " fake " });
@@ -335,21 +305,126 @@ if (phase === "main") {
     assert.match(out, /^模型：fake\n/);
   });
 
-  await step("a provider of your own (custom/…, OpenAI format) is tried, picked and answers with your key", async () => {
-    let response = await web("/web/model", "test-web-key", { text: "custom/nous/claude-test" });
-    const picked = await response.json();
-    assert.equal(response.status, 200, JSON.stringify(picked));
-    assert.equal(picked.model, "custom/nous/claude-test");
+  await step("with Aelios connected, the chat goes out through Aelios, which recalls and records it", async () => {
+    await fetch(`${MOCK}/__reset`);
+    let response = await web("/web/model", "test-web-key", { text: "anthropic/claude-test" });
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    let calls = (await log()).filter((e) => e.kind === "aelios.messages");
+    assert.equal(calls.length, 1, "the trial call");
+    assert.equal(calls[0].purpose, "auxiliary", "the trial call is not something she said");
+    assert.equal(calls[0].apiKey, "test-key");
+    assert.equal(calls[0].identity, null);
+    let before = (await sent()).length;
+    await post("从 Aelios 过吗");
+    const [first] = await waitForSends(before, 1);
+    assert.match(first, /^Aelios 收到 \d+ 条，缓存标记有，旧思考块 0 个$/);
+    calls = (await log()).filter((e) => e.kind === "aelios.messages");
+    const turn = calls.at(-1);
+    assert.equal(turn.purpose, null, "her turn is hers");
+    assert.equal(turn.body.model, "anthropic/claude-test");
+    assert.equal(turn.body.stream, true);
+    assert.ok(turn.body.cache_control, "the cache marker rides along, for Aelios to put on her message");
+    assert.match(JSON.stringify(turn.body.messages.at(-1)), /从 Aelios 过吗/);
+    // The resident no longer searches or records her turns itself: Aelios does both.
+    const own = (await log()).filter((e) => e.kind === "aelios.recall" || (e.kind === "aelios.ingest" && e.body.source === "aelios-resident"));
+    assert.deepEqual(own, []);
+    before = (await sent()).length;
+    await post("再来一句");
+    const [second] = await waitForSends(before, 1);
+    assert.match(second, /^Aelios 收到 \d+ 条，缓存标记有，旧思考块 0 个$/, "earlier thinking stays home");
+  });
+
+  await step("the letter written through Aelios is marked as not hers", async () => {
     const before = (await sent()).length;
-    await post("自己的供应商在吗");
+    await post("/handoff");
+    const [out] = await waitForSends(before, 1, 30000);
+    assert.match(out, /^交接信写好了/);
+    const letter = (await log()).filter((e) => e.kind === "aelios.messages").at(-1);
+    assert.equal(letter.purpose, "auxiliary");
+    assert.match(JSON.stringify(letter.body.messages.at(-1)), /time to write a handoff letter/);
+  });
+
+  await step("a model Aelios keeps no memory for is not picked; a Workers AI id goes under workers-ai/", async () => {
+    let response = await web("/web/model", "test-web-key", { text: "anthropic/plain-model" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /不是这个身份的主模型/);
+    response = await web("/web/model", "test-web-key", { text: "@cf/test/glm" });
+    assert.equal(response.status, 200);
+    const before = (await sent()).length;
+    await post("换成聊天格式");
     const [out] = await waitForSends(before, 1);
-    assert.match(out, /^自己的供应商（OpenAI 格式）收到：\[[^\]]+\] 自己的供应商在吗$/);
-    const calls = (await log()).filter((e) => e.kind === "custom.chat");
-    assert.equal(calls.length, 2, "the trial call and the turn");
-    assert.equal(calls[1].auth, "Bearer test-custom-key");
-    assert.equal(calls[1].body.model, "nous/claude-test");
-    assert.equal(calls[1].body.stream, true);
-    response = await web("/web/model", "test-web-key", { text: "fake" });
+    assert.match(out, /^Aelios（workers-ai\/@cf\/test\/glm）收到：\[[^\]]+\] 换成聊天格式$/);
+    const turn = (await log()).filter((e) => e.kind === "aelios.chat").at(-1);
+    assert.equal(turn.auth, "Bearer test-key");
+    assert.equal(turn.purpose, null);
+    assert.equal((await (await web("/web/model", "test-web-key")).json()).memoryOff, false);
+  });
+
+  await step("when Aelios keeps no memory for her turns any more, the page and /status say so", async () => {
+    let response = await web("/web/model", "test-web-key", { text: "anthropic/claude-dropped" });
+    assert.equal(response.status, 200);
+    let before = (await sent()).length;
+    await post("还记得住吗");
+    await waitForSends(before, 1);
+    assert.equal((await (await web("/web/model", "test-web-key")).json()).memoryOff, true);
+    before = (await sent()).length;
+    await post("/status");
+    const [out] = await waitForSends(before, 1);
+    assert.match(out, /长期记忆 Aelios：接着，但这个模型不在 Aelios 那个身份的主模型里/);
+    response = await web("/web/model", "test-web-key", { text: "@cf/test/glm" });
+    assert.equal((await response.json()).memoryOff, false, "only for the model it was said about");
+  });
+
+  await step("the settings page: secrets stay unread, bad values are refused, a saved value applies to the next message", async () => {
+    assert.equal((await web("/web/config", "wrong")).status, 401);
+    let config = await (await web("/web/config", "test-web-key")).json();
+    const field = (key) => config.fields.find((f) => f.key === key);
+    assert.deepEqual(field("AELIOS_API_KEY"), { key: "AELIOS_API_KEY", kind: "secret", value: "", fromWorker: "", saved: false, workerHas: true });
+    assert.ok(!JSON.stringify(config).includes("test-key"), "no secret reaches the page");
+    assert.equal(field("TIME_ZONE").fromWorker, "Asia/Shanghai");
+    assert.ok(!config.fields.some((f) => ["TG_BOT_TOKEN", "TG_WEBHOOK_SECRET", "WEB_KEY"].includes(f.key)));
+    for (const [key, text, problem] of [
+      ["TIME_ZONE", "Mars/Olympus", /时区/],
+      ["KEEP_RECENT_TOKENS", "abc", /大于 0/],
+      ["CACHE_TTL", "2h", /只能填/],
+      ["AELIOS_URL", "ftp://x", /https/],
+      ["NOT_A_SETTING", "x", /没有这个设置/],
+      ["CHECKIN_SCHEDULE", "whenever you like", /排不上/]
+    ]) {
+      const response = await web("/web/config", "test-web-key", { key, text });
+      assert.equal(response.status, 400, key);
+      assert.match((await response.json()).error, problem, key);
+    }
+    config = await (await web("/web/config", "test-web-key")).json();
+    assert.equal(field("CHECKIN_SCHEDULE").value, "", "a schedule that cannot be armed is not kept");
+    // The identity in Aelios: the next message goes out as it.
+    config = await (await web("/web/config", "test-web-key", { key: "AELIOS_IDENTITY", text: " resident " })).json();
+    assert.equal(field("AELIOS_IDENTITY").value, "resident");
+    let before = (await sent()).length;
+    await post("换身份");
+    await waitForSends(before, 1);
+    assert.equal((await log()).filter((e) => e.kind === "aelios.chat").at(-1).identity, "resident");
+    // Who may talk on Telegram: someone else, then back to the Worker's own list.
+    config = await (await web("/web/config", "test-web-key", { key: "TG_ALLOWED", text: "@someone_else" })).json();
+    before = (await sent()).length;
+    await post("现在不认我了");
+    await sleep(2500);
+    assert.equal((await sent()).length, before, "her chat is not in the list any more");
+    config = await (await web("/web/config", "test-web-key", { key: "TG_ALLOWED", text: "" })).json();
+    assert.equal(field("TG_ALLOWED").value, "");
+    before = (await sent()).length;
+    await post("又认我了");
+    await waitForSends(before, 1);
+    // A secret saved here wins over the Worker's, and is still never shown.
+    config = await (await web("/web/config", "test-web-key", { key: "AELIOS_API_KEY", text: "panel-key" })).json();
+    assert.equal(field("AELIOS_API_KEY").saved, true);
+    assert.ok(!JSON.stringify(config).includes("panel-key"));
+    before = (await sent()).length;
+    await post("换钥匙");
+    await waitForSends(before, 1);
+    assert.equal((await log()).filter((e) => e.kind === "aelios.chat").at(-1).auth, "Bearer panel-key");
+    for (const key of ["AELIOS_API_KEY", "AELIOS_IDENTITY"]) await web("/web/config", "test-web-key", { key, text: "" });
+    const response = await web("/web/model", "test-web-key", { text: "fake" });
     assert.equal(response.status, 200);
   });
 
@@ -469,22 +544,46 @@ if (phase === "migrate") {
   });
 }
 
-if (phase === "custom-anthropic") {
+if (phase === "custom") {
   await fetch(`${MOCK}/__reset`);
+  await step("a provider of your own (custom/…, OpenAI format) is tried, picked and answers with your key", async () => {
+    let response = await web("/web/model", "test-web-key", { text: "custom/nous/claude-test" });
+    const picked = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(picked));
+    assert.equal(picked.model, "custom/nous/claude-test");
+    const before = (await sent()).length;
+    await post("自己的供应商在吗");
+    const [out] = await waitForSends(before, 1);
+    assert.match(out, /^自己的供应商（OpenAI 格式）收到：\[[^\]]+\] 自己的供应商在吗$/);
+    const calls = (await log()).filter((e) => e.kind === "custom.chat");
+    assert.equal(calls.length, 2, "the trial call and the turn");
+    assert.equal(calls[1].auth, "Bearer test-custom-key");
+    assert.equal(calls[1].body.model, "nous/claude-test");
+    assert.equal(calls[1].body.stream, true);
+  });
+
+  await step("the format is changed on the settings page and applies from the next message", async () => {
+    const config = await (await web("/web/config", "test-web-key", { key: "CUSTOM_FORMAT", text: "Anthropic" })).json();
+    assert.equal(config.fields.find((f) => f.key === "CUSTOM_FORMAT").value, "anthropic");
+  });
+
   await step("a provider of your own on the Messages API: your key, the cache marker, no thinking from earlier turns", async () => {
+    await fetch(`${MOCK}/__reset`);
     const response = await web("/web/model", "test-web-key", { text: "custom/claude-test" });
     assert.equal(response.status, 200, JSON.stringify(await response.json()));
     let before = (await sent()).length;
     await post("第一句");
-    assert.deepEqual(await waitForSends(before, 1), ["自己的供应商（Anthropic 格式）收到 1 条，缓存标记有，旧思考块 0 个"]);
+    const [first] = await waitForSends(before, 1);
+    const count = Number(first.match(/^自己的供应商（Anthropic 格式）收到 (\d+) 条，缓存标记有，旧思考块 0 个$/)?.[1]);
+    assert.ok(count > 0, first);
     before = (await sent()).length;
     await post("第二句");
-    assert.deepEqual(await waitForSends(before, 1), ["自己的供应商（Anthropic 格式）收到 3 条，缓存标记有，旧思考块 0 个"]);
+    assert.deepEqual(await waitForSends(before, 1), [`自己的供应商（Anthropic 格式）收到 ${count + 2} 条，缓存标记有，旧思考块 0 个`]);
     const calls = (await log()).filter((e) => e.kind === "custom.messages");
     assert.equal(calls.at(-1).apiKey, "test-custom-key");
     assert.equal(calls.at(-1).body.model, "claude-test");
     // The first answer went back without its thinking, its words kept.
-    const earlier = calls.at(-1).body.messages[1];
+    const earlier = calls.at(-1).body.messages.at(-2);
     assert.equal(earlier.role, "assistant");
     assert.ok(earlier.content.some((b) => b.type === "text"), JSON.stringify(earlier));
   });

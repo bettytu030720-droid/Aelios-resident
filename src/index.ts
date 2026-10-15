@@ -1,8 +1,8 @@
 // The Worker in front of the resident:
 //   POST /messengers/telegram/webhook   Telegram → secret check, allowlist, slash commands → the resident
 //   GET  /tg/setup?secret=…             points the bot's webhook here (open once after deploy)
-//   /web/*                              the web page's API (same conversation as Telegram, the model and the persona),
-//                                       behind WEB_KEY
+//   /web/*                              the web page's API (same conversation as Telegram, the model, the persona
+//                                       and the settings), behind WEB_KEY
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
@@ -38,13 +38,14 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
   if (!message || chatId == null || message.from?.is_bot || message.chat?.type !== "private") {
     return new Response("ok");
   }
-  if (!isAllowed(env.TG_ALLOWED, String(chatId), message.from?.username)) {
+  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  // TG_ALLOWED can be set on the settings page, so the resident says what is in effect.
+  if (!isAllowed(await agent.telegramAllowed(), String(chatId), message.from?.username)) {
     // No reply, so strangers cannot probe the bot. The log line shows what to put in TG_ALLOWED.
     console.log("tg: dropped message from a chat not in TG_ALLOWED", { chatId, username: message.from?.username });
     return new Response("ok");
   }
 
-  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
   const command = commandOf(message.text);
   if (command) {
     // The Think messenger ignores slash commands; the Worker answers them without a model turn.
@@ -75,10 +76,10 @@ function webAllowed(env: Env, request: Request): boolean {
 async function handleWeb(request: Request, env: Env, url: URL): Promise<Response> {
   if (!webAllowed(env, request)) return new Response("unauthorized", { status: 401 });
   const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
-  const body = request.method === "POST" ? ((await request.json().catch(() => ({}))) as { text?: string }) : {};
+  const body = request.method === "POST" ? ((await request.json().catch(() => ({}))) as { text?: string; key?: string }) : {};
   switch (`${request.method} ${url.pathname}`) {
     case "GET /web/check":
-      return Response.json({ ok: true, aelios: Boolean(env.AELIOS_URL && env.AELIOS_API_KEY) });
+      return Response.json({ ok: true, aelios: await agent.hasMemory() });
     case "GET /web/messages":
       return Response.json({ data: await agent.webHistory() });
     case "POST /web/say":
@@ -95,6 +96,12 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json(await agent.webPersona());
     case "POST /web/persona": {
       const saved = await agent.webSetPersona(String(body.text ?? ""));
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "GET /web/config":
+      return Response.json(await agent.webConfig());
+    case "POST /web/config": {
+      const saved = await agent.webSetConfig(String(body.key ?? ""), String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
     }
     default:

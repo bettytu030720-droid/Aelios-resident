@@ -26,19 +26,20 @@ import {
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { webSearchTool } from "agents/websearch/ai-sdk";
-import { generateText, type ModelMessage, type ToolSet, type UIMessage } from "ai";
-import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig, type IngestMessage } from "./aelios";
+import { generateText, type ToolSet, type UIMessage } from "ai";
+import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeOnRunPath } from "./claude-run";
+import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
 import { customModel, isCustom } from "./custom";
 import { foldIntoLetter, tokensOf } from "./fold";
 import { withPictures, type Download } from "./pictures";
-import { SURFACE_HITS, SURFACE_KEEP, SURFACE_RECENT, SURFACE_TIMEOUT_MS, keyOf, surfaceText, userText, withSurface } from "./surface";
 import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { searchEngines, searchSource } from "./web/search";
+import { MEMORY_HEADER, aeliosModel } from "./via-aelios";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -75,7 +76,7 @@ function hintFor(reason: string): string {
   if (/unified billing/i.test(reason)) {
     return "（可以在这个 AI Gateway 的 Provider Keys 里存你自己的 key，别名 default，就不走 Cloudflare 的统一计费；或者填自己的供应商 custom/…，见 README）";
   }
-  if (/unknown gateway provider/i.test(reason)) return "（自己的供应商请填 custom/模型名，并设好 CUSTOM_BASE_URL、CUSTOM_API_KEY，见 README）";
+  if (/unknown gateway provider/i.test(reason)) return "（自己的供应商请填 custom/模型名，并在设置页填好它的地址和 key）";
   return "";
 }
 
@@ -97,8 +98,18 @@ export type WebLine = {
 /** Token use of the latest model call. Input includes the cached part. */
 export type LastUsage = { at: number; input: number; cacheRead: number; cacheWrite: number; output: number };
 
-/** The model as the web page edits it. An empty model means the default is in use. */
-export type WebModel = { model: string; at: number | null; fallback: string; recent: string[]; lastUsage: LastUsage | null };
+/**
+ * The model as the web page edits it. An empty model means the default is in use. memoryOff: on her latest turn
+ * Aelios said this model is not one it keeps memory for, so nothing was recalled or recorded.
+ */
+export type WebModel = {
+  model: string;
+  at: number | null;
+  fallback: string;
+  recent: string[];
+  lastUsage: LastUsage | null;
+  memoryOff: boolean;
+};
 
 /** The persona as the web page edits it. An empty text means the default line is in use. */
 export type WebPersona = {
@@ -108,7 +119,6 @@ export type WebPersona = {
   versions: { at: number; text: string }[];
 };
 
-const RECALLED_BLOCK = /<(recalled|想起的旧事)>[\s\S]*?<\/\1>\n?/g;
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
 // What Think leaves of a picture once it has aged out of the conversation (its media eviction).
 const EVICTED_PICTURE = /\[evicted image\/[^\]]*\]/g;
@@ -156,11 +166,26 @@ export class Resident extends Think<Env> {
   override messageMetadata: MessageMetadataCallback = ({ part }) => (part.type === "start" ? { at: Date.now() } : undefined);
 
   get tz(): string {
-    return this.env.TIME_ZONE?.trim() || "Asia/Shanghai";
+    return this.cfg.TIME_ZONE?.trim() || "Asia/Shanghai";
+  }
+
+  /** The settings in effect: those saved on the web page's settings page over the Worker's own (config.ts). */
+  get cfg(): Env {
+    this.#cfg ??= withSaved(this.env, this.savedConfig());
+    return this.#cfg;
+  }
+
+  #cfg: Env | null = null;
+
+  /** Settings saved on the settings page, by variable name. They live in res_settings as "env:<name>". */
+  private savedConfig(): Record<string, string> {
+    this.sql`CREATE TABLE IF NOT EXISTS res_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, at INTEGER NOT NULL)`;
+    const rows = this.sql<{ key: string; value: string }>`SELECT key, value FROM res_settings WHERE key LIKE 'env:%'`;
+    return Object.fromEntries(rows.map((row) => [row.key.slice(4), row.value]));
   }
 
   override getModel(): ThinkModel {
-    return this.modelFor(this.savedModel() || this.defaultModel);
+    return this.chatModel(this.savedModel() || this.defaultModel);
   }
 
   /** The model picked on the web page, or "" for the default. */
@@ -178,9 +203,31 @@ export class Resident extends Think<Env> {
     return this.env.FAKE_MODEL === "true" ? "fake" : DEFAULT_MODEL;
   }
 
-  /** A model id as Think takes it: your own provider's `custom/…` is built here (custom.ts). */
+  /**
+   * The model the conversation runs on. With Aelios connected it goes out through Aelios, which recalls and
+   * records (via-aelios.ts); without, as the id says (Workers AI, AI Gateway, or your own provider).
+   */
+  private chatModel(id: string, { auxiliary = false } = {}): ThinkModel {
+    if (id === "fake" && this.env.FAKE_MODEL === "true") return fakeModel();
+    const memory = aeliosConfig(this.cfg);
+    if (!memory) return this.modelFor(id);
+    // What Aelios did about memory on her turn, kept so the web page and /status can say when it is off.
+    const report = (status: string) => {
+      this.ctx.waitUntil(this.ctx.storage.put("aelios_memory", { status, model: id, at: Date.now() }));
+    };
+    return aeliosModel(memory, id, { auxiliary, report });
+  }
+
+  /** Whether Aelios kept no memory on her latest turn with the model now in use. */
+  private async memoryOff(): Promise<boolean> {
+    if (!aeliosConfig(this.cfg)) return false;
+    const last = await this.ctx.storage.get<{ status: string; model: string }>("aelios_memory");
+    return last?.status === "off" && last.model === (this.savedModel() || this.defaultModel);
+  }
+
+  /** A model id as Think takes it, called from here: your own provider's `custom/…` is built here (custom.ts). */
   private modelFor(id: string): ThinkModel {
-    if (isCustom(id)) return customModel(this.env, id);
+    if (isCustom(id)) return customModel(this.cfg, id);
     return id === "fake" && this.env.FAKE_MODEL === "true" ? fakeModel() : id;
   }
 
@@ -197,7 +244,7 @@ export class Resident extends Think<Env> {
   }
 
   override getGateway() {
-    const id = this.env.AI_GATEWAY_ID?.trim();
+    const id = this.cfg.AI_GATEWAY_ID?.trim();
     return id ? { id } : undefined;
   }
 
@@ -221,7 +268,6 @@ export class Resident extends Think<Env> {
     const token = this.env.TG_BOT_TOKEN?.trim();
     const secretToken = this.env.TG_WEBHOOK_SECRET?.trim();
     if (!token || !secretToken) return {};
-    const timeZone = this.tz;
     const definition = telegramMessenger({
       token,
       secretToken,
@@ -237,7 +283,7 @@ export class Resident extends Think<Env> {
         interruptedResponseText: "刚才回到一半断了，再发一次好吗？"
       },
       toEvent: (input) =>
-        stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), timeZone)
+        stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), this.tz)
     });
     const adapter = definition.adapter as unknown as BubbleAdapter & { downloadFile: Download };
     useBubbles(adapter);
@@ -263,9 +309,9 @@ export class Resident extends Think<Env> {
 
   override getTools(): ToolSet {
     const tools: ToolSet = {};
-    const memory = aeliosConfig(this.env);
+    const memory = aeliosConfig(this.cfg);
     if (memory) Object.assign(tools, memoryTools(memory));
-    const source = searchSource(this.env);
+    const source = searchSource(this.cfg);
     if (source) {
       tools.web_search = webSearchTool({
         source,
@@ -273,19 +319,21 @@ export class Resident extends Think<Env> {
         maxDescriptionChars: 400
       });
     }
-    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.env, this.compressor(), this.pageCache()));
+    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache()));
     return tools;
   }
 
   /**
-   * The model web_fetch shrinks long pages with: WEB_FETCH_MODEL, any id the model picker takes
-   * (a Workers AI id, or anthropic/…, openai/… through AI Gateway). Null when it is "off" or cannot be used.
+   * The model web_fetch shrinks long pages with: WEB_FETCH_MODEL, any id the model picker takes. A Workers AI id
+   * runs on Cloudflare here; any other goes through Aelios when it is connected (marked auxiliary, so nothing is
+   * recorded), else through AI Gateway. Null when it is "off" or cannot be used.
    */
   private compressor(): Compressor | null {
-    const name = this.env.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
-    if (name.toLowerCase() === "off" || (!this.env.AI && !isCustom(name))) return null;
+    const name = this.cfg.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
+    const viaAelios = Boolean(aeliosConfig(this.cfg)) && !name.startsWith("@cf/");
+    if (name.toLowerCase() === "off" || (!this.env.AI && !viaAelios && !isCustom(name))) return null;
     try {
-      return { name, model: this.resolveModel(this.modelFor(name)) };
+      return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true }) : this.modelFor(name)) };
     } catch (error) {
       console.error("web_fetch: WEB_FETCH_MODEL cannot be used", { name, error: String(error) });
       return null;
@@ -293,7 +341,7 @@ export class Resident extends Think<Env> {
   }
 
   private webFetchOn(): boolean {
-    return this.env.WEB_FETCH?.trim().toLowerCase() !== "off";
+    return this.cfg.WEB_FETCH?.trim().toLowerCase() !== "off";
   }
 
   /** Pages web_fetch read in the last hour, in this agent's SQLite. */
@@ -318,71 +366,13 @@ export class Resident extends Think<Env> {
       await this.ctx.storage.put("tg_thread", thread.id);
     }
     const boot = await this.boot();
-    const messages = await this.withRecall(ctx);
     // Only our own tools: Think's workspace file tools would cost tokens every turn and do nothing here.
     const own = Object.keys(this.getTools());
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
-      providerOptions: promptCache(this.env),
-      ...(messages ? { messages } : {})
+      providerOptions: promptCache(this.cfg)
     };
-  }
-
-  /**
-   * The turn's messages with what came up from Aelios (see surface.ts): a new search for her latest message,
-   * and the earlier ones put back exactly as they were. Undefined when nothing came up at all.
-   */
-  private async withRecall(ctx: TurnContext): Promise<ModelMessage[] | undefined> {
-    const memory = aeliosConfig(this.env);
-    if (!memory) return undefined;
-    const kept = this.surfaced();
-    const texts = new Map(kept.map((row) => [row.key, row.text]));
-    const last = ctx.messages.at(-1);
-    if (!ctx.continuation && last?.role === "user") {
-      const said = userText(last);
-      const key = await keyOf(said);
-      if (!texts.has(key) && !isNote(said)) {
-        const { text, ids } = await this.recallFor(memory, said, kept);
-        // Kept even when empty, so a retried turn sees the same thing.
-        this.sql`INSERT OR REPLACE INTO res_surfaced (key, text, ids) VALUES (${key}, ${text}, ${JSON.stringify(ids)})`;
-        this.sql`DELETE FROM res_surfaced WHERE rowid NOT IN (SELECT rowid FROM res_surfaced ORDER BY rowid DESC LIMIT ${SURFACE_KEEP})`;
-        texts.set(key, text);
-      }
-    }
-    let found = false;
-    const messages: ModelMessage[] = [];
-    for (const message of ctx.messages) {
-      const text = message.role === "user" ? texts.get(await keyOf(userText(message))) : undefined;
-      if (message.role === "user" && text) {
-        messages.push(withSurface(message, text));
-        found = true;
-      } else {
-        messages.push(message);
-      }
-    }
-    return found ? messages : undefined;
-  }
-
-  /** Search Aelios for her message, leaving out memories that came up lately. Never throws. */
-  private async recallFor(memory: AeliosConfig, said: string, kept: { ids: string }[]): Promise<{ text: string; ids: string[] }> {
-    const query = said.replace(STAMP_PREFIX, "").trim().slice(0, 500);
-    if (!query) return { text: "", ids: [] };
-    const recent = new Set(kept.slice(0, SURFACE_RECENT).flatMap((row) => JSON.parse(row.ids) as string[]));
-    try {
-      const hits = await recall(memory, query, SURFACE_HITS + 4, AbortSignal.timeout(SURFACE_TIMEOUT_MS));
-      const fresh = hits.filter((hit) => !hit.id || !recent.has(hit.id)).slice(0, SURFACE_HITS);
-      return { text: surfaceText(fresh), ids: fresh.flatMap((hit) => (hit.id ? [hit.id] : [])) };
-    } catch (error) {
-      console.error("aelios: recall before reply failed", { error: String(error) });
-      return { text: "", ids: [] };
-    }
-  }
-
-  /** What came up for each of her messages, newest first. */
-  private surfaced(): { key: string; text: string; ids: string }[] {
-    this.sql`CREATE TABLE IF NOT EXISTS res_surfaced (key TEXT PRIMARY KEY, text TEXT NOT NULL, ids TEXT NOT NULL)`;
-    return this.sql<{ key: string; text: string; ids: string }>`SELECT key, text, ids FROM res_surfaced ORDER BY rowid DESC`;
   }
 
   /** Token use of the latest model step, so /status and the web page can show whether the prompt cache is hit. */
@@ -404,7 +394,7 @@ export class Resident extends Think<Env> {
 
   /** Aelios' boot packet, fetched at most every six hours. */
   private async boot(): Promise<string> {
-    const memory = aeliosConfig(this.env);
+    const memory = aeliosConfig(this.cfg);
     if (!memory) return "";
     const cached = await this.ctx.storage.get<{ text: string; at: number }>("aelios_boot");
     // The letter turn keeps the packet the conversation already has, so its request still matches the cache.
@@ -417,12 +407,12 @@ export class Resident extends Think<Env> {
   override configureSession(session: ThinkSession) {
     // No token limit: a letter is written when she has been quiet for a while (idleLetter) or on /handoff.
     return session
-      .onCompaction(foldIntoLetter(this.keepRecentTokens(), () => this.letterTurn()))
+      .onCompaction(foldIntoLetter(() => this.keepRecentTokens(), () => this.letterTurn()))
       .onCompactionError((error) => console.error("letter: compaction failed", { error: String(error) }));
   }
 
   private keepRecentTokens(): number {
-    return num(this.env.KEEP_RECENT_TOKENS, 6000);
+    return num(this.cfg.KEEP_RECENT_TOKENS, 6000);
   }
 
   /** Why the letter being written is written. Set while compact() runs. */
@@ -462,7 +452,7 @@ export class Resident extends Think<Env> {
     if (!letter || letter === SKIP) return "";
     this.letters();
     this.sql`INSERT INTO res_letters (at, text) VALUES (${Date.now()}, ${letter})`;
-    const memory = aeliosConfig(this.env);
+    const memory = aeliosConfig(this.cfg);
     if (memory) this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: `（交接信）${letter}` }], "aelios-resident:letter"));
     return `[Handoff letter you wrote on ${stamp(new Date(), this.tz)}]\n${letter}`;
   }
@@ -499,7 +489,7 @@ export class Resident extends Think<Env> {
    * when none is planned, as when the letter's time came while the check-in was running.
    */
   private async planIdleLetter(fromThem: boolean): Promise<void> {
-    const minutes = idleMinutes(this.env);
+    const minutes = idleMinutes(this.cfg);
     const previous = await this.ctx.storage.get<string>("idle_letter");
     if (previous && !fromThem) return;
     if (previous) await this.cancelSchedule(previous).catch(() => false);
@@ -551,20 +541,19 @@ export class Resident extends Think<Env> {
     if (fromThem) await this.ctx.storage.put("wrote_since_letter", true);
     await this.planIdleLetter(fromThem);
     if (result.status !== "completed") return;
-    // Should the model ever repeat a <recalled> block, it does not go back into Aelios as something it said.
-    const reply = textOf(result.message).replace(RECALLED_BLOCK, "").trim();
+    const reply = textOf(result.message).trim();
     const trigger = this.activeTurn?.trigger;
     // A scheduled check-in has no messenger turn to reply into: post it ourselves.
     const proactive = trigger === "scheduled" || trigger === "submission";
     if (proactive && reply && reply !== SKIP) {
       for (const bubble of splitIntoBubbles(reply)) await this.toTelegram(bubble);
     }
-    const memory = aeliosConfig(this.env);
-    if (!memory || !reply || reply === SKIP) return;
-    const messages: IngestMessage[] = [];
-    if (!proactive && asked) messages.push({ role: "user", content: asked });
-    messages.push({ role: "assistant", content: reply });
-    this.ctx.waitUntil(ingest(memory, messages, proactive ? "aelios-resident:checkin" : "aelios-resident"));
+    // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
+    // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
+    const memory = aeliosConfig(this.cfg);
+    if (proactive && memory && reply && reply !== SKIP) {
+      this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: reply }], "aelios-resident:checkin"));
+    }
   }
 
   private userMessageBefore(id: string): { id: string; text: string } | null {
@@ -581,7 +570,7 @@ export class Resident extends Think<Env> {
   }
 
   override getScheduledTasks(): ThinkScheduledTasks {
-    const schedule = this.env.CHECKIN_SCHEDULE?.trim();
+    const schedule = this.cfg.CHECKIN_SCHEDULE?.trim();
     if (!schedule) return {};
     return {
       checkin: {
@@ -626,12 +615,18 @@ export class Resident extends Think<Env> {
         ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
         : "人设：还没填，先用默认的一句（网页门右上角的铅笔）",
       `对话：${history.length} 条，约 ${tokens} token（最近 ${this.keepRecentTokens()} token 原样留着，更早的才收进交接信）`,
-      `交接信：${idleMinutes(this.env) ? `没动静 ${idleMinutes(this.env)} 分钟后趁缓存还在写一封，` : ""}/handoff 随时写；缓存 ${promptCache(this.env).anthropic.cacheControl.ttl}`,
+      `交接信：${idleMinutes(this.cfg) ? `没动静 ${idleMinutes(this.cfg)} 分钟后趁缓存还在写一封，` : ""}/handoff 随时写；缓存 ${promptCache(this.cfg).anthropic.cacheControl.ttl}`,
       `已写交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
-      `长期记忆 Aelios：${aeliosConfig(this.env) ? "开，每条消息先自动想一下相关的旧事" : "关"}`,
-      `查网页：搜索 ${searchEngines(this.env).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.env, this.compressor())) : "关"}`,
-      `主动找你：${this.env.CHECKIN_SCHEDULE?.trim() || "关"}`
+      `长期记忆 Aelios：${
+        !aeliosConfig(this.cfg)
+          ? "关"
+          : (await this.memoryOff())
+            ? "接着，但这个模型不在 Aelios 那个身份的主模型里，上一句没想起旧事、也没记下来"
+            : "开，聊天从 Aelios 过，想起旧事和记下来都由它做"
+      }`,
+      `查网页：搜索 ${searchEngines(this.cfg).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.cfg, this.compressor())) : "关"}`,
+      `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`
     ].join("\n");
   }
 
@@ -689,7 +684,8 @@ export class Resident extends Think<Env> {
       at: saved?.at ?? null,
       fallback: this.defaultModel,
       recent: this.recentModels(),
-      lastUsage: await this.lastUsage()
+      lastUsage: await this.lastUsage(),
+      memoryOff: await this.memoryOff()
     };
   }
 
@@ -712,15 +708,18 @@ export class Resident extends Think<Env> {
     const model = id.trim();
     if (model) {
       try {
-        await generateText({
-          model: this.resolveModel(this.modelFor(model)),
+        const result = await generateText({
+          model: this.resolveModel(this.chatModel(model, { auxiliary: true })),
           // Shaped like a real turn (a system prompt and the cache marker), so a model that would fail in the chat fails here.
           system: "You are a test assistant.",
           prompt: "Reply with one word: ok",
           maxOutputTokens: 64,
-          providerOptions: promptCache(this.env),
+          providerOptions: promptCache(this.cfg),
           abortSignal: AbortSignal.timeout(30_000)
         });
+        if (result.response.headers?.[MEMORY_HEADER] === "off") {
+          return { error: "这个模型能调通，但在 Aelios 里不是这个身份的主模型：从它那儿过不会想起旧事，也不会记下来。先在 Aelios 后台把它加进主模型，再换。" };
+        }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         return { error: `这个模型用不了：${reason.slice(0, 300)}${hintFor(reason)}` };
@@ -755,9 +754,55 @@ export class Resident extends Think<Env> {
     return this.webPersona();
   }
 
+  /** The settings page: each setting, what is saved there and what the Worker has. Secrets only say whether they are set. */
+  webConfig(): { fields: ConfigField[] } {
+    return { fields: describe(this.env, this.savedConfig()) };
+  }
+
+  /**
+   * Save one setting from the settings page; empty goes back to the Worker's own value. It applies from the
+   * next message. A check-in schedule or time zone is armed right away, and one that cannot be armed is not kept.
+   */
+  async webSetConfig(key: string, raw: string): Promise<{ fields: ConfigField[] } | { error: string }> {
+    const field = fieldOf(key);
+    if (!field) return { error: "没有这个设置" };
+    const result = cleaned(field, raw);
+    if ("error" in result) return result;
+    const before = this.savedConfig()[key];
+    this.storeConfig(key, result.value);
+    if (key === "CHECKIN_SCHEDULE" || key === "TIME_ZONE") {
+      try {
+        await this.internal_reconcileScheduledTasks();
+      } catch (error) {
+        this.storeConfig(key, before ?? "");
+        await this.internal_reconcileScheduledTasks().catch(() => undefined);
+        return { error: `排不上：${error instanceof Error ? error.message : String(error)}` };
+      }
+    }
+    // A different Aelios has a different boot packet.
+    if (key.startsWith("AELIOS_")) await this.ctx.storage.delete("aelios_boot");
+    return this.webConfig();
+  }
+
+  private storeConfig(key: string, value: string): void {
+    if (value) this.saveSetting(`env:${key}`, value);
+    else this.sql`DELETE FROM res_settings WHERE key = ${`env:${key}`}`;
+    this.#cfg = null;
+  }
+
+  /** Who may talk to the resident on Telegram (TG_ALLOWED as now in effect), for the Worker's check. */
+  telegramAllowed(): string {
+    return this.cfg.TG_ALLOWED ?? "";
+  }
+
+  /** Whether long-term memory is set up, for the web page. */
+  hasMemory(): boolean {
+    return Boolean(aeliosConfig(this.cfg));
+  }
+
   /** The heart on the web page: keep a line in Aelios' precious memories. */
   async webPin(content: string): Promise<boolean> {
-    const memory = aeliosConfig(this.env);
+    const memory = aeliosConfig(this.cfg);
     return Boolean(memory && content.trim() && (await pin(memory, content.trim())));
   }
 

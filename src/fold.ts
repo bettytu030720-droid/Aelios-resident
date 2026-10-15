@@ -61,9 +61,13 @@ export function keptFrom(messages: SessionMessage[], keepRecentTokens: number): 
   return cut;
 }
 
-/** The compaction the resident runs: everything between the first messages and the kept part goes into the letter. */
-export function foldIntoLetter(keepRecentTokens: number, write: () => Promise<string>): CompactionFunction {
+/**
+ * The compaction the resident runs: everything between the first messages and the kept part goes into the letter.
+ * The budget is asked for each time, so a change on the settings page applies to the next letter.
+ */
+export function foldIntoLetter(budget: number | (() => number), write: () => Promise<string>): CompactionFunction {
   return async (messages) => {
+    const keepRecentTokens = typeof budget === "function" ? budget() : budget;
     const older = messages.slice(KEEP_HEAD, keptFrom(messages, keepRecentTokens)).filter((message) => !isLetter(message));
     if (!older.length) {
       console.log("letter: nothing older than the kept part to fold yet", {

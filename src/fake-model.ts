@@ -65,13 +65,6 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const merged = all.includes("[Handoff letter") ? "（并了上一封信）" : "";
     return { text: `亲爱的下一个我：她刚才在测试交接信。${merged}${repeatsPrevious(options) ? "（前文和上一轮一字不差）" : "（前文变了）"}` };
   }
-  // Whether the birthday memory rode along with this message, and with how many earlier ones.
-  if (said.includes("浮现")) {
-    const users = prompt.filter((m) => m.role === "user").map((m) => textOf(m.content));
-    const carries = (text: string) => text.includes("<recalled>") && text.includes("她的生日在春天");
-    const earlier = users.slice(0, -1).filter(carries).length;
-    return { text: `这条：${carries(user) ? "有" : "无"}，之前带着的：${earlier}` };
-  }
   // How many pictures came with her message, and whether Think's line of attachment text is still there.
   if (said.includes("看图")) {
     const asked = [...prompt].reverse().find((m) => m.role === "user");
