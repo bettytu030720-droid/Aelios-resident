@@ -1,8 +1,10 @@
 // With Aelios connected, the chat goes out through Aelios' own model endpoint (https://<Aelios>/<identity>/v1),
 // as any chat app pointed at Aelios does. Aelios recalls what fits her message and adds it to that request,
 // records the exchange for Dream, and calls the model with the providers and keys set up there.
-//   anthropic/…   the Messages API, so Claude's prompt cache works: Aelios puts the cache marker on her message
-//                 and its recall after it, so the earlier turns are still read from the cache
+//   Claude        anthropic/… or any id with "claude" in it goes on the Messages API, so the prompt cache works:
+//                 Aelios puts the cache marker on her message and its recall after it, so the earlier turns are
+//                 still read from the cache. Anthropic's own API spells versions with dashes (claude-opus-5-5), so
+//                 Cloudflare's dotted ids (anthropic/claude-opus-5.5) are rewritten for it.
 //   anything else chat completions, under the name Aelios gives it (a Workers AI id goes under workers-ai/)
 // The system's own notes (the handoff letter, a check-in) and the trial call when a model is picked are marked
 // auxiliary: Aelios neither recalls for them nor records them as something she said.
@@ -22,12 +24,16 @@ export const MEMORY_HEADER = "x-aelios-memory";
 
 /** The model name as Aelios takes it. */
 export function aeliosName(id: string): string {
-  return id.startsWith("@cf/") ? `workers-ai/${id}` : id;
+  if (id.startsWith("@cf/")) return `workers-ai/${id}`;
+  // Aelios sends anthropic/… to Anthropic's own endpoint with the name after the slash, which has no dots.
+  const anthropic = id.match(/^anthropic\/(.+)$/i);
+  return anthropic ? `anthropic/${anthropic[1].replace(/\./g, "-")}` : id;
 }
 
-/** Whether Aelios gets this model on the Messages API. */
+/** Whether Aelios gets this model on the Messages API: Anthropic's, or any Claude through another provider. */
 export function onMessages(id: string): boolean {
-  return aeliosName(id).toLowerCase().startsWith("anthropic/");
+  const name = aeliosName(id).toLowerCase();
+  return name.startsWith("anthropic/") || name.includes("claude");
 }
 
 export function aeliosBase(memory: AeliosConfig): string {

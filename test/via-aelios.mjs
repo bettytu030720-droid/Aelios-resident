@@ -25,14 +25,24 @@ function test(name, fn) {
 const note = "(Not from them: a scheduled check-in; it is now 10-15 09:00.) If you would like to reach out…";
 const hers = "[10-15 09:01 周四] 早";
 
-test("names: a Workers AI id goes under workers-ai/, the rest as written; only anthropic/ is on Messages", () => {
+test("names: a Workers AI id goes under workers-ai/, Anthropic's own with dashes, the rest as written", () => {
   assert.equal(aeliosName("@cf/zai-org/glm-4.7-flash"), "workers-ai/@cf/zai-org/glm-4.7-flash");
-  assert.equal(aeliosName("anthropic/claude-opus-5.5"), "anthropic/claude-opus-5.5");
+  assert.equal(aeliosName("anthropic/claude-opus-5.5"), "anthropic/claude-opus-5-5");
+  assert.equal(aeliosName("anthropic/claude-opus-5-5"), "anthropic/claude-opus-5-5");
+  assert.equal(aeliosName("anthropic/claude-haiku-4.5-20251001"), "anthropic/claude-haiku-4-5-20251001");
+  // Another provider's own spelling is left alone (OpenRouter writes claude-sonnet-4.5).
+  assert.equal(aeliosName("custom-relay/anthropic/claude-sonnet-4.5"), "custom-relay/anthropic/claude-sonnet-4.5");
   assert.equal(aeliosName("custom-nous/hermes"), "custom-nous/hermes");
+});
+
+test("Messages for anthropic/ and anything with claude in it; chat completions for the rest", () => {
   assert.equal(onMessages("anthropic/claude-opus-5.5"), true);
   assert.equal(onMessages("Anthropic/claude-opus-5.5"), true);
+  assert.equal(onMessages("custom-nous/claude-sonnet-5.5"), true);
+  assert.equal(onMessages("custom-relay/anthropic/Claude-Opus-5.5"), true);
   assert.equal(onMessages("openai/gpt-5"), false);
-  assert.equal(onMessages("@cf/anthropic-ish/model"), false);
+  assert.equal(onMessages("custom-nous/hermes"), false);
+  assert.equal(onMessages("@cf/zai-org/glm-4.7-flash"), false);
 });
 
 test("the address: /v1 for the key's first identity, /<identity>/v1 for a named one", () => {
