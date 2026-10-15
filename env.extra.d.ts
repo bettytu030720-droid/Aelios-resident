@@ -18,6 +18,8 @@ interface Env {
   // The identity in Aelios' admin page the chat goes out as (via-aelios.ts); empty for the key's first one.
   AELIOS_IDENTITY?: string;
   WEB_SEARCH?: string;
+  // What lasts from a web search goes into Aelios as world knowledge (web/learn.ts); off turns it off.
+  WEB_LEARN?: string;
   WEB_FETCH?: string;
   WEB_FETCH_MODEL?: string;
   // A provider of your own (custom.ts): its address up to /v1, and openai (default) or anthropic.

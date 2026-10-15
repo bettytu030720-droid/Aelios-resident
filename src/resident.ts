@@ -45,6 +45,7 @@ import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
+import { learnFromSearch, searched, type Searched } from "./web/learn";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
@@ -181,7 +182,17 @@ export class Resident extends Think<Env> {
     if (id) this.#drafts.get(id)?.chunk(chunk as { type: string; [key: string]: unknown });
   }
 
+  // What web_search found in each turn, for learnFromSearch once the turn is answered.
+  #searches = new Map<string, Searched[]>();
+
   override afterToolCall(ctx: ToolCallResultContext): void {
+    if (ctx.toolName === "web_search" && ctx.success && ctx.requestId) {
+      const list = this.#searches.get(ctx.requestId) ?? [];
+      list.push(searched(ctx.input, ctx.output));
+      this.#searches.set(ctx.requestId, list);
+      // A turn that failed never reaches onChatResponse: keep only the latest few.
+      for (const id of this.#searches.keys()) if (this.#searches.size > 5) this.#searches.delete(id);
+    }
     const draft = ctx.requestId ? this.#drafts.get(ctx.requestId) : undefined;
     draft?.chunk({
       type: ctx.success ? "tool-result" : "tool-error",
@@ -573,6 +584,8 @@ export class Resident extends Think<Env> {
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     if (result.requestId) this.#drafts.delete(result.requestId);
     if (!this.#drafts.size) this.#draftActive = null;
+    const searches = (result.requestId && this.#searches.get(result.requestId)) || [];
+    if (result.requestId) this.#searches.delete(result.requestId);
     const before = this.userMessageBefore(result.message.id);
     // The letter turn: letterTurn() takes the answer and removes both messages.
     if (this.#letterPromptId && before?.id === this.#letterPromptId) return;
@@ -595,6 +608,20 @@ export class Resident extends Think<Env> {
     if (proactive && memory && reply && reply !== SKIP) {
       this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: reply }], "aelios-resident:checkin"));
     }
+    if (fromThem && !proactive && searches.length) this.learn(asked, searches, reply);
+  }
+
+  /** What lasts from her turn's web searches goes into Aelios as world knowledge (web/learn.ts), after the reply. */
+  private learn(asked: string, searches: Searched[], reply: string): void {
+    const memory = aeliosConfig(this.cfg);
+    const model = this.cfg.WEB_LEARN?.trim().toLowerCase() === "off" || !memory ? null : this.compressor()?.model;
+    if (!memory || !model) return;
+    const day = new Intl.DateTimeFormat("en-CA", { timeZone: this.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    this.ctx.waitUntil(
+      learnFromSearch({ model, memory, asked, searches, reply, day })
+        .then((saved) => console.log("learn: facts saved from web search", { saved }))
+        .catch((error) => console.error("learn: failed", { error: String(error) }))
+    );
   }
 
   private userMessageBefore(id: string): { id: string; text: string } | null {

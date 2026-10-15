@@ -54,6 +54,7 @@ export const FIELDS: readonly Field[] = [
   { key: "TAVILY_API_KEY", kind: "secret" },
   { key: "BRAVE_API_KEY", kind: "secret" },
   { key: "PERPLEXITY_API_KEY", kind: "secret" },
+  { key: "WEB_LEARN", kind: "choice", choices: ["on", "off"] },
   { key: "WEB_FETCH", kind: "choice", choices: ["on", "off"] },
   { key: "WEB_FETCH_MODEL", kind: "text" }
 ];

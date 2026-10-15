@@ -415,6 +415,7 @@ function resident() {
       { key: 'TAVILY_API_KEY', label: 'Tavily key' },
       { key: 'BRAVE_API_KEY', label: 'Brave key' },
       { key: 'PERPLEXITY_API_KEY', label: 'Perplexity key' },
+      { key: 'WEB_LEARN', label: '搜到的存进 Aelios', help: '搜过网以后，用下面读网页那个模型挑出长期都对的知识（最多 3 条，不含天气、新闻、价格这类会变的），带日期存进 Aelios，下次聊到就想得起来。要接着 Aelios 才有用。', def: 'on' },
       { key: 'WEB_FETCH', label: '读网页', def: 'on' },
       { key: 'WEB_FETCH_MODEL', label: '压长网页用的模型', help: '主模型能填的 id 这里都能填：@cf/ 开头的在 Cloudflare 上跑，别的接了 Aelios 就从 Aelios 过（不记）。off 不压，只截断。', def: '@cf/qwen/qwen3-30b-a3b-fp8' }
     ] }
