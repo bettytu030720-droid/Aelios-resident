@@ -394,6 +394,9 @@ function resident() {
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' },
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: 'every day at 09:00、every weekday at 21:30、every 3 hours 这种写法。不填就不主动找。', def: '不主动找' }
     ] },
+    { title: '思考', fields: [
+      { key: 'THINKING_EFFORT', label: 'Claude 想多久', help: 'low 回得最快最省，max 想得最久最贵。auto 用模型自己的默认：Opus 5.5 是 medium，Sonnet 5.5 是 high。只管 Claude（从 Aelios 过，或者自己 Anthropic 格式的供应商）；换档后第一句要重写一次缓存。', def: 'auto' }
+    ] },
     { title: '交接信和缓存', fields: [
       { key: 'CACHE_TTL', label: 'Claude 的缓存留多久', help: '1 小时的缓存写入是输入价的 2 倍，5 分钟的是 1.25 倍。', def: '1h' },
       { key: 'LETTER_IDLE_MINUTES', label: '没动静多少分钟写交接信', help: '最多比缓存时长少 1 分钟。填 off 只靠 /handoff。', def: '55（缓存 5m 时 4）' },

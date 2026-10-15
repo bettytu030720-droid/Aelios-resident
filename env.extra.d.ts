@@ -11,6 +11,8 @@ interface Env {
   KEEP_RECENT_TOKENS?: string;
   LETTER_IDLE_MINUTES?: string;
   CACHE_TTL?: string;
+  // How much Claude thinks (thinking.ts): auto (its own default), low, medium, high, xhigh or max.
+  THINKING_EFFORT?: string;
   AELIOS_URL?: string;
   AELIOS_NAMESPACE?: string;
   // The identity in Aelios' admin page the chat goes out as (via-aelios.ts); empty for the key's first one.

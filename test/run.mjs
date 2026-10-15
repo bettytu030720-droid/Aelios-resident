@@ -375,6 +375,34 @@ if (phase === "main") {
     assert.equal((await response.json()).memoryOff, false, "only for the model it was said about");
   });
 
+  await step("Claude's thinking is asked to be shown, and THINKING_EFFORT set on the settings page applies", async () => {
+    const lastMessages = async () => (await log()).filter((e) => e.kind === "aelios.messages").at(-1);
+    let response = await web("/web/model", "test-web-key", { text: "anthropic/claude-opus-5.5" });
+    assert.equal(response.status, 200);
+    let call = await lastMessages();
+    assert.equal(call.purpose, "auxiliary");
+    assert.deepEqual(call.body.thinking, { type: "adaptive", display: "summarized" }, "the trial call is shaped like the chat");
+    assert.equal(call.body.output_config, undefined, "auto sends no effort");
+    response = await web("/web/config", "test-web-key", { key: "THINKING_EFFORT", text: "huge" });
+    assert.equal(response.status, 400);
+    await web("/web/config", "test-web-key", { key: "THINKING_EFFORT", text: "high" });
+    let before = (await sent()).length;
+    await post("想深一点");
+    await waitForSends(before, 1);
+    call = await lastMessages();
+    assert.equal(call.purpose, null);
+    assert.equal(call.body.model, "anthropic/claude-opus-5-5");
+    assert.deepEqual(call.body.thinking, { type: "adaptive", display: "summarized" });
+    assert.deepEqual(call.body.output_config, { effort: "high" });
+    await web("/web/config", "test-web-key", { key: "THINKING_EFFORT", text: "" });
+    before = (await sent()).length;
+    await post("回到默认");
+    await waitForSends(before, 1);
+    assert.equal((await lastMessages()).body.output_config, undefined);
+    response = await web("/web/model", "test-web-key", { text: "@cf/test/glm" });
+    assert.equal(response.status, 200);
+  });
+
   await step("the settings page: secrets stay unread, bad values are refused, a saved value applies to the next message", async () => {
     assert.equal((await web("/web/config", "wrong")).status, 401);
     let config = await (await web("/web/config", "test-web-key")).json();
@@ -586,6 +614,15 @@ if (phase === "custom") {
     const earlier = calls.at(-1).body.messages.at(-2);
     assert.equal(earlier.role, "assistant");
     assert.ok(earlier.content.some((b) => b.type === "text"), JSON.stringify(earlier));
+    // THINKING_EFFORT applies here too.
+    await web("/web/config", "test-web-key", { key: "THINKING_EFFORT", text: "xhigh" });
+    assert.equal((await web("/web/model", "test-web-key", { text: "custom/claude-sonnet-5-5" })).status, 200);
+    before = (await sent()).length;
+    await post("第三句");
+    await waitForSends(before, 1);
+    const turn = (await log()).filter((e) => e.kind === "custom.messages").at(-1);
+    assert.deepEqual(turn.body.thinking, { type: "adaptive", display: "summarized" });
+    assert.deepEqual(turn.body.output_config, { effort: "xhigh" });
   });
 }
 

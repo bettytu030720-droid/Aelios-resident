@@ -8,8 +8,9 @@ import { build } from "esbuild";
 mkdirSync("node_modules/.cache", { recursive: true });
 const dir = mkdtempSync(join("node_modules/.cache", "resident-via-aelios-"));
 const out = join(dir, "via-aelios.mjs");
-await build({ entryPoints: ["src/via-aelios.ts"], bundle: true, platform: "node", format: "esm", outfile: out, logLevel: "error" });
+await build({ entryPoints: ["src/via-aelios.ts", "src/thinking.ts"], bundle: true, platform: "node", format: "esm", outdir: dir, outExtension: { ".js": ".mjs" }, logLevel: "error" });
 const { aeliosBase, aeliosName, isAuxiliary, onMessages } = await import(pathToFileURL(join(process.cwd(), out)).href);
+const { claudeOf, effortOf, withThinking } = await import(pathToFileURL(join(process.cwd(), dir, "thinking.mjs")).href);
 rmSync(dir, { recursive: true, force: true });
 
 function test(name, fn) {
@@ -71,4 +72,30 @@ test("a check-in or letter turn is auxiliary, also after a tool call within it",
 
 test("the older Chinese note is recognised too", () => {
   assert.equal(isAuxiliary({ messages: [{ role: "user", content: "（这条不是她发的，是定时提醒）" }] }), true);
+});
+
+test("thinking: read from the model name; older names and other models are not Claude versions", () => {
+  assert.deepEqual(claudeOf("anthropic/claude-opus-5-5"), { family: "opus", version: 5.5 });
+  assert.deepEqual(claudeOf("custom-relay/anthropic/claude-sonnet-4.5"), { family: "sonnet", version: 4.5 });
+  assert.deepEqual(claudeOf("claude-haiku-4-5-20251001"), { family: "haiku", version: 4.5 });
+  assert.deepEqual(claudeOf("claude-opus-5-20260101"), { family: "opus", version: 5 });
+  assert.equal(claudeOf("claude-3-7-sonnet-20250219"), null);
+  assert.equal(claudeOf("anthropic/claude-test"), null);
+  assert.equal(effortOf(" High "), "high");
+  assert.equal(effortOf("auto"), null);
+  assert.equal(effortOf(undefined), null);
+});
+
+test("thinking: shown on the models that hide it, effort only where it is taken", () => {
+  const shown = { type: "adaptive", display: "summarized" };
+  assert.deepEqual(withThinking({ model: "anthropic/claude-opus-5-5" }, null), { model: "anthropic/claude-opus-5-5", thinking: shown });
+  assert.deepEqual(withThinking({ model: "claude-haiku-5-5" }, "low"), { model: "claude-haiku-5-5", thinking: shown, output_config: { effort: "low" } });
+  // Thinks only when asked: no thinking switched on, but effort is taken.
+  assert.deepEqual(withThinking({ model: "claude-opus-4-6" }, "max"), { model: "claude-opus-4-6", output_config: { effort: "max" } });
+  // Takes neither.
+  assert.deepEqual(withThinking({ model: "claude-sonnet-4-5" }, "high"), { model: "claude-sonnet-4-5" });
+  assert.deepEqual(withThinking({ model: "openai/gpt-5" }, "high"), { model: "openai/gpt-5" });
+  // What the request already says is kept.
+  assert.deepEqual(withThinking({ model: "claude-fable-5-1", thinking: { type: "adaptive", display: "omitted" } }, null).thinking, { type: "adaptive", display: "omitted" });
+  assert.deepEqual(withThinking({ model: "claude-opus-5-5", output_config: { format: { type: "json_schema" } } }, "high").output_config, { format: { type: "json_schema" }, effort: "high" });
 });

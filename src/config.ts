@@ -48,6 +48,7 @@ export const FIELDS: readonly Field[] = [
   { key: "CHECKIN_SCHEDULE", kind: "text" },
   { key: "LETTER_IDLE_MINUTES", kind: "text", check: minutes },
   { key: "KEEP_RECENT_TOKENS", kind: "text", check: count },
+  { key: "THINKING_EFFORT", kind: "choice", choices: ["auto", "low", "medium", "high", "xhigh", "max"] },
   { key: "CACHE_TTL", kind: "choice", choices: ["1h", "5m"] },
   { key: "WEB_SEARCH", kind: "choice", choices: ["on", "off", "ceramic", "exa", "linkup"] },
   { key: "TAVILY_API_KEY", kind: "secret" },

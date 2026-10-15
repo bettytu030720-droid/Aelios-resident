@@ -42,7 +42,8 @@ import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { searchEngines, searchSource } from "./web/search";
-import { MEMORY_HEADER, aeliosModel } from "./via-aelios";
+import { MEMORY_HEADER, aeliosModel, type Thinking } from "./via-aelios";
+import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
@@ -232,16 +233,18 @@ export class Resident extends Think<Env> {
   /**
    * The model the conversation runs on. With Aelios connected it goes out through Aelios, which recalls and
    * records (via-aelios.ts); without, as the id says (Workers AI, AI Gateway, or your own provider).
+   * `thinking: false` for work outside the conversation, which keeps the model's own way of thinking.
    */
-  private chatModel(id: string, { auxiliary = false } = {}): ThinkModel {
+  private chatModel(id: string, { auxiliary = false, thinking: asked = true } = {}): ThinkModel {
     if (id === "fake" && this.env.FAKE_MODEL === "true") return fakeModel();
+    const thinking: Thinking | undefined = asked ? { effort: effortOf(this.cfg.THINKING_EFFORT) } : undefined;
     const memory = aeliosConfig(this.cfg);
-    if (!memory) return this.modelFor(id);
+    if (!memory) return this.modelFor(id, thinking);
     // What Aelios did about memory on her turn, kept so the web page and /status can say when it is off.
     const report = (status: string) => {
       this.ctx.waitUntil(this.ctx.storage.put("aelios_memory", { status, model: id, at: Date.now() }));
     };
-    return aeliosModel(memory, id, { auxiliary, report });
+    return aeliosModel(memory, id, { auxiliary, report, thinking });
   }
 
   /** Whether Aelios kept no memory on her latest turn with the model now in use. */
@@ -252,8 +255,8 @@ export class Resident extends Think<Env> {
   }
 
   /** A model id as Think takes it, called from here: your own provider's `custom/…` is built here (custom.ts). */
-  private modelFor(id: string): ThinkModel {
-    if (isCustom(id)) return customModel(this.cfg, id);
+  private modelFor(id: string, thinking?: Thinking): ThinkModel {
+    if (isCustom(id)) return customModel(this.cfg, id, thinking);
     return id === "fake" && this.env.FAKE_MODEL === "true" ? fakeModel() : id;
   }
 
@@ -359,7 +362,7 @@ export class Resident extends Think<Env> {
     const viaAelios = Boolean(aeliosConfig(this.cfg)) && !name.startsWith("@cf/");
     if (name.toLowerCase() === "off" || (!this.env.AI && !viaAelios && !isCustom(name))) return null;
     try {
-      return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true }) : this.modelFor(name)) };
+      return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true, thinking: false }) : this.modelFor(name)) };
     } catch (error) {
       console.error("web_fetch: WEB_FETCH_MODEL cannot be used", { name, error: String(error) });
       return null;

@@ -8,6 +8,8 @@
 //   anything else chat completions, under the name Aelios gives it (a Workers AI id goes under workers-ai/)
 // The system's own notes (the handoff letter, a check-in) and the trial call when a model is picked are marked
 // auxiliary: Aelios neither recalls for them nor records them as something she said.
+// On the Messages API the conversation's calls also ask for Claude's thinking to be shown and carry
+// THINKING_EFFORT (thinking.ts).
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -15,6 +17,7 @@ import type { LanguageModel } from "ai";
 import type { AeliosConfig } from "./aelios";
 import { withoutOldThinkingIn } from "./claude-run";
 import { isNote } from "./prompts";
+import { withThinking, type Effort } from "./thinking";
 
 export const PURPOSE_HEADER = "x-aelios-purpose";
 /** For a call that is not part of the conversation: Aelios passes it on without recalling or recording. */
@@ -67,7 +70,10 @@ export function isAuxiliary(body: Record<string, unknown>): boolean {
 /** Told what Aelios did about memory on each of her turns (MEMORY_HEADER), so "off" can be shown to her. */
 export type MemoryReport = (status: string) => void;
 
-function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport): typeof fetch {
+/** How the conversation's calls think (thinking.ts); left out for work outside it, such as shrinking a web page. */
+export type Thinking = { effort: Effort | null };
+
+function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, thinking?: Thinking): typeof fetch {
   return async (input, init) => {
     if (typeof init?.body !== "string") return fetch(input, init);
     let body = JSON.parse(init.body) as Record<string, unknown>;
@@ -76,6 +82,7 @@ function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport): t
     if (!hers) headers.set(PURPOSE_HEADER, "auxiliary");
     // Claude's earlier thinking goes back without its blocks, for the reason in claude-run.ts.
     if (messages) body = withoutOldThinkingIn(body);
+    if (messages && thinking) body = withThinking(body, thinking.effort);
     const response = await fetch(input, { ...init, headers, body: JSON.stringify(body) });
     const status = response.headers.get(MEMORY_HEADER);
     if (hers && status && report) report(status);
@@ -90,10 +97,10 @@ function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport): t
 export function aeliosModel(
   memory: AeliosConfig,
   id: string,
-  { auxiliary = false, report }: { auxiliary?: boolean; report?: MemoryReport } = {}
+  { auxiliary = false, report, thinking }: { auxiliary?: boolean; report?: MemoryReport; thinking?: Thinking } = {}
 ): LanguageModel {
   const name = aeliosName(id);
   const baseURL = aeliosBase(memory);
-  if (onMessages(id)) return createAnthropic({ baseURL, apiKey: memory.key, fetch: sender(true, auxiliary, report) })(name);
+  if (onMessages(id)) return createAnthropic({ baseURL, apiKey: memory.key, fetch: sender(true, auxiliary, report, thinking) })(name);
   return createOpenAI({ baseURL, apiKey: memory.key, name: "aelios", fetch: sender(false, auxiliary, report) }).chat(name);
 }
