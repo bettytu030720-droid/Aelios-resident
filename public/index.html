@@ -177,6 +177,19 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .choice.on { border-color: var(--coral); background: var(--mine-bg); color: var(--text-1); }
   .choice:disabled { opacity: .45; cursor: default; }
   .field a.btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
+  .field input[type=file] { display: none; }
+  .packs summary { cursor: pointer; font-size: 13px; color: var(--text-3); }
+  .sticker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 8px; }
+  .sticker-cell { display: flex; flex-direction: column; gap: 4px; padding: 6px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep); }
+  .sticker-cell .pic { display: flex; align-items: center; justify-content: center; height: 72px; }
+  .sticker-cell img, .sticker-cell video { max-width: 72px; max-height: 72px; image-rendering: pixelated; }
+  .sticker-cell .broken { font-size: 12px; color: var(--text-4); text-align: center; }
+  .sticker-cell .handle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); word-break: break-all; }
+  .sticker-cell .handle span { flex: 1; min-width: 0; }
+  .sticker-cell .handle button { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-4); cursor: pointer; }
+  .sticker-cell .handle button:hover { color: var(--err); }
+  .sticker-cell input { height: 32px; padding: 0 8px; border-radius: 9px; border: 1px solid var(--panel-border); background: var(--panel-bg); outline: none; font-size: 12px; width: 100%; }
+  .sticker-cell input:focus { border-color: var(--coral); }
   .field a.btn.primary { color: var(--on-accent); }
 
   /* Model picker: a sheet with a search box, not a dropdown. */
@@ -354,6 +367,68 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <p class="error" x-show="mcpError" x-text="mcpError"></p>
       </div>
     </div>
+    <div class="card">
+      <h2>表情包</h2>
+      <p class="hint">聊天时它偶尔发一张，一次最多一张，你难过或说正事时不发。它也能自己画像素表情，画的放进「它自己画的」。开着的包，每张的「什么时候用」每轮都要带给模型，包越多越费。</p>
+      <div class="field">
+        <div class="name"><span>发表情包</span><span class="var">STICKERS</span></div>
+        <div class="choices" x-show="field('STICKERS')">
+          <template x-for="choice in ['on', 'off']" :key="choice">
+            <button class="choice" type="button" :class="inEffect(STICKER_META) === choice ? 'on' : ''" :disabled="Boolean(configBusy)"
+              @click="pickChoice(STICKER_META, choice)" x-text="choice === 'on' ? '开' : '关（不发也不画）'"></button>
+          </template>
+        </div>
+      </div>
+      <p class="hint" x-show="stickers.left" x-text="'开着的包加起来太多了，后面 ' + stickers.left + ' 张没带给模型（每轮最多带约 6000 token、200 张）。把不常用的包关掉就好。'"></p>
+      <template x-for="pack in stickers.packs" :key="pack.id">
+        <div class="field">
+          <div class="name"><span x-text="pack.name"></span><span class="var" x-text="packText(pack)"></span></div>
+          <p class="hint" x-show="pack.description || pack.license" x-text="[pack.description, pack.license].filter(Boolean).join(' ')"></p>
+          <div class="row">
+            <button class="choice" type="button" :class="pack.enabled ? 'on' : ''" :disabled="Boolean(stickerBusy)" @click="togglePack(pack)" x-text="pack.enabled ? '开着' : '关着'"></button>
+            <a class="btn" x-show="pack.homepage" :href="pack.homepage || '#'" target="_blank" rel="noopener noreferrer">出处</a>
+            <div class="spacer"></div>
+            <button class="btn" type="button" :disabled="Boolean(stickerBusy)" @click="removePack(pack)">删掉</button>
+          </div>
+          <details class="packs" @toggle="openPack = $event.target.open ? pack.id : (openPack === pack.id ? '' : openPack)">
+            <summary x-text="'看看这 ' + pack.stickers.length + ' 张，改「什么时候用」'"></summary>
+            <template x-if="openPack === pack.id">
+              <div class="sticker-grid">
+                <template x-for="sticker in pack.stickers" :key="sticker.key">
+                  <div class="sticker-cell">
+                    <div class="pic" x-data="{ bad: false }">
+                      <template x-if="sticker.video"><video :src="'/stickers/' + sticker.key" autoplay loop muted playsinline x-show="!bad" @error="bad = true"></video></template>
+                      <template x-if="!sticker.video"><img :src="'/stickers/' + sticker.key" alt="" loading="lazy" x-show="!bad" @error="bad = true"></template>
+                      <span class="broken" x-show="bad" x-text="(sticker.emoji ? sticker.emoji + ' ' : '') + '图取不到'"></span>
+                    </div>
+                    <div class="handle"><span x-text="(sticker.emoji ? sticker.emoji + ' ' : '') + pack.id + '/' + sticker.name"></span>
+                      <button type="button" title="删掉这张" aria-label="删掉这张" :disabled="Boolean(stickerBusy)" @click="removeSticker(pack, sticker)">×</button></div>
+                    <input type="text" :value="sticker.when" placeholder="什么时候用" aria-label="什么时候用" @change="editSticker(sticker, $event.target.value)">
+                  </div>
+                </template>
+              </div>
+            </template>
+          </details>
+        </div>
+      </template>
+      <div class="field">
+        <div class="name"><span>导入一个包</span><span class="var" x-show="!stickers.packs.length">还没有</span></div>
+        <p class="hint">Telegram 的贴纸包：在聊天里点一下那张贴纸，弹出整包后点右上角，「复制链接」就是 t.me/addstickers/… 的链接，贴到下面。自己做的：把 GIF（PNG、WebP 也行）打成一个 zip，文件名就是什么时候用，比如「开心.gif」；要写得细一点，放一个 pack.json，格式见 README。同名的包再导一次会替换旧的。</p>
+        <div class="row">
+          <input x-model="stickerLink" type="url" placeholder="t.me/addstickers/… 或 zip 的网址" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="贴纸包链接"
+            @keydown.enter.prevent="importStickerLink()">
+          <button class="btn primary" type="button" :disabled="Boolean(stickerBusy) || !stickerLink.trim()" @click="importStickerLink()" x-text="stickerBusy === 'link' ? '导入中…' : '导入'"></button>
+        </div>
+        <div class="row">
+          <label class="btn" :class="stickerBusy ? 'disabled' : ''" style="display: inline-flex; align-items: center; cursor: pointer;">
+            <input type="file" accept=".zip,application/zip" @change="importStickerFile($event)" :disabled="Boolean(stickerBusy)">
+            <span x-text="stickerBusy === 'file' ? '导入中…' : '选一个 zip'"></span>
+          </label>
+        </div>
+        <p class="error" x-show="stickerError" x-text="stickerError"></p>
+        <p class="hint" x-show="stickerSkipped.length" x-text="'没导进来的：' + stickerSkipped.join('；')"></p>
+      </div>
+    </div>
     <div class="bar">
       <div class="spacer"></div>
       <button class="btn" type="button" @click="logout()">锁上网页门</button>
@@ -479,6 +554,8 @@ function resident() {
     '.tool-entry strong { color: var(--text-2); font-weight: 500; }',
     '.tool-state { color: var(--text-4); margin-left: 6px; font-size: 11px; }',
     '.activity-only { min-width: 180px; }',
+    '.message-bubble:has(> .sticker-row) { background: transparent; border: 0; box-shadow: none; backdrop-filter: none; padding: 4px 0; }',
+    '.sticker-row img, .sticker-row video { display: block; width: 120px; height: auto; image-rendering: pixelated; }',
     '.letter { font-size: 13px; color: var(--text-3); }',
     '.letter summary { cursor: pointer; color: var(--text-2); }',
     '.letter .text { margin-top: 8px; color: var(--text-2); }',
@@ -546,6 +623,13 @@ function resident() {
     mcpDraft: { name: '', url: '', key: '' },
     mcpBusy: '',
     mcpError: '',
+    STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
+    stickers: { on: true, packs: [], left: 0 },
+    stickerBusy: '',
+    stickerError: '',
+    stickerSkipped: [],
+    stickerLink: '',
+    openPack: '',
     persona: { text: '', at: null, fallback: '', versions: [] },
     model: { model: '', at: null, fallback: '', recent: [], lastUsage: null, memoryOff: false },
     catalog: [],
@@ -624,12 +708,14 @@ function resident() {
       }
       var headers = this.miniApp ? { authorization: 'Bearer ' + this.miniToken } : { 'x-web-key': this.key };
       if (opts.body) headers['content-type'] = 'application/json';
-      var response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
+      if (opts.raw) headers['content-type'] = opts.type || 'application/octet-stream';
+      var payload = opts.raw || (opts.body ? JSON.stringify(opts.body) : undefined);
+      var response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: payload });
       if (response.status === 401 && this.miniApp) {
         try {
           await this.miniSession(false);
           headers.authorization = 'Bearer ' + this.miniToken;
-          response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
+          response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: payload });
         } catch (error) { this.authed = false; this.loginError = error.message; throw error; }
       }
       if (response.status === 401) { this.authed = false; this.loginError = this.miniApp ? '请关闭小窗后重新打开，或检查 Telegram 白名单' : '钥匙不对'; throw new Error(this.loginError); }
@@ -705,10 +791,19 @@ function resident() {
       var parts = bubbles(line);
       var self = this;
       var activity = this.activityHtml(line);
-      return parts.map(function (text, index) {
+      var stickers = (line.stickers || []).filter(function (sticker) { return /^\/stickers\/[0-9a-f]+$/.test(sticker.url); });
+      // A reply that is only a sticker shows the sticker, with no empty bubble before it.
+      if (stickers.length && !line.text.trim() && !activity) parts = [];
+      var messages = parts.map(function (text, index) {
         var last = index === parts.length - 1;
         return { role: line.role === 'user' ? 'user' : 'ai', html: '<div data-row="' + esc(line.id) + '" class="' + (!text ? 'activity-only' : '') + '">' + (index === 0 ? activity : '') + (text ? '<div class="text">' + esc(text) + '</div>' : '') + (last ? self.metaHtml(line) : '') + '</div>' };
       });
+      return messages.concat(stickers.map(function (sticker) {
+        var picture = sticker.video
+          ? '<video src="' + esc(sticker.url) + '" autoplay loop muted playsinline></video>'
+          : '<img src="' + esc(sticker.url) + '" alt="表情" loading="lazy">';
+        return { role: 'ai', html: '<div class="sticker-row" data-row="' + esc(line.id) + '">' + picture + '</div>' };
+      }));
     },
     metaHtml(line) {
       var bits = [];
@@ -789,7 +884,8 @@ function resident() {
           if (own >= 0) {
             var nextUser = data.findIndex(function (line, index) { return index > own && line.role === 'user'; });
             var reply = data.slice(own + 1, nextUser < 0 ? data.length : nextUser).filter(function (line) { return line.role === 'assistant' && line.kind === 'chat' && line.via === 'web'; });
-            var html = reply.map(function (line) { return self.toMessages(line).map(function (message) { return message.html; }).join(''); }).join('');
+            // Stickers join the reply once it is done; inside the streaming bubble they would take its background away.
+            var html = reply.map(function (line) { return self.toMessages(Object.assign({}, line, { stickers: [] })).map(function (message) { return message.html; }).join(''); }).join('');
             if (html && html !== previous) {
               previous = html;
               var opens = chat && chat.shadowRoot ? Array.from(chat.shadowRoot.querySelectorAll('details[data-activity][open]')).map(function (el) { return el.getAttribute('data-activity'); }) : [];
@@ -1109,8 +1205,11 @@ function resident() {
       this.fillDrafts();
       this.configError = {};
       this.mcpError = '';
+      this.stickerError = '';
+      this.stickerSkipped = [];
       this.view = 'config';
       this.loadMcp().catch(function () {});
+      this.loadStickers().catch(function () {});
     },
     closeConfig() {
       var self = this;
@@ -1195,6 +1294,60 @@ function resident() {
       } finally {
         this.mcpBusy = '';
       }
+    },
+
+    // ---- stickers ----
+    async loadStickers() {
+      this.stickers = await this.api('/web/stickers');
+    },
+    packText(pack) {
+      var from = { zip: '压缩包', telegram: 'Telegram 贴纸包', own: '它自己画的' }[pack.source] || '';
+      return pack.stickers.length + ' 张 · ' + from + (pack.enabled ? ' · 每轮约 ' + pack.tokens + ' token' : '');
+    },
+    async stickerCall(busy, path, body, done) {
+      if (this.stickerBusy) return;
+      this.stickerBusy = busy;
+      this.stickerError = '';
+      try {
+        var result = await this.api(path, body);
+        this.stickers = result;
+        this.stickerSkipped = result.skipped || [];
+        if (done) this.notify(done);
+        return true;
+      } catch (error) {
+        this.stickerError = error.message;
+        return false;
+      } finally {
+        this.stickerBusy = '';
+      }
+    },
+    async importStickerLink() {
+      var link = this.stickerLink.trim();
+      if (!link) return;
+      if (await this.stickerCall('link', '/web/stickers/import', { method: 'POST', body: { url: link } }, '导进来了，下一句开始能用')) this.stickerLink = '';
+    },
+    async importStickerFile(event) {
+      var input = event.target;
+      var file = input.files && input.files[0];
+      input.value = '';
+      if (!file) return;
+      if (file.size > 16 * 1024 * 1024) { this.stickerError = '压缩包最多 16 MB'; return; }
+      await this.stickerCall('file', '/web/stickers/import?name=' + encodeURIComponent(file.name), { method: 'POST', raw: file, type: 'application/zip' }, '导进来了，下一句开始能用');
+    },
+    togglePack(pack) {
+      this.stickerCall(pack.id, '/web/stickers/pack', { method: 'POST', body: { id: pack.id, on: !pack.enabled } }, pack.enabled ? '关了，它不会再发这个包' : '开了');
+    },
+    removePack(pack) {
+      if (!confirm('删掉「' + pack.name + '」整个包？')) return;
+      this.stickerCall(pack.id, '/web/stickers/remove', { method: 'POST', body: { id: pack.id } }, '删掉了');
+    },
+    removeSticker(pack, sticker) {
+      if (!confirm('删掉 ' + pack.id + '/' + sticker.name + '？')) return;
+      this.stickerCall(sticker.key, '/web/stickers/delete', { method: 'POST', body: { key: sticker.key } }, '删掉了');
+    },
+    editSticker(sticker, when) {
+      if (when.trim() === sticker.when) return;
+      this.stickerCall(sticker.key, '/web/stickers/edit', { method: 'POST', body: { key: sticker.key, when: when } }, '改好了');
     },
 
     // ---- small things ----

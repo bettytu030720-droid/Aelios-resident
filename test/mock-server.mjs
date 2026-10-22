@@ -70,15 +70,39 @@ const authServer = {
   token_endpoint_auth_methods_supported: ["none"]
 };
 
+// A Telegram sticker pack: a still sticker, a video one and an animated (TGS) one, which only has a thumbnail to show.
+const STICKER_SET = {
+  name: "TestPack",
+  title: "Test Pack",
+  sticker_type: "regular",
+  stickers: [
+    { file_id: "tg-still", emoji: "😀", is_animated: false, is_video: false },
+    { file_id: "tg-video", emoji: "🥰", is_animated: false, is_video: true },
+    { file_id: "tg-anim", emoji: "😴", is_animated: true, is_video: false, thumbnail: { file_id: "tg-anim-thumb" } }
+  ]
+};
+const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.from([20, 0, 0, 0]), Buffer.from("WEBPVP8L"), Buffer.alloc(12)]);
+const WEBM = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(16)]);
+
 const server = http.createServer(async (req, res) => {
-  let body = "";
-  for await (const chunk of req) body += chunk;
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks);
+  const body = raw.toString();
   let json;
   try {
     json = body ? JSON.parse(body) : undefined;
   } catch {
-    // The OAuth token request is a form.
+    // The OAuth token request is a form; a file upload to Telegram is multipart.
     json = undefined;
+  }
+  // A multipart upload (sendSticker and the like): its fields, and for each file its name, type and first bytes.
+  if (!json && /multipart\/form-data/.test(req.headers["content-type"] ?? "")) {
+    const form = await new Response(raw, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    json = { multipart: true };
+    for (const [key, value] of form) {
+      json[key] = typeof value === "string" ? value : { file: value.name, type: value.type, size: value.size, head: Buffer.from(await value.arrayBuffer()).subarray(0, 6).toString("latin1") };
+    }
   }
   const url = new URL(req.url, "http://x");
   const reply = (obj, status = 200) => {
@@ -92,10 +116,18 @@ const server = http.createServer(async (req, res) => {
     return reply({ ok: true });
   }
 
-  // A file the bot downloads after getFile: a few bytes that start like a JPEG.
+  // A file the bot downloads after getFile: a few bytes that start like a JPEG, or a sticker's WebP or WebM.
   const file = url.pathname.match(/^\/file\/bot[^/]+\/(.+)$/);
   if (file) {
     log.push({ kind: "tg.file", path: file[1] });
+    if (file[1].endsWith(".webp")) {
+      res.writeHead(200, { "content-type": "image/webp" });
+      return res.end(WEBP);
+    }
+    if (file[1].endsWith(".webm")) {
+      res.writeHead(200, { "content-type": "video/webm" });
+      return res.end(WEBM);
+    }
     res.writeHead(200, { "content-type": "image/jpeg" });
     return res.end(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]));
   }
@@ -112,10 +144,32 @@ const server = http.createServer(async (req, res) => {
       case "sendMessage":
       case "editMessageText":
         return reply({ ok: true, result: message() });
-      case "getFile":
+      case "getFile": {
         // "gone" stands for a file Telegram no longer has.
         if (json?.file_id === "gone") return reply({ ok: false, error_code: 400, description: "Bad Request: invalid file_id" }, 400);
-        return reply({ ok: true, result: { file_id: json?.file_id, file_path: `photos/${json?.file_id}.jpg` } });
+        const id = String(json?.file_id ?? "");
+        const path = id === "tg-video" ? `stickers/${id}.webm` : id.startsWith("tg-") ? `stickers/${id}.webp` : `photos/${id}.jpg`;
+        return reply({ ok: true, result: { file_id: id, file_path: path } });
+      }
+      case "getStickerSet":
+        if (json?.name !== STICKER_SET.name) return reply({ ok: false, error_code: 400, description: "Bad Request: STICKERSET_INVALID" }, 400);
+        return reply({ ok: true, result: STICKER_SET });
+      case "sendSticker":
+      case "sendAnimation":
+      case "sendPhoto": {
+        const field = { sendSticker: "sticker", sendAnimation: "animation", sendPhoto: "photo" }[method];
+        // "stale-…" stands for a file id Telegram no longer takes.
+        if (typeof json?.[field] === "string" && json[field].startsWith("stale-")) {
+          return reply({ ok: false, error_code: 400, description: "Bad Request: wrong file identifier" }, 400);
+        }
+        // An uploaded WebP that is no proper sticker (not 512 pixels): Telegram will not take it as one.
+        if (method === "sendSticker" && json?.multipart && json.sticker?.type === "image/webp") {
+          return reply({ ok: false, error_code: 400, description: "Bad Request: STICKER_PNG_DIMENSIONS" }, 400);
+        }
+        const id = typeof json?.[field] === "string" ? json[field] : `up-${method}-${nextMessageId}`;
+        const media = method === "sendSticker" ? { sticker: { file_id: id } } : method === "sendAnimation" ? { animation: { file_id: id }, document: { file_id: id } } : { photo: [{ file_id: `${id}-s` }, { file_id: id }] };
+        return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, ...media } });
+      }
       case "sendChatAction":
       case "setWebhook":
       case "setMyCommands":

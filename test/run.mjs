@@ -10,15 +10,17 @@
 //   custom   your own provider, without Aelios (start wrangler with --var AELIOS_URL:)
 //   mcp      other MCP servers: open, with a key, with a sign-in, and connected from the chat
 //   mcp-2    run after mcp and restart.sh: the connections come back
+//   stickers sticker packs: imported from a zip and from Telegram, sent, drawn, shown on the web page
 import assert from "node:assert/strict";
 import http from "node:http";
+import { GIF, PNG, WEBM, WEBP, zip } from "./zip.mjs";
 
 const WORKER = "http://127.0.0.1:8787";
 const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -777,6 +779,217 @@ if (phase === "mcp-2") {
     assert.match((await waitForSends(before, 1)).join("\n"), /我查到了：3/);
     const call = (await log()).find((e) => e.kind === "ext.oauth" && e.method === "tools/call");
     assert.equal(call?.auth, "Bearer tok-1", "the signed-in server is called with its saved token");
+  });
+}
+
+if (phase === "stickers") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const packs = async () => (await (await web("/web/stickers", KEY)).json()).packs;
+  const pack = async (id) => (await packs()).find((p) => p.id === id);
+  const tgLog = async (kind) => (await log()).filter((e) => e.kind === `tg.${kind}`);
+  const ask = async (text) => {
+    const r = await web("/web/say", KEY, { text });
+    assert.equal(r.status, 200);
+    const lines = (await (await web("/web/messages", KEY)).json()).data;
+    return lines.filter((line) => line.role === "assistant").at(-1);
+  };
+  const manifest = {
+    format: "resident-stickers/1",
+    name: "Test",
+    stickers: [
+      { id: "wave", file: "wave.gif", emoji: "👋", when: "Say hi.", telegram: "wave.webm" },
+      { id: "love", file: "love.png", emoji: "❤️", when: "Love." }
+    ]
+  };
+
+  await step("a pack is imported from a zip on the settings page", async () => {
+    await post("你好");
+    await waitForSends(0, 2);
+    const body = zip([
+      { name: "pack.json", data: JSON.stringify(manifest), deflate: true },
+      { name: "wave.gif", data: GIF },
+      { name: "wave.webm", data: WEBM },
+      { name: "love.png", data: PNG, deflate: true }
+    ]);
+    const response = await fetch(`${WORKER}/web/stickers/import?name=test.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body });
+    assert.equal(response.status, 200, await response.clone().text());
+    const imported = await response.json();
+    assert.equal(imported.left, 0, "every sticker is told to the model");
+    const test = imported.packs.find((p) => p.id === "test");
+    assert.deepEqual(test.stickers.map((s) => [s.name, s.emoji, s.when]), [["wave", "👋", "Say hi."], ["love", "❤️", "Love."]]);
+    assert.ok(test.enabled && test.tokens > 0);
+    const shut = await fetch(`${WORKER}/web/stickers/import?name=x.zip`, { method: "POST", headers: { "content-type": "application/zip" }, body });
+    assert.equal(shut.status, 401, "not without the web key");
+    const bad = await fetch(`${WORKER}/web/stickers/import?name=x.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body: "not a zip" });
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /不是 zip/);
+  });
+
+  await step("a sticker's picture is served by its key alone", async () => {
+    const wave = (await pack("test")).stickers[0];
+    const picture = await fetch(`${WORKER}/stickers/${wave.key}`);
+    assert.equal(picture.status, 200);
+    assert.equal(picture.headers.get("content-type"), "image/gif");
+    assert.deepEqual(Buffer.from(await picture.arrayBuffer()), GIF);
+    assert.equal((await fetch(`${WORKER}/stickers/${"0".repeat(24)}`)).status, 404);
+    assert.equal((await fetch(`${WORKER}/stickers/not-a-key`)).status, 404);
+  });
+
+  await step("a Telegram sticker pack is imported by its link, its pictures fetched from Telegram once", async () => {
+    const response = await web("/web/stickers/import", KEY, { url: "https://t.me/addstickers/TestPack" });
+    assert.equal(response.status, 200, await response.clone().text());
+    const tg = (await response.json()).packs.find((p) => p.id === "testpack");
+    assert.equal(tg.name, "Test Pack");
+    assert.deepEqual(tg.stickers.map((s) => [s.name, s.emoji, s.video]), [["1", "😀", false], ["2", "🥰", true], ["3", "😴", false]]);
+    const video = await fetch(`${WORKER}/stickers/${tg.stickers[1].key}`);
+    assert.equal(video.headers.get("content-type"), "video/webm");
+    const thumb = await fetch(`${WORKER}/stickers/${tg.stickers[2].key}`);
+    assert.equal(thumb.headers.get("content-type"), "image/webp");
+    const fetched = (await tgLog("getFile")).length;
+    await fetch(`${WORKER}/stickers/${tg.stickers[1].key}`);
+    assert.equal((await tgLog("getFile")).length, fetched, "kept after the first time");
+    assert.deepEqual((await tgLog("getFile")).map((e) => e.body.file_id).sort(), ["tg-anim-thumb", "tg-video"]);
+    for (const [url, error] of [
+      ["https://t.me/addstickers/Nope", /找不到/],
+      ["https://t.me/addemoji/Abc", /表情符号包/],
+      ["hello", /认不出/],
+      ["http://example.com/a.zip", /https/],
+      ["https://127.0.0.1:9999/a.zip", /不能读/]
+    ]) {
+      const refused = await web("/web/stickers/import", KEY, { url });
+      assert.equal(refused.status, 400, url);
+      assert.match((await refused.json()).error, error);
+    }
+  });
+
+  await step("on Telegram a sticker follows the words, uploaded the first time and sent by its id after", async () => {
+    const before = (await sent()).length;
+    await post("发表情");
+    const out = await waitForSends(before, 1);
+    assert.match(out[0], /我查到了：\{"sent":"test\/wave"\}/);
+    await sleep(500);
+    const all = await log();
+    const sticker = all.findLastIndex((e) => e.kind === "tg.sendSticker");
+    const words = all.findLastIndex((e) => e.kind === "tg.sendMessage");
+    assert.ok(sticker > words && words >= 0, "the sticker comes after the words");
+    const first = all[sticker].body;
+    assert.equal(first.multipart, true);
+    assert.equal(first.sticker.file, "sticker.webm");
+    assert.equal(first.sticker.type, "video/webm");
+    assert.equal(first.emoji, "👋");
+    await post("发表情");
+    await waitForSends(before + 1, 1);
+    await sleep(500);
+    const again = (await tgLog("sendSticker")).at(-1).body;
+    assert.equal(again.multipart, undefined);
+    assert.match(again.sticker, /^up-sendSticker-/);
+  });
+
+  await step("a sticker can be the whole reply, with no 'said nothing' line", async () => {
+    const before = (await sent()).length;
+    const stickers = (await tgLog("sendSticker")).length;
+    await post("只发表情");
+    const start = Date.now();
+    while ((await tgLog("sendSticker")).length === stickers) {
+      if (Date.now() - start > 20000) throw new Error("no sticker");
+      await sleep(200);
+    }
+    await sleep(1500);
+    assert.deepEqual((await sent()).slice(before), []);
+  });
+
+  await step("one sticker per reply", async () => {
+    const before = (await sent()).length;
+    const stickers = (await tgLog("sendSticker")).length;
+    await post("发两张");
+    const out = await waitForSends(before, 1);
+    assert.match(out[0], /one sticker per reply/);
+    await sleep(800);
+    assert.equal((await tgLog("sendSticker")).length, stickers + 1);
+  });
+
+  await step("the resident draws a sticker, keeps it in its own pack and sends it (as a GIF on Telegram)", async () => {
+    const before = (await sent()).length;
+    await post("画一张");
+    await waitForSends(before, 1);
+    await sleep(800);
+    const animation = (await tgLog("sendAnimation")).at(-1)?.body;
+    assert.ok(animation, "sent as an animation");
+    assert.equal(animation.animation.file, "sticker.gif");
+    assert.equal(animation.animation.head, "GIF89a");
+    const mine = await pack("mine");
+    assert.equal(mine.source, "own");
+    assert.deepEqual(mine.stickers.map((s) => [s.name, s.emoji, s.when]), [["heart", "❤️", "When she says she loves me."]]);
+    const picture = await fetch(`${WORKER}/stickers/${mine.stickers[0].key}`);
+    assert.equal(Buffer.from(await picture.arrayBuffer()).subarray(0, 6).toString(), "GIF89a");
+  });
+
+  await step("the web page shows the stickers a reply sent, and a web turn sends nothing to Telegram", async () => {
+    const lines = (await (await web("/web/messages", KEY)).json()).data;
+    const drawn = lines.filter((line) => line.role === "assistant" && line.stickers).at(-1);
+    const mine = await pack("mine");
+    assert.deepEqual(drawn.stickers, [{ url: `/stickers/${mine.stickers[0].key}`, video: false }]);
+    const tgBefore = (await log()).filter((e) => e.kind.startsWith("tg.send")).length;
+    const line = await ask("发表情");
+    assert.equal(line.via, "web");
+    assert.deepEqual(line.stickers, [{ url: `/stickers/${(await pack("test")).stickers[0].key}`, video: false }]);
+    await sleep(500);
+    assert.equal((await log()).filter((e) => e.kind.startsWith("tg.send")).length, tgBefore);
+  });
+
+  await step("the model is told every sticker of the packs that are on; a pack or the whole thing can be turned off", async () => {
+    const tools = async () => (await ask("表情工具有哪些")).text;
+    assert.equal(await tools(), "make_sticker:; send_sticker:mine/heart|test/wave|test/love|testpack/1|testpack/2|testpack/3");
+    await web("/web/stickers/pack", KEY, { id: "testpack", on: false });
+    assert.equal(await tools(), "make_sticker:; send_sticker:mine/heart|test/wave|test/love");
+    const off = await web("/web/config", KEY, { key: "STICKERS", text: "off" });
+    assert.equal(off.status, 200);
+    assert.equal(await tools(), "没有");
+    assert.match(await (await fetch(`${WORKER}/web/stickers`, { headers: { "x-web-key": KEY } })).text(), /"on":false/);
+    await web("/web/config", KEY, { key: "STICKERS", text: "" });
+    await web("/web/stickers/pack", KEY, { id: "testpack", on: true });
+  });
+
+  await step("what a sticker is for is changed on the settings page; stickers and packs are deleted there", async () => {
+    const wave = (await pack("test")).stickers[0];
+    const edited = await (await web("/web/stickers/edit", KEY, { key: wave.key, when: "挥手打招呼" })).json();
+    assert.equal(edited.packs.find((p) => p.id === "test").stickers[0].when, "挥手打招呼");
+    const badEmoji = await web("/web/stickers/edit", KEY, { key: wave.key, when: "x", emoji: "abc" });
+    assert.equal(badEmoji.status, 400);
+    await web("/web/stickers/delete", KEY, { key: wave.key });
+    assert.deepEqual((await pack("test")).stickers.map((s) => s.name), ["love"]);
+    assert.equal((await fetch(`${WORKER}/stickers/${wave.key}`)).status, 404);
+    await web("/web/stickers/remove", KEY, { id: "testpack" });
+    assert.equal(await pack("testpack"), undefined);
+  });
+
+  await step("/status says how the stickers are", async () => {
+    const before = (await sent()).length;
+    await post("/status");
+    const out = (await waitForSends(before, 1)).join("\n");
+    assert.match(out, /表情包：开，2 个包 2 张/);
+  });
+
+  await step("a WebP Telegram will not take as a sticker goes as a photo, and the same way after", async () => {
+    const body = zip([{ name: "smile.webp", data: WEBP }]);
+    const response = await fetch(`${WORKER}/web/stickers/import?name=still.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body });
+    assert.equal(response.status, 200, await response.clone().text());
+    const before = (await sent()).length;
+    const photos = (await tgLog("sendPhoto")).length;
+    await post("发静图");
+    await waitForSends(before, 1);
+    await sleep(500);
+    assert.equal((await tgLog("sendSticker")).at(-1).body.sticker?.type, "image/webp", "tried as a sticker first");
+    const photo = await tgLog("sendPhoto");
+    assert.equal(photo.length, photos + 1);
+    assert.equal(photo.at(-1).body.photo.type, "image/webp");
+    const stickers = (await tgLog("sendSticker")).length;
+    await post("发静图");
+    await waitForSends(before + 1, 1);
+    await sleep(500);
+    assert.equal((await tgLog("sendSticker")).length, stickers, "not tried as a sticker again");
+    assert.match((await tgLog("sendPhoto")).at(-1).body.photo, /^up-sendPhoto-/);
   });
 }
 

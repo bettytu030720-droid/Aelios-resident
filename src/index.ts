@@ -6,11 +6,13 @@
 //                                       and the settings), behind WEB_KEY, or inside Telegram behind signed
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
+//   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
 import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini-app";
 import { MCP_CALLBACK_PATH } from "./mcp-servers";
+import { MAX_ZIP_BYTES } from "./stickers";
 import { commandOf, isAllowed, sendBubbles, setWebhook, timingSafeEqual, type TelegramUpdate } from "./telegram";
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
@@ -119,9 +121,25 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     );
   }
   const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  // A sticker pack's zip comes as it is, its file name in ?name=.
+  if (url.pathname === "/web/stickers/import" && request.method === "POST" && !/json/.test(request.headers.get("content-type") ?? "")) {
+    if (Number(request.headers.get("content-length") ?? 0) > MAX_ZIP_BYTES) return Response.json({ error: `压缩包最多 ${MAX_ZIP_BYTES / 1024 / 1024} MB` }, { status: 413 });
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    const saved = await agent.webImportStickerZip(bytes, (url.searchParams.get("name") ?? "").replace(/\.zip$/i, ""));
+    return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+  }
   const body =
     request.method === "POST"
-      ? ((await request.json().catch(() => ({}))) as { text?: string; key?: string; name?: string; url?: string; id?: string })
+      ? ((await request.json().catch(() => ({}))) as {
+          text?: string;
+          key?: string;
+          name?: string;
+          url?: string;
+          id?: string;
+          on?: boolean;
+          when?: string;
+          emoji?: string;
+        })
       : {};
   switch (`${request.method} ${url.pathname}`) {
     case "GET /web/check":
@@ -163,6 +181,22 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     }
     case "POST /web/mcp/remove":
       return Response.json(await agent.webRemoveMcp(String(body.id ?? "")));
+    case "GET /web/stickers":
+      return Response.json(await agent.webStickers());
+    case "POST /web/stickers/import": {
+      const saved = await agent.webImportStickerLink(String(body.url ?? ""));
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/stickers/pack":
+      return Response.json(await agent.webStickerPack(String(body.id ?? ""), body.on !== false));
+    case "POST /web/stickers/remove":
+      return Response.json(await agent.webRemoveStickerPack(String(body.id ?? "")));
+    case "POST /web/stickers/edit": {
+      const saved = await agent.webEditSticker(String(body.key ?? ""), String(body.when ?? ""), body.emoji === undefined ? undefined : String(body.emoji));
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/stickers/delete":
+      return Response.json(await agent.webRemoveSticker(String(body.key ?? "")));
     default:
       return new Response("not found", { status: 404 });
   }
@@ -175,6 +209,14 @@ export default {
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
       if (url.pathname === "/tg/setup") return await handleSetup(env, url);
       if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);
+      const sticker = url.pathname.match(/^\/stickers\/([0-9a-f]{24})$/);
+      if (sticker && request.method === "GET") {
+        const file = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).stickerFile(sticker[1]);
+        if (!file) return new Response("not found", { status: 404 });
+        return new Response(file.bytes, {
+          headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" }
+        });
+      }
       // The resident checks the state against the sign-in it started; anything else is not for it. Only the
       // address goes in, never the caller's headers: a WebSocket upgrade here would otherwise open a connection
       // to the resident, which streams the conversation to every connection it has.

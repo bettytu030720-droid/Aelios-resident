@@ -43,7 +43,16 @@ export type BubbleAdapter = {
  * sent as its own message the moment the next one starts, and the typing
  * indicator comes back on while the next paragraph is being written.
  */
-export function useBubbles(adapter: BubbleAdapter): void {
+/**
+ * What happens when a reply's text is all in. `keepLast` can drop its last bubble (the placeholder for a reply
+ * with no words, when a sticker is the reply); `after` posts what goes after the words (a sticker).
+ */
+export type BubbleEnd = {
+  keepLast?(threadId: string, text: string): boolean;
+  after?(threadId: string): Promise<PostedMessage | null>;
+};
+
+export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
   adapter.stream = async (
     threadId: string,
     textStream: AsyncIterable<StreamPart>,
@@ -63,20 +72,120 @@ export function useBubbles(adapter: BubbleAdapter): void {
         void adapter.startTyping(threadId).catch(() => undefined);
       }
     }
-    await post(buffer);
+    const keep = end.keepLast?.(threadId, buffer) ?? true;
+    if (keep) await post(buffer);
+    if (!options?.signal?.aborted && end.after) {
+      const after = await end.after(threadId).catch(() => null);
+      if (after) last = after;
+      // The sticker that was to be the whole reply did not go out: say so after all.
+      else if (!keep) await post(buffer);
+    }
     return last;
   };
 }
 
 export type TelegramConfig = { token: string; apiBase?: string };
 
-async function call(config: TelegramConfig, method: string, payload: Record<string, unknown>): Promise<Response> {
-  const base = config.apiBase?.trim() || DEFAULT_API_BASE;
-  return fetch(`${base}/bot${config.token}/${method}`, {
+function apiBase(config: TelegramConfig): string {
+  return config.apiBase?.trim() || DEFAULT_API_BASE;
+}
+
+async function call(config: TelegramConfig, method: string, payload: Record<string, unknown> | FormData): Promise<Response> {
+  const form = payload instanceof FormData;
+  return fetch(`${apiBase(config)}/bot${config.token}/${method}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
+    headers: form ? undefined : { "content-type": "application/json" },
+    body: form ? payload : JSON.stringify(payload)
   });
+}
+
+type Answer<T> = { ok: boolean; result?: T; description?: string };
+
+async function answer<T>(response: Response): Promise<Answer<T>> {
+  return ((await response.json().catch(() => null)) as Answer<T> | null) ?? { ok: false, description: `HTTP ${response.status}` };
+}
+
+/** Her chat id in a private chat's thread id ("telegram:42"); null for anything else. */
+export function chatIdOf(threadId: string): string | null {
+  return threadId.match(/^telegram:(-?\d+)$/)?.[1] ?? null;
+}
+
+/** How a file goes to a chat: as a sticker (WebM, WebP, TGS), an animation (GIF) or a photo. */
+export type MediaKind = "sticker" | "animation" | "photo";
+
+export function mediaKindOf(type: string): MediaKind {
+  if (type === "image/gif") return "animation";
+  if (type === "video/webm" || type === "image/webp" || type === "application/x-tgsticker") return "sticker";
+  return "photo";
+}
+
+const EXTENSIONS: Record<string, string> = {
+  "image/gif": "gif",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "video/webm": "webm",
+  "application/x-tgsticker": "tgs"
+};
+
+type SentMedia = {
+  message_id: number;
+  sticker?: { file_id: string };
+  animation?: { file_id: string };
+  document?: { file_id: string };
+  photo?: { file_id: string }[];
+};
+
+/**
+ * A sticker, GIF or picture to a chat: by the file id Telegram already has, or uploaded. Returns the posted
+ * message and the file id to send it by next time.
+ */
+export async function sendMedia(
+  config: TelegramConfig,
+  chatId: string,
+  media: { kind: MediaKind; fileId?: string; file?: { bytes: Uint8Array; type: string }; emoji?: string }
+): Promise<{ messageId: number; fileId: string | null } | { error: string }> {
+  const method = { sticker: "sendSticker", animation: "sendAnimation", photo: "sendPhoto" }[media.kind];
+  let payload: Record<string, unknown> | FormData;
+  if (media.fileId) payload = { chat_id: chatId, [media.kind]: media.fileId };
+  else if (media.file) {
+    payload = new FormData();
+    payload.set("chat_id", chatId);
+    const name = `sticker.${EXTENSIONS[media.file.type] ?? "bin"}`;
+    payload.set(media.kind, new Blob([media.file.bytes], { type: media.file.type }), name);
+    if (media.kind === "sticker" && media.emoji) payload.set("emoji", media.emoji);
+  } else return { error: "nothing to send" };
+  const sent = await answer<SentMedia>(await call(config, method, payload));
+  if (!sent.ok || !sent.result) return { error: sent.description ?? `${method} failed` };
+  const result = sent.result;
+  const fileId = result.sticker?.file_id ?? result.animation?.file_id ?? result.document?.file_id ?? result.photo?.at(-1)?.file_id ?? null;
+  return { messageId: result.message_id, fileId };
+}
+
+export type TelegramSticker = {
+  file_id: string;
+  emoji?: string;
+  is_animated?: boolean;
+  is_video?: boolean;
+  thumbnail?: { file_id: string };
+};
+
+export type TelegramStickerSet = { name: string; title: string; sticker_type?: string; stickers: TelegramSticker[] };
+
+export async function getStickerSet(config: TelegramConfig, name: string): Promise<TelegramStickerSet | { error: string }> {
+  const set = await answer<TelegramStickerSet>(await call(config, "getStickerSet", { name }));
+  return set.ok && set.result ? set.result : { error: set.description ?? "getStickerSet failed" };
+}
+
+/** A file the bot can see, downloaded; null when it is gone or larger than `limit`. */
+export async function downloadFile(config: TelegramConfig, fileId: string, limit: number): Promise<Uint8Array | null> {
+  const file = await answer<{ file_path?: string; file_size?: number }>(await call(config, "getFile", { file_id: fileId }));
+  const path = file.result?.file_path;
+  if (!file.ok || !path || (file.result?.file_size ?? 0) > limit) return null;
+  const response = await fetch(`${apiBase(config)}/file/bot${config.token}/${path}`);
+  if (!response.ok) return null;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return bytes.length && bytes.length <= limit ? bytes : null;
 }
 
 /** Plain text from the Worker itself (slash command answers); `bubbles: false` keeps blank lines in one message. */

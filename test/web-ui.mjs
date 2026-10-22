@@ -36,3 +36,11 @@ console.log('PASS a failed Mini App renewal visibly returns to the reconnect scr
 assert.ok(!html.includes('<script src="https://telegram.org/'));
 assert.ok(html.includes("script.src = 'https://telegram.org/js/telegram-web-app.js'"));
 console.log('PASS ordinary WEB_KEY pages do not load Telegram third-party JS');
+const withSticker = page.toMessages({ ...line, activity: [], text: '好呀', stickers: [{ url: '/stickers/0123456789abcdef01234567', video: false }, { url: 'https://evil.example/x.gif', video: false }] });
+assert.equal(withSticker.length, 2);
+assert.ok(withSticker[1].html.includes('class="sticker-row"') && withSticker[1].html.includes('<img src="/stickers/0123456789abcdef01234567"'));
+assert.ok(!withSticker.some((message) => message.html.includes('evil.example')));
+const onlySticker = page.toMessages({ ...line, activity: [], text: '', stickers: [{ url: '/stickers/0123456789abcdef01234567', video: true }] });
+assert.equal(onlySticker.length, 1);
+assert.ok(onlySticker[0].html.includes('<video src="/stickers/0123456789abcdef01234567" autoplay loop muted playsinline>'));
+console.log('PASS stickers show after the words, only from the resident itself, and a sticker-only reply is just the sticker');

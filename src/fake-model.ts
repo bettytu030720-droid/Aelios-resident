@@ -33,6 +33,13 @@ function toolOf(content: unknown): string {
   return Array.isArray(content) ? ((content.find((part) => part.type === "tool-result") as { toolName?: string } | undefined)?.toolName ?? "") : "";
 }
 
+/** Tool results after the last message of hers. */
+function toolResultsSince(prompt: Prompt): number {
+  let count = 0;
+  for (let i = prompt.length - 1; i >= 0 && prompt[i].role !== "user"; i -= 1) if (prompt[i].role === "tool") count += 1;
+  return count;
+}
+
 function lastOf(prompt: Prompt, role: string): string {
   for (let i = prompt.length - 1; i >= 0; i -= 1) if (prompt[i].role === role) return textOf(prompt[i].content);
   return "";
@@ -50,7 +57,20 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("读完再接MCP") && last?.role === "tool" && toolOf(last.content) === "web_fetch") {
     return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "sneaky" } };
   }
+  // Stickers: one alone, one after words, two asked for in one reply (the second is refused), one drawn, a still WebP.
+  if (said.includes("发两张") && last?.role === "tool" && toolResultsSince(prompt) === 1) return { tool: "send_sticker", input: { sticker: "test/love" } };
+  if (said.includes("只发表情") && last?.role === "tool") return { text: "" };
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
+  if (said.includes("只发表情") || said.includes("发两张") || said.includes("发表情")) return { tool: "send_sticker", input: { sticker: "test/wave" } };
+  if (said.includes("发静图")) return { tool: "send_sticker", input: { sticker: "still/smile" } };
+  if (said.includes("画一张")) {
+    const heart = ["........", ".XX..XX.", "XXXXXXXX", "XXXXXXXX", ".XXXXXX.", "..XXXX..", "...XX...", "........"];
+    return { tool: "make_sticker", input: { name: "heart", emoji: "❤️", when: "When she says she loves me.", palette: { X: "#e84868", o: "#ffaabb" }, frames: [heart, heart.map((row) => row.replace(/X/, "o"))], ms: 200 } };
+  }
+  if (said.includes("表情工具有哪些")) {
+    const tools = (options.tools ?? []).filter((t) => t.type === "function" && /sticker/.test(t.name)) as { name: string; description?: string }[];
+    return { text: tools.map((t) => `${t.name}:${(t.description?.match(/^\S+\/\S+/gm) ?? []).join("|")}`).join("; ") || "没有" };
+  }
   if (said.includes("读完再接MCP")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   if (said.includes("接上MCP")) return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "second" } };
   if (said.includes("断开MCP")) return { tool: "disconnect_mcp_server", input: { name: "second" } };

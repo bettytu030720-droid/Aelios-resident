@@ -39,7 +39,36 @@ import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./confi
 import { customModel, isCustom } from "./custom";
 import { foldIntoLetter, tokensOf } from "./fold";
 import { withPictures, type Download } from "./pictures";
-import { splitIntoBubbles, useBubbles, type BubbleAdapter } from "./telegram";
+import {
+  chatIdOf,
+  downloadFile,
+  getStickerSet,
+  mediaKindOf,
+  sendMedia,
+  splitIntoBubbles,
+  useBubbles,
+  type BubbleAdapter,
+  type MediaKind,
+  type TelegramConfig
+} from "./telegram";
+import { StickerStore, type PackView, type RemoteSticker } from "./sticker-store";
+import {
+  MAKE_STICKER_DESCRIPTION,
+  MAX_STICKERS_PER_PACK,
+  MAX_WEB_BYTES,
+  MAX_ZIP_BYTES,
+  SEND_STICKER_DESCRIPTION,
+  drawSticker,
+  emojiOf,
+  isEmojiPackLink,
+  readPack,
+  slug,
+  sniff,
+  telegramSetName,
+  unzip,
+  type Drawing,
+  type StickerFile
+} from "./stickers";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { searchEngines, searchSource } from "./web/search";
@@ -47,6 +76,7 @@ import { MEMORY_HEADER, aeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
+import { validateUrlWithDns } from "./web/validate-url";
 import {
   MAX_MCP_SERVERS,
   MCP_CALLBACK_PATH,
@@ -117,6 +147,8 @@ export type WebLine = {
   at: number | null;
   via: "telegram" | "web" | "checkin" | null;
   activity?: Activity[];
+  /** Stickers sent in this reply, shown after its words. */
+  stickers?: { url: string; video: boolean }[];
   pending?: boolean;
 };
 
@@ -145,6 +177,9 @@ export type WebPersona = {
 };
 
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
+// What Telegram gets for a reply with no words. A sticker can be the whole reply, and then this is not sent.
+const EMPTY_REPLY = "（我好像没说出话来，再发一次？）";
+const STICKER_TOOLS = new Set(["send_sticker", "make_sticker"]);
 // What Think leaves of a picture once it has aged out of the conversation (its media eviction).
 const EVICTED_PICTURE = /\[evicted image\/[^\]]*\]/g;
 
@@ -356,7 +391,7 @@ export class Resident extends Think<Env> {
       respondTo: ["direct-message"],
       delivery: {
         splitText: splitIntoBubbles,
-        emptyResponseText: "（我好像没说出话来，再发一次？）",
+        emptyResponseText: EMPTY_REPLY,
         errorResponseText: "我这边出错了，没能回你。再发一次试试？",
         interruptedResponseText: "刚才回到一半断了，再发一次好吗？"
       },
@@ -364,7 +399,11 @@ export class Resident extends Think<Env> {
         stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), this.tz)
     });
     const adapter = definition.adapter as unknown as BubbleAdapter & { downloadFile: Download };
-    useBubbles(adapter);
+    useBubbles(adapter, {
+      // A reply that is only a sticker: the sticker is the reply, not "I said nothing".
+      keepLast: (thread, text) => !(text.trim() === EMPTY_REPLY && this.#outbox.get(`tg:${thread}`)?.length),
+      after: (thread) => this.flushStickers(`tg:${thread}`, chatIdOf(thread))
+    });
     this.#telegramFile = (fileId) => adapter.downloadFile(fileId);
     return { telegram: definition };
   }
@@ -398,8 +437,164 @@ export class Resident extends Think<Env> {
       });
     }
     if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache()));
-    Object.assign(tools, this.mcpManageTools(), this.mcpTools());
+    Object.assign(tools, this.stickerTools(), this.mcpManageTools(), this.mcpTools());
     return tools;
+  }
+
+  // ---- stickers ----
+
+  #stickerStore: StickerStore | null = null;
+
+  private stickers(): StickerStore {
+    this.#stickerStore ??= new StickerStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#stickerStore;
+  }
+
+  private stickersOn(): boolean {
+    return this.cfg.STICKERS?.trim().toLowerCase() !== "off";
+  }
+
+  private telegramConfig(): TelegramConfig {
+    return { token: this.env.TG_BOT_TOKEN ?? "", apiBase: this.env.TG_API_BASE };
+  }
+
+  // Stickers waiting to go out after a reply's words: "tg:<thread>" for a Telegram turn, "req:<id>" for a check-in.
+  #outbox = new Map<string, string[]>();
+  // The Telegram thread each running turn answers, and the turns that have sent their one sticker.
+  #turnThread = new Map<string, string>();
+  #stickerSent = new Set<string>();
+  // Pictures of Telegram-pack stickers being fetched now, and when one last could not be.
+  #stickerFetches = new Map<string, Promise<StickerFile | null>>();
+  #stickerFailed = new Map<string, number>();
+
+  /** send_sticker and make_sticker, unless STICKERS is off. send_sticker lists every sticker of the packs that are on. */
+  private stickerTools(): ToolSet {
+    if (!this.stickersOn()) return {};
+    const lines = this.stickers().listed();
+    const tools: ToolSet = {
+      make_sticker: tool({
+        description: MAKE_STICKER_DESCRIPTION,
+        inputSchema: z.object({
+          name: z.string().describe("Short, like heart or sleepy."),
+          emoji: z.string().describe("One emoji for it."),
+          when: z.string().describe("When to send it, in one line, for your later self."),
+          palette: z.record(z.string(), z.string()),
+          frames: z.array(z.array(z.string())),
+          ms: z.union([z.number(), z.array(z.number())]).optional(),
+          outline: z.boolean().optional(),
+          send: z.boolean().optional()
+        }),
+        execute: async (input) => this.makeSticker(input)
+      })
+    };
+    if (lines.length) {
+      tools.send_sticker = tool({
+        description: SEND_STICKER_DESCRIPTION + lines.join("\n"),
+        inputSchema: z.object({ sticker: z.string().describe("pack/name, as listed") }),
+        execute: async ({ sticker }) => this.sendSticker(sticker)
+      });
+    }
+    return tools;
+  }
+
+  /** Why no sticker can go out in this turn; null when one can. */
+  private stickerRefusal(): string | null {
+    const id = this.activeTurn?.requestId;
+    if (!id || this.#letterPromptId) return "Not sent: no stickers here.";
+    if (this.#stickerSent.has(id)) return "Not sent: one sticker per reply, and this reply already has one.";
+    return null;
+  }
+
+  /** A sticker goes out after this turn's words: on Telegram, or with a check-in. On the web page it shows by itself. */
+  private queueSticker(key: string): void {
+    const id = this.activeTurn?.requestId;
+    if (!id) return;
+    this.#stickerSent.add(id);
+    const thread = this.#turnThread.get(id);
+    const trigger = this.activeTurn?.trigger;
+    const box = thread ? `tg:${thread}` : trigger === "scheduled" || trigger === "submission" ? `req:${id}` : null;
+    if (box) this.#outbox.set(box, [...(this.#outbox.get(box) ?? []), key]);
+  }
+
+  private async sendSticker(handle: string): Promise<{ sent: string } | { error: string }> {
+    const refused = this.stickerRefusal();
+    if (refused) return { error: refused };
+    const row = this.stickers().find(handle);
+    if (!row) return { error: `No sticker called ${handle}: pick one from the list, as pack/name.` };
+    this.queueSticker(row.key);
+    return { sent: `${row.pack}/${row.name}` };
+  }
+
+  private async makeSticker(input: Drawing & { name: string; emoji: string; when: string; send?: boolean }): Promise<Record<string, unknown>> {
+    const send = input.send !== false;
+    const refused = this.#letterPromptId ? "Not now." : send ? this.stickerRefusal() : null;
+    if (refused) return { error: refused };
+    const drawn = drawSticker(input);
+    if ("error" in drawn) return { error: drawn.error };
+    const name = slug(String(input.name ?? "")) || `s${Date.now().toString(36)}`;
+    const saved = this.stickers().saveOwn({ name, emoji: emojiOf(input.emoji), when: String(input.when ?? "").trim().slice(0, 160), ...drawn });
+    if ("error" in saved) return saved;
+    if (!send) return { saved: saved.handle };
+    const row = this.stickers().find(saved.handle, false);
+    if (row) this.queueSticker(row.key);
+    return { saved: saved.handle, sent: saved.handle };
+  }
+
+  /** The stickers waiting in one box, to her chat. Returns the last one posted. */
+  private async flushStickers(box: string, chatId: string | null): Promise<{ id: string; threadId: string } | null> {
+    const keys = this.#outbox.get(box) ?? [];
+    this.#outbox.delete(box);
+    let last: { id: string; threadId: string } | null = null;
+    for (const key of keys) {
+      if (!chatId) break;
+      const messageId = await this.deliverSticker(chatId, key);
+      if (messageId != null) last = { id: `${chatId}:${messageId}`, threadId: `telegram:${chatId}` };
+    }
+    return last;
+  }
+
+  /**
+   * One sticker to her chat: by the file id Telegram keeps it under, else uploaded (and that id kept). A file id
+   * that stopped working is dropped and the file uploaded again; a file Telegram will not take as a sticker goes
+   * as its web picture (a GIF as an animation, a WebP or any other still picture as a photo).
+   */
+  private async deliverSticker(chatId: string, key: string): Promise<number | null> {
+    const store = this.stickers();
+    const media = store.telegramMedia(key);
+    if (!media || !this.env.TG_BOT_TOKEN) return null;
+    const config = this.telegramConfig();
+    let used: { kind: MediaKind; fileId?: string; file?: StickerFile; emoji?: string } = media;
+    let sent = await sendMedia(config, chatId, used);
+    if ("error" in sent && media.fileId && !store.remoteOnly(key)) {
+      store.saveTelegramFile(key, null, null);
+      const fresh = store.telegramMedia(key);
+      if (fresh) sent = await sendMedia(config, chatId, (used = fresh));
+    }
+    if ("error" in sent && used.file) {
+      const web = store.webFile(key);
+      const kind: MediaKind | null = web && "bytes" in web ? (web.type === "image/webp" ? "photo" : mediaKindOf(web.type)) : null;
+      if (web && "bytes" in web && kind && (kind !== used.kind || web.type !== used.file.type)) sent = await sendMedia(config, chatId, (used = { kind, file: web }));
+    }
+    if ("error" in sent) {
+      console.error("tg: sticker not sent", { error: sent.error });
+      return null;
+    }
+    // Kept under the kind it went as, so the next time sends it the same way.
+    if (sent.fileId && !used.fileId) store.saveTelegramFile(key, sent.fileId, used.kind);
+    return sent.messageId;
+  }
+
+  /** The stickers a reply sent, as the web page shows them. */
+  private sentStickers(parts: readonly { type: string; toolName?: string; input?: unknown; output?: unknown }[]): WebLine["stickers"] {
+    const shown: NonNullable<WebLine["stickers"]> = [];
+    for (const part of parts) {
+      const name = part.toolName ?? (part.type.startsWith("tool-") ? part.type.slice(5) : "");
+      const sent = (part.output as { sent?: unknown } | undefined)?.sent;
+      if (!STICKER_TOOLS.has(name) || typeof sent !== "string") continue;
+      const row = this.stickers().find(sent, false);
+      if (row) shown.push({ url: `/stickers/${row.key}`, video: row.web_type === "video/webm" });
+    }
+    return shown.length ? shown : undefined;
   }
 
   /** The tools of the MCP servers that are connected now, as mcp_<server>_<tool>. */
@@ -586,6 +781,13 @@ export class Resident extends Think<Env> {
     if (thread?.isDirectMessage && (await this.ctx.storage.get("tg_thread")) !== thread.id) {
       await this.ctx.storage.put("tg_thread", thread.id);
     }
+    if (ctx.requestId && thread && !this.#letterPromptId) {
+      // A sticker from a turn that failed before its words went out is not sent with this one.
+      this.#outbox.delete(`tg:${thread.id}`);
+      if (this.#turnThread.size > 20) this.#turnThread.clear();
+      this.#turnThread.set(ctx.requestId, thread.id);
+    }
+    if (this.#stickerSent.size > 20) this.#stickerSent.clear();
     if (ctx.requestId) {
       const proactive = ctx.trigger === "scheduled" || ctx.trigger === "submission";
       // "" is no message's id: the latest message of anyone's.
@@ -768,6 +970,8 @@ export class Resident extends Think<Env> {
       this.#searches.delete(result.requestId);
       this.#theirTurns.delete(result.requestId);
       this.#readOutside.delete(result.requestId);
+      this.#turnThread.delete(result.requestId);
+      this.#stickerSent.delete(result.requestId);
     }
     const before = this.userMessageBefore(result.message.id);
     // The letter turn: letterTurn() takes the answer and removes both messages.
@@ -777,13 +981,21 @@ export class Resident extends Think<Env> {
     const fromThem = Boolean(asked) && !isNote(asked);
     if (fromThem) await this.ctx.storage.put("wrote_since_letter", true);
     await this.planIdleLetter(fromThem);
-    if (result.status !== "completed") return;
+    if (result.status !== "completed") {
+      if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
+      return;
+    }
     const reply = textOf(result.message).trim();
     const trigger = this.activeTurn?.trigger;
     // A scheduled check-in has no messenger turn to reply into: post it ourselves.
     const proactive = trigger === "scheduled" || trigger === "submission";
     if (proactive && reply && reply !== SKIP) {
       for (const bubble of splitIntoBubbles(reply)) await this.toTelegram(bubble);
+    }
+    if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
+      const thread = await this.ctx.storage.get<string>("tg_thread");
+      if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
+      else await this.flushStickers(`req:${result.requestId}`, chatIdOf(thread));
     }
     // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
     // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
@@ -878,6 +1090,7 @@ export class Resident extends Think<Env> {
       }`,
       `查网页：搜索 ${searchEngines(this.cfg).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.cfg, this.compressor())) : "关"}`,
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
+      `表情包：${this.stickersOn() ? `开，${this.stickerSummary()}` : "关"}`,
       `别的 MCP：${
         this.webMcp()
           .servers.map((server) => `${server.name}（${server.state === "ready" ? `${server.tools} 个工具` : server.state === "authenticating" ? "等你授权" : "没连上"}）`)
@@ -914,7 +1127,8 @@ export class Resident extends Think<Env> {
       const activity = activityOf(message.parts);
       if (!text && !activity.length) continue;
       if (via === "checkin" && text === SKIP) continue;
-      lines.push({ id: message.id, role: "assistant", kind: "chat", text, at, via, ...(activity.length ? { activity } : {}) });
+      const stickers = this.sentStickers(message.parts as never);
+      lines.push({ id: message.id, role: "assistant", kind: "chat", text, at, via, ...(activity.length ? { activity } : {}), ...(stickers ? { stickers } : {}) });
     }
     // Only include a running draft when the SDK has not already exposed its assistant row.
     for (const [requestId, draft] of this.#drafts) {
@@ -924,12 +1138,14 @@ export class Resident extends Think<Env> {
       const partial = lines.slice(finalUser + 1).find((line) => line.role === "assistant" && line.kind === "chat");
       const activity = activityOf(draft.parts);
       const text = textOf({ parts: draft.parts });
+      const stickers = this.sentStickers(draft.parts);
       if (partial) {
         partial.pending = true;
         if (activity.length) partial.activity = activity;
         if (text) partial.text = text;
+        if (stickers) partial.stickers = stickers;
       } else if (text || activity.length) {
-        lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true });
+        lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true, ...(stickers ? { stickers } : {}) });
       }
     }
     return lines;
@@ -1126,6 +1342,166 @@ export class Resident extends Think<Env> {
   async webRemoveMcp(id: string): Promise<{ servers: McpServerView[] }> {
     if (this.mcp.listServers().some((server) => server.id === id)) await this.removeMcpServer(id);
     return this.webMcp();
+  }
+
+  // ---- stickers on the settings page ----
+
+  private stickerSummary(): string {
+    const on = this.stickers().view().filter((pack) => pack.enabled);
+    const count = on.reduce((sum, pack) => sum + pack.stickers.length, 0);
+    return on.length ? `${on.length} 个包 ${count} 张` : "还没有包（它自己画的会放进「它自己画的」）";
+  }
+
+  webStickers(): { on: boolean; packs: PackView[]; left: number; skipped?: string[] } {
+    return { on: this.stickersOn(), packs: this.stickers().view(), left: this.stickers().catalog().left };
+  }
+
+  /** A pack from a zip uploaded on the settings page (or fetched from a link). `name` names a pack without a pack.json. */
+  async webImportStickerZip(bytes: Uint8Array, name: string): Promise<{ on: boolean; packs: PackView[]; left: number; skipped?: string[] } | { error: string }> {
+    if (bytes.length > MAX_ZIP_BYTES) return { error: `压缩包最多 ${MAX_ZIP_BYTES / 1024 / 1024} MB` };
+    let files: Map<string, Uint8Array>;
+    try {
+      files = await unzip(bytes);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+    const read = readPack(files, name.trim() || "表情包");
+    if ("error" in read) return read;
+    const added = this.stickers().addPack(read.pack, "zip", read.stickers);
+    if ("error" in added) return added;
+    return { ...this.webStickers(), ...(read.skipped.length ? { skipped: read.skipped.slice(0, 10) } : {}) };
+  }
+
+  /** A Telegram sticker pack by its link (t.me/addstickers/…), or a zip by its https address. */
+  async webImportStickerLink(link: string): Promise<{ on: boolean; packs: PackView[]; left: number; skipped?: string[] } | { error: string }> {
+    if (isEmojiPackLink(link)) return { error: "这是 Telegram 的表情符号包（addemoji），不是贴纸包，机器人发不了；要 t.me/addstickers/… 的链接" };
+    const setName = telegramSetName(link);
+    if (setName) return this.importTelegramSet(setName);
+    let url: URL;
+    try {
+      url = new URL(link.trim());
+    } catch {
+      return { error: "认不出这个链接：要 Telegram 贴纸包的 t.me/addstickers/…，或者压缩包的 https 网址" };
+    }
+    if (url.protocol !== "https:") return { error: "压缩包的网址要 https" };
+    // Like web_fetch: no local or private addresses, checked again at every redirect.
+    const dns = new Map<string, Promise<string[]>>();
+    let current = url.href;
+    let response: Response | null = null;
+    for (let hop = 0; ; hop += 1) {
+      const check = await validateUrlWithDns(current, dns);
+      if (!check.valid) return { error: `这个网址不能读：${check.error}` };
+      response = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(30_000) }).catch(() => null);
+      const location = response && [301, 302, 303, 307, 308].includes(response.status) ? response.headers.get("location") : null;
+      if (!location) break;
+      await response?.body?.cancel();
+      if (hop === 5) return { error: "跳转太多次了" };
+      current = new URL(location, current).href;
+    }
+    if (!response?.ok || !response.body) return { error: `下载不了（${response?.status ?? "连不上"}）` };
+    if (Number(response.headers.get("content-length") ?? 0) > MAX_ZIP_BYTES) return { error: `压缩包最多 ${MAX_ZIP_BYTES / 1024 / 1024} MB` };
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > MAX_ZIP_BYTES) {
+        await reader.cancel();
+        return { error: `压缩包最多 ${MAX_ZIP_BYTES / 1024 / 1024} MB` };
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, at);
+      at += chunk.length;
+    }
+    const last = new URL(current).pathname.split("/").pop() ?? "";
+    let stem = last;
+    try {
+      stem = decodeURIComponent(last);
+    } catch {
+      // A name with a stray % stays as it is.
+    }
+    stem = stem.replace(/\.zip$/i, "");
+    return this.webImportStickerZip(bytes, stem);
+  }
+
+  private async importTelegramSet(name: string): Promise<{ on: boolean; packs: PackView[]; left: number; skipped?: string[] } | { error: string }> {
+    if (!this.env.TG_BOT_TOKEN) return { error: "要先接好 Telegram 机器人（TG_BOT_TOKEN），才能导 Telegram 的贴纸包" };
+    const set = await getStickerSet(this.telegramConfig(), name).catch((error) => ({ error: String(error) }));
+    if ("error" in set) return { error: `Telegram 说找不到这个贴纸包：${set.error.slice(0, 200)}` };
+    if (set.sticker_type === "custom_emoji") return { error: "这是表情符号包，不是贴纸包，机器人发不了" };
+    const stickers: RemoteSticker[] = set.stickers.slice(0, MAX_STICKERS_PER_PACK).map((sticker, index) => ({
+      name: String(index + 1),
+      emoji: emojiOf(sticker.emoji),
+      when: "",
+      fileId: sticker.file_id,
+      webRemote: (sticker.is_animated ? sticker.thumbnail?.file_id : sticker.file_id) ?? "",
+      webType: sticker.is_video ? "video/webm" : "image/webp"
+    }));
+    if (!stickers.length) return { error: "这个贴纸包是空的" };
+    const info = { id: slug(set.name, 24) || "telegram", name: set.title || set.name, description: "", author: "", license: "", homepage: `https://t.me/addstickers/${set.name}` };
+    const added = this.stickers().addPack(info, "telegram", stickers);
+    if ("error" in added) return added;
+    const over = set.stickers.length - stickers.length;
+    return { ...this.webStickers(), ...(over > 0 ? { skipped: [`一个包最多 ${MAX_STICKERS_PER_PACK} 张，后面 ${over} 张没导`] } : {}) };
+  }
+
+  webStickerPack(id: string, on: boolean): { on: boolean; packs: PackView[]; left: number } {
+    this.stickers().setEnabled(id, on);
+    return this.webStickers();
+  }
+
+  webRemoveStickerPack(id: string): { on: boolean; packs: PackView[]; left: number } {
+    this.stickers().removePack(id);
+    return this.webStickers();
+  }
+
+  webEditSticker(key: string, when: string, emoji: string | undefined): { on: boolean; packs: PackView[]; left: number } | { error: string } {
+    const mark = emoji === undefined ? null : emojiOf(emoji);
+    if (emoji?.trim() && !mark) return { error: "emoji 只能填一个表情符号" };
+    if (!this.stickers().edit(key, when.trim().slice(0, 160), mark)) return { error: "这张已经不在了" };
+    return this.webStickers();
+  }
+
+  webRemoveSticker(key: string): { on: boolean; packs: PackView[]; left: number } {
+    this.stickers().removeSticker(key);
+    return this.webStickers();
+  }
+
+  /**
+   * A sticker's picture for the web page, by its key (public: the key is long and random). One from a Telegram
+   * pack is fetched from Telegram the first time and kept.
+   */
+  async stickerFile(key: string): Promise<StickerFile | null> {
+    const store = this.stickers();
+    const file = store.webFile(key);
+    if (!file) return null;
+    if ("bytes" in file) return file;
+    if (!this.env.TG_BOT_TOKEN || !file.remote) return null;
+    // Asked for by every page that shows it: fetched once at a time, and one that failed not again for 10 minutes.
+    const failed = this.#stickerFailed.get(key);
+    if (failed && Date.now() - failed < 10 * 60_000) return null;
+    let pending = this.#stickerFetches.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const bytes = await downloadFile(this.telegramConfig(), file.remote, MAX_WEB_BYTES).catch(() => null);
+        const type = bytes ? sniff(bytes) : null;
+        if (!bytes || !type || type === "application/x-tgsticker") {
+          if (this.#stickerFailed.size > 200) this.#stickerFailed.clear();
+          this.#stickerFailed.set(key, Date.now());
+          return null;
+        }
+        store.saveWeb(key, { bytes, type });
+        return { bytes, type };
+      })().finally(() => this.#stickerFetches.delete(key));
+      this.#stickerFetches.set(key, pending);
+    }
+    return pending;
   }
 
 }

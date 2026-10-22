@@ -6,7 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "public",
-    "run_worker_first": ["/messengers/*", "/tg/*", "/web/*", "/mcp/*"]
+    "run_worker_first": ["/messengers/*", "/tg/*", "/web/*", "/mcp/*", "/stickers/*"]
   },
   "durable_objects": { "bindings": [{ "name": "RESIDENT", "class_name": "Resident" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Resident"] }],

@@ -56,7 +56,8 @@ export const FIELDS: readonly Field[] = [
   { key: "PERPLEXITY_API_KEY", kind: "secret" },
   { key: "WEB_LEARN", kind: "choice", choices: ["on", "off"] },
   { key: "WEB_FETCH", kind: "choice", choices: ["on", "off"] },
-  { key: "WEB_FETCH_MODEL", kind: "text" }
+  { key: "WEB_FETCH_MODEL", kind: "text" },
+  { key: "STICKERS", kind: "choice", choices: ["on", "off"] }
 ];
 
 /** One setting as the web door shows it. Secrets only say whether they are set, never what they are. */
