@@ -52,6 +52,33 @@ function viaGateway(env: Env): boolean {
   return Boolean(env.AI) && !env.VOICE_BASE_URL?.trim();
 }
 
+/** The AI Gateway voice requests go through (AI_GATEWAY_ID, else "default"); null when they go straight there. */
+export function voiceGateway(env: Env): string | null {
+  return viaGateway(env) ? env.AI_GATEWAY_ID?.trim() || "default" : null;
+}
+
+/**
+ * The AI Gateway whose stored key (BYOK) voice requests rely on: no VOICE_API_KEY, so none is sent and the gateway
+ * puts in the one it holds for the provider under the alias default. null when the key is sent or there is no gateway.
+ */
+export function keyFromGateway(env: Env): string | null {
+  return env.VOICE_API_KEY?.trim() ? null : voiceGateway(env);
+}
+
+/**
+ * A provider's error. Turned away for want of a key while relying on the gateway's: says which gateway, since the
+ * usual cause is the key stored on another one (the one Aelios uses, say).
+ */
+async function failed(name: string, response: Response, gateway: string | null): Promise<never> {
+  const said = (await response.text()).slice(0, 200);
+  const hint =
+    gateway && (response.status === 401 || response.status === 403)
+      ? ` (no key was sent: AI Gateway "${gateway}" has none stored for ${name} under the alias default, or that key is wrong)`
+      : "";
+  // The hint goes first: what is kept of an error (/status, the tool's answer) is cut at 300 characters.
+  throw new Error(`${name} ${response.status}${hint}: ${said}`);
+}
+
 /**
  * Sends one request to a voice provider: through AI Gateway (AI_GATEWAY_ID, else "default") on the AI binding, or
  * straight to the provider without the binding. VOICE_BASE_URL sends it straight there instead (a proxy, the tests).
@@ -84,12 +111,12 @@ async function whisper(ai: Ai, audio: Uint8Array): Promise<string> {
   return result.text ?? "";
 }
 
-async function scribe(send: Send, key: string, audio: Uint8Array, mediaType: string): Promise<string> {
+async function scribe(send: Send, key: string, gateway: string | null, audio: Uint8Array, mediaType: string): Promise<string> {
   const form = new FormData();
   form.append("model_id", SCRIBE);
   form.append("file", new Blob([audio], { type: mediaType }), "voice");
   const response = await send("elevenlabs", "v1/speech-to-text", { method: "POST", headers: key ? { "xi-api-key": key } : {}, body: form });
-  if (!response.ok) throw new Error(`ElevenLabs ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  if (!response.ok) return failed("ElevenLabs", response, gateway);
   return ((await response.json()) as { text?: string }).text ?? "";
 }
 
@@ -105,10 +132,11 @@ export function hearing(env: Env): Hear | null {
   const viaWhisper = ai ? (audio: Uint8Array) => whisper(ai, audio) : null;
   if (hearsBy(env) !== "scribe") return viaWhisper;
   const key = env.VOICE_API_KEY?.trim() ?? "";
+  const gateway = keyFromGateway(env);
   const send = sender(env);
   return async (audio, mediaType) => {
     try {
-      return await scribe(send, key, audio, mediaType);
+      return await scribe(send, key, gateway, audio, mediaType);
     } catch (error) {
       if (!viaWhisper) throw error;
       console.error("voice: Scribe failed, Whisper instead", { error: String(error) });
@@ -265,12 +293,8 @@ export function speakingGap(env: Env): string | null {
   return env.VOICE_ID?.trim() ? null : "VOICE_ID";
 }
 
-async function failed(name: string, response: Response): Promise<never> {
-  throw new Error(`${name} ${response.status}: ${(await response.text()).slice(0, 200)}`);
-}
-
-async function audioOf(name: string, response: Response): Promise<Uint8Array> {
-  if (!response.ok) return failed(name, response);
+async function audioOf(name: string, response: Response, gateway: string | null): Promise<Uint8Array> {
+  if (!response.ok) return failed(name, response, gateway);
   const type = response.headers.get("content-type") ?? "";
   // Audio in another format (PCM, WAV) would reach Telegram as a file, not a voice message.
   if (type && !/audio\/(mpeg|mp3)|octet-stream/.test(type)) throw new Error(`${name} answered ${type}, not MP3`);
@@ -292,6 +316,7 @@ export function speaker(env: Env): Speak | null {
   const key = env.VOICE_API_KEY?.trim() ?? "";
   const voice = env.VOICE_ID?.trim() ?? "";
   const model = modelOf(env, provider);
+  const gateway = keyFromGateway(env);
   const send = sender(env);
   const post = (endpoint: string, headers: Record<string, string>, body: unknown) =>
     send(provider, endpoint, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
@@ -301,11 +326,12 @@ export function speaker(env: Env): Speak | null {
   const speak: Record<VoiceProvider, (text: string, style?: string) => Promise<Uint8Array>> = {
     async openrouter(text, style) {
       const body = { model, input: text, ...(voice ? { voice } : {}), ...(style ? { instructions: style } : {}), response_format: "mp3" };
-      return audioOf("OpenRouter", await post("v1/audio/speech", bearer, body));
+      return audioOf("OpenRouter", await post("v1/audio/speech", bearer, body), gateway);
     },
     async elevenlabs(text) {
       const endpoint = `v1/text-to-speech/${encodeURIComponent(voice)}?output_format=mp3_44100_128`;
-      return audioOf("ElevenLabs", await post(endpoint, { accept: "audio/mpeg", ...(key ? { "xi-api-key": key } : {}) }, { text, model_id: model }));
+      const headers = { accept: "audio/mpeg", ...(key ? { "xi-api-key": key } : {}) };
+      return audioOf("ElevenLabs", await post(endpoint, headers, { text, model_id: model }), gateway);
     },
     async cartesia(text) {
       const language = languageOf(text);
@@ -316,7 +342,7 @@ export function speaker(env: Env): Speak | null {
         output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
         ...(language ? { language } : {})
       };
-      return audioOf("Cartesia", await post("tts/bytes", { ...bearer, "cartesia-version": CARTESIA_VERSION }, body));
+      return audioOf("Cartesia", await post("tts/bytes", { ...bearer, "cartesia-version": CARTESIA_VERSION }, body), gateway);
     }
   };
   return async (text, options) => {
