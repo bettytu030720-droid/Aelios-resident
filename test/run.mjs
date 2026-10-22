@@ -12,6 +12,8 @@
 //   mcp-2    run after mcp and restart.sh: the connections come back
 //   stickers sticker packs: imported from a zip and from Telegram, sent, drawn, shown on the web page
 //   voice    voice messages: heard, answered in a voice, send_voice, each provider's request, falling back to text
+//   tasks    cloud Claude Code: a job sent through a scheduled task's trigger, its reports, the cards, the limits
+//   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
 import assert from "node:assert/strict";
 import http from "node:http";
 import { GIF, PNG, WEBM, WEBP, zip } from "./zip.mjs";
@@ -21,7 +23,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -1149,6 +1151,215 @@ if (phase === "voice") {
   });
 
   await set({ VOICE_PROVIDER: "", VOICE_API_KEY: "", VOICE_MODEL: "", VOICE_ID: "", VOICE_REPLY: "", VOICE_BASE_URL: "" });
+}
+
+if (phase === "tasks" || phase === "tasks-quiet") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const URL_OK = "https://api.anthropic.com/v1/claude_code/routines/trig_testtask01/fire";
+  const set = async (settings) => {
+    for (const [key, text] of Object.entries(settings)) {
+      const response = await web("/web/config", KEY, { key, text });
+      assert.equal(response.status, 200, `${key}: ${await response.clone().text()}`);
+    }
+  };
+  const fires = async () => (await log()).filter((e) => e.kind === "routine.fire");
+  const tasks = async () => (await (await web("/web/tasks", KEY)).json());
+  const ask = async (text, count = 1) => {
+    const before = (await sent()).length;
+    await post(text);
+    return (await waitForSends(before, count)).join("\n");
+  };
+  const report = (id, kind, code, body) =>
+    fetch(`${WORKER}/tasks/${id}/${kind}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(code ? { "x-task-code": code } : {}) },
+      body: typeof body === "string" ? body : JSON.stringify(body)
+    });
+  const sentJob = (fire) => {
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    assert.ok(id && code, fire.body.text);
+    return { id, code };
+  };
+
+  if (phase === "tasks") {
+    await step("off by default: no cloud_task tool even with the trigger filled in, until it is turned on; a wrong address is not taken", async () => {
+      assert.match(await ask("云端工具有哪些"), /没有 cloud_task/);
+      const bad = await web("/web/config", KEY, { key: "CLOUD_TASK_URL", text: "https://example.com/fire" });
+      assert.equal(bad.status, 400);
+      assert.match((await bad.json()).error, /API 触发器的网址/);
+      await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
+      assert.ok(!JSON.stringify(await (await web("/web/config", KEY)).json()).includes("good-token"), "the token is not sent back");
+      assert.match(await ask("云端工具有哪些"), /没有 cloud_task/);
+      assert.match(await ask("/status"), /云端 Claude Code：关/);
+      assert.deepEqual([(await tasks()).on, (await tasks()).configured], [false, false]);
+      await set({ CLOUD_TASKS: "on" });
+      assert.match(await ask("云端工具有哪些"), /有 cloud_task/);
+    });
+
+    await step("the settings page gives the scheduled task's prompt, with this resident's address in it", async () => {
+      const shown = await tasks();
+      assert.deepEqual([shown.on, shown.configured], [true, true]);
+      assert.equal(shown.origin, WORKER);
+      assert.ok(shown.prompt.includes(`curl -sS -X POST ${WORKER}/tasks/<task>/progress -H "x-task-code: <code>"`));
+      assert.ok(shown.prompt.includes(`${WORKER}/tasks/<task>/result`));
+      assert.match(shown.prompt, /routine-fire-payload/);
+      assert.match(shown.prompt, /Never push to a default branch/);
+      assert.deepEqual([shown.today, shown.limit, shown.tasks.length], [0, 10, 0]);
+      assert.equal((await fetch(`${WORKER}/web/tasks`)).status, 401, "not without the web key");
+    });
+
+    let first;
+    await step("asked on Telegram, the job goes out through the trigger with its task and code, and nothing of the chat", async () => {
+      const out = await ask("派活");
+      const [fire] = await fires();
+      assert.equal(fire.trigger, "trig_testtask01");
+      assert.deepEqual(fire.headers, { authorization: "Bearer good-token", "anthropic-beta": "experimental-cc-routine-2026-04-01", "anthropic-version": "2023-06-01" });
+      assert.match(fire.body.text, /^task: t_[0-9a-f]{10}\ncode: [0-9a-f]{32}\ntitle: 修 README 的错字\nrepository: wusaki0723\/aelios-resident\n\n把 README 里/);
+      assert.ok(!fire.body.text.includes("派活"), "her message is not in it");
+      first = sentJob(fire);
+      assert.ok(out.includes(first.id) && out.includes("https://claude.ai/code/session_test_1"), out);
+      assert.ok(!out.includes(first.code), "the code is not in the chat");
+    });
+
+    await step("the task's card goes with the reply on the web page, and in the settings list", async () => {
+      const lines = (await (await web("/web/messages", KEY)).json()).data;
+      const reply = lines.filter((line) => line.role === "assistant").at(-1);
+      assert.deepEqual(reply.tasks?.map((t) => [t.id, t.title, t.status, t.sessionUrl]), [[first.id, "修 README 的错字", "sent", "https://claude.ai/code/session_test_1"]]);
+      assert.ok(!JSON.stringify(lines).includes(first.code), "the code is not on the page");
+      const shown = await tasks();
+      assert.equal(shown.today, 1);
+      assert.deepEqual(shown.tasks.map((t) => [t.id, t.status]), [[first.id, "sent"]]);
+      assert.equal(shown.tasks[0].job, undefined, "the job text stays inside");
+    });
+
+    await step("a report with the wrong code is refused; progress with the right one makes the card say it is working", async () => {
+      assert.equal((await report(first.id, "progress", "0".repeat(32), { line: "x" })).status, 403);
+      assert.equal((await report(first.id, "progress", "", { line: "x" })).status, 403);
+      assert.equal((await report("t_0000000000", "progress", first.code, { line: "x" })).status, 403);
+      assert.equal((await report(first.id, "progress", first.code, "not json")).status, 400);
+      assert.equal((await report(first.id, "progress", first.code, { line: "  " })).status, 400);
+      assert.equal((await report(first.id, "progress", first.code, { line: "x".repeat(20000) })).status, 413);
+      assert.equal((await fetch(`${WORKER}/tasks/${first.id}/other`, { method: "POST", body: "{}" })).status, 404);
+      const ok = await report(first.id, "progress", first.code, { line: "开始改了\n第一步" });
+      assert.equal(ok.status, 200);
+      assert.deepEqual(await ok.json(), { ok: true });
+      const card = (await tasks()).tasks[0];
+      assert.deepEqual([card.status, card.progress], ["working", "开始改了 第一步"]);
+    });
+
+    await step("the result starts a turn of the resident's: she hears it on Telegram, the note stays hidden, the card is done with https links only", async () => {
+      assert.equal((await report(first.id, "result", first.code, { status: "maybe", summary: "x" })).status, 400);
+      assert.equal((await report(first.id, "result", first.code, { status: "done", summary: " " })).status, 400);
+      const before = (await sent()).length;
+      const ok = await report(first.id, "result", first.code, {
+        status: "done",
+        summary: "改好了，开了 PR。",
+        links: ["https://github.com/wusaki0723/aelios-resident/pull/9", "javascript:alert(1)", "http://example.com/a"]
+      });
+      assert.equal(ok.status, 200);
+      const out = (await waitForSends(before, 1)).join("\n");
+      assert.ok(out.startsWith(`云端回来了：(Not from them: your cloud task ${first.id} "修 README 的错字" reported back: it is done.`), out);
+      // Telegram's formatting turns the links into [link](link); the words are what matter.
+      assert.ok(out.includes("<<<\n改好了，开了 PR。\nLinks: [https://github.com/wusaki0723/aelios-resident/pull/9]"), out);
+      assert.ok(!out.includes("javascript") && !out.includes("http://example.com"));
+      await sleep(500);
+      const lines = (await (await web("/web/messages", KEY)).json()).data;
+      assert.ok(!lines.some((line) => line.role === "user" && line.text.includes("Not from them")), "the note is not shown as hers");
+      const reply = lines.at(-1);
+      assert.equal(reply.via, "task");
+      assert.deepEqual(reply.tasks?.map((t) => [t.id, t.status, t.summary, t.links]), [[first.id, "done", "改好了，开了 PR。", ["https://github.com/wusaki0723/aelios-resident/pull/9"]]]);
+      const ingested = (await log()).filter((e) => e.kind === "aelios.ingest").at(-1);
+      assert.ok(JSON.stringify(ingested?.body ?? "").includes("改好了"), "what she was told goes into Aelios like any other reply");
+    });
+
+    await step("a follow-up carries the earlier task's result, and its repository", async () => {
+      await ask("接着派");
+      const fire = (await fires()).at(-1);
+      assert.ok(fire.body.text.includes("repository: wusaki0723/aelios-resident"), fire.body.text);
+      assert.ok(fire.body.text.includes(`This continues an earlier task, ${first.id} "修 README 的错字" (https://claude.ai/code/session_test_1).`), fire.body.text);
+      assert.ok(fire.body.text.includes("What it reported: 改好了，开了 PR。\nIts links: https://github.com/wusaki0723/aelios-resident/pull/9"), fire.body.text);
+    });
+
+    await step("at most two tasks in one reply, and none once a web page has been read in that turn", async () => {
+      const before = (await fires()).length;
+      assert.match(await ask("派三单"), /at most 2 tasks per reply/);
+      assert.equal((await fires()).length, before + 2);
+      assert.match(await ask("读完再派活"), /has read a web page/);
+      assert.equal((await fires()).length, before + 2);
+    });
+
+    await step("a wrong token or a busy trigger says why, and nothing is kept", async () => {
+      const today = (await tasks()).today;
+      await set({ CLOUD_TASK_TOKEN: "bad-token" });
+      assert.match(await ask("派活"), /token 不对/);
+      await set({ CLOUD_TASK_TOKEN: "good-token", CLOUD_TASK_URL: URL_OK.replace("trig_testtask01", "trig_busyone") });
+      assert.match(await ask("派活"), /这一个小时派得太多了/);
+      await set({ CLOUD_TASK_URL: URL_OK });
+      assert.equal((await tasks()).today, today);
+    });
+
+    await step("the settings page's 试一下 sends a test whose report starts no turn", async () => {
+      assert.equal((await fetch(`${WORKER}/web/tasks/test`, { method: "POST" })).status, 401);
+      const response = await web("/web/tasks/test", KEY, {});
+      assert.equal(response.status, 200, await response.clone().text());
+      const card = (await response.json()).tasks[0];
+      assert.deepEqual([card.title, card.status, card.test], ["接通测试", "sent", true]);
+      const fire = (await fires()).at(-1);
+      assert.match(fire.body.text, /title: 接通测试\n\nThis is a test from the resident's settings page/);
+      const { id, code } = sentJob(fire);
+      assert.equal(id, card.id);
+      const before = (await sent()).length;
+      assert.equal((await report(id, "progress", code, { line: "收到了" })).status, 200);
+      assert.equal((await report(id, "result", code, { status: "done", summary: "接通了" })).status, 200);
+      await sleep(2000);
+      assert.equal((await sent()).length, before, "nothing said on Telegram");
+      const shown = (await tasks()).tasks[0];
+      assert.deepEqual([shown.status, shown.summary], ["done", "接通了"]);
+    });
+
+    await step("/status says it is set up and how many went out", async () => {
+      assert.match(await ask("/status"), /云端 Claude Code：接好了，24 小时内派了 5 单，在干的 3 单/);
+    });
+
+    await step("ten a day at most, on the settings page and in the chat", async () => {
+      for (let i = 0; i < 5; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
+      const over = await web("/web/tasks/test", KEY, {});
+      assert.equal(over.status, 400);
+      assert.match((await over.json()).error, /已经派了 10 单/);
+      assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
+      assert.equal((await fires()).length, 12, "10 sent, the wrong token and the busy trigger tried");
+    });
+  }
+
+  if (phase === "tasks-quiet") {
+    await set({ CLOUD_TASKS: "on", CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
+    await step("a task that never reports: after the quiet time she is told, with the link, and a late result still comes through", async () => {
+      await ask("派活");
+      const { id, code } = sentJob((await fires())[0]);
+      const before = (await sent()).length;
+      const out = (await waitForSends(before, 1, 30000)).join("\n");
+      assert.ok(out.startsWith(`云端回来了：(Not from them: your cloud task ${id} "修 README 的错字" has not reported back after 1 minute.`), out);
+      assert.ok(out.includes("https://claude.ai/code/session_test_1"));
+      assert.equal((await tasks()).tasks[0].status, "quiet");
+      assert.equal((await report(id, "progress", code, { line: "还在改" })).status, 200);
+      assert.equal((await tasks()).tasks[0].status, "working");
+      const later = (await sent()).length;
+      assert.equal((await report(id, "result", code, { status: "needs_you", summary: "要你选一个名字。" })).status, 200);
+      assert.match((await waitForSends(later, 1)).join("\n"), /it needs them to decide something/);
+      assert.equal((await tasks()).tasks[0].status, "needs_you");
+    });
+
+    await step("one that keeps sending progress is not called quiet", async () => {
+      await ask("派活");
+      const { id, code } = sentJob((await fires()).at(-1));
+      assert.equal((await report(id, "progress", code, { line: "开始了" })).status, 200);
+      const before = (await sent()).length;
+      await sleep(8000);
+      assert.equal((await sent()).length, before);
+      assert.equal((await tasks()).tasks.find((t) => t.id === id).status, "working");
+    });
+  }
 }
 
 if (phase === "crash-1") {

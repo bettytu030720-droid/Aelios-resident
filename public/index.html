@@ -214,6 +214,21 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .sticker-cell input { height: 32px; padding: 0 8px; border-radius: 9px; border: 1px solid var(--panel-border); background: var(--panel-bg); outline: none; font-size: 12px; width: 100%; }
   .sticker-cell input:focus { border-color: var(--coral); }
   .field a.btn.primary { color: var(--on-accent); }
+  .tasks-extra { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+  .steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+  .steps code { padding: 1px 5px; border-radius: 6px; background: var(--bg-deep); font-size: 12px; word-break: break-all; }
+  .prompt-box { width: 100%; height: 150px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep);
+    color: var(--text-2); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; outline: none; }
+  .prompt-box:focus { border-color: var(--coral); }
+  .task-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep); }
+  .task-row .row { flex-wrap: wrap; }
+  .task-row .hint { white-space: pre-wrap; word-break: break-word; }
+  .task-top { display: flex; align-items: center; gap: 8px; }
+  .task-title { flex: 1; min-width: 0; font-size: 14px; color: var(--text-1); word-break: break-word; }
+  .task-status { flex: none; font-size: 12px; color: var(--text-3); }
+  .task-status.s-working, .task-status.s-sent { color: var(--coral); }
+  .task-status.s-done { color: var(--text-1); }
+  .task-status.s-failed, .task-status.s-quiet, .task-status.s-needs_you { color: var(--err); }
 
   /* Model picker: a sheet with a search box, not a dropdown. */
   .backdrop { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
@@ -389,6 +404,40 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </template>
         <button class="more-toggle" type="button" x-show="hasMore(group)" @click="configMore = !configMore"
           x-text="configMore ? '收起 ▴' : '更多设置 ▾'"></button>
+        <template x-if="group.id === 'tasks'">
+          <div class="tasks-extra" x-show="shown(metaOf('CLOUD_TASK_URL'))">
+            <div class="field">
+              <div class="name"><span>第一次怎么接</span></div>
+              <ol class="steps">
+                <li>打开 claude.ai/code/routines，新建一个定时任务，把下面这段贴进提示词，选好模型、要它干活的仓库和云端环境。</li>
+                <li>「触发」选 API，建好后复制网址、点「生成 token」，填到上面。</li>
+                <li>在这个任务用的云端环境里，网络访问选「自定义」、勾上常用的包管理器，再把 <code x-text="cloudHost() || '住户的域名'"></code> 加进允许的网站，不然结果交不回来。</li>
+                <li>点「试一下」，几分钟后下面那单变成「做完了」就接通了。</li>
+              </ol>
+              <textarea class="prompt-box" readonly x-show="cloud.prompt" :value="cloud.prompt" aria-label="定时任务的提示词" @focus="$event.target.select()"></textarea>
+              <p class="hint" x-show="!cloud.prompt">从网页上发一句话或者刷新一下，这里就会出现提示词（要先知道住户的网址）。</p>
+              <div class="row">
+                <button class="btn" type="button" x-show="cloud.prompt" @click="copyPrompt()">复制提示词</button>
+                <div class="spacer"></div>
+                <button class="btn primary" type="button" :disabled="!cloud.configured || cloudBusy" @click="testTask()" x-text="cloudBusy ? '派出去…' : '试一下'"></button>
+              </div>
+              <p class="error" x-show="cloudError" x-text="cloudError"></p>
+            </div>
+            <div class="field" x-show="cloud.tasks.length">
+              <div class="name"><span>最近的活</span><span class="tag" x-text="'24 小时内 ' + cloud.today + ' / ' + cloud.limit + ' 单'"></span></div>
+              <template x-for="task in cloud.tasks" :key="task.id">
+                <div class="task-row">
+                  <div class="task-top"><span class="task-title" x-text="task.title"></span><span class="task-status" :class="'s-' + task.status" x-text="taskStatusText(task.status)"></span></div>
+                  <p class="hint" x-show="task.summary || task.progress" x-text="task.summary || task.progress"></p>
+                  <div class="row">
+                    <a class="btn" x-show="task.sessionUrl" :href="task.sessionUrl || '#'" target="_blank" rel="noopener noreferrer">打开会话</a>
+                    <template x-for="link in task.links" :key="link"><a class="btn" :href="link" target="_blank" rel="noopener noreferrer" x-text="linkText(link)"></a></template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
       </div>
     </template>
 
@@ -594,6 +643,11 @@ function resident() {
       { key: 'LETTER_IDLE_MINUTES', label: '多久没动静写交接信', help: '分钟，最多比缓存时长少 1 分钟。off 只靠 /handoff。', def: '55（缓存 5m 时 4）', more: true },
       { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token，更早的才收进信里。', def: '8000', more: true }
     ] },
+    { id: 'tasks', title: '云端 Claude Code', hint: '它的手脚：你叫它改代码、做文件、查资料时，它把活写成一张单子，交给你 claude.ai 上的一个定时任务，开一个云端 Claude Code 会话去干，用你订阅的额度。干完结果交回来，它再告诉你。会话在 claude.ai 里也看得到，可以点开接着聊。', fields: [
+      { key: 'CLOUD_TASKS', label: '用云端 Claude Code', def: 'off', labels: ON_OFF, help: '要有 Claude 的付费订阅（Pro、Max 这些）才能用。没有就关着，它不会提这件事。' },
+      { key: 'CLOUD_TASK_URL', label: '触发网址', needs: 'CLOUD_TASKS', help: '定时任务的 API 触发器上那个 Fire URL。', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/trig_…/fire' },
+      { key: 'CLOUD_TASK_TOKEN', label: 'token', needs: 'CLOUD_TASKS', help: '点「生成 token」得到的 sk-ant-oat01-… 那串，只显示一次。想更稳就存进 Cloudflare 的 Secret（名字 CLOUD_TASK_TOKEN），这里空着。别发在聊天里。' }
+    ] },
     { id: 'custom', title: '供应商', hint: '接了 Aelios，聊天的模型和 key 在 Aelios 后台配；这里管住户自己往外发的请求。', fields: [
       { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', def: 'default',
         help: '搜网、语音，和没接 Aelios 时的模型都走这个 Gateway，Provider Keys 里存的 key 也只在它里面找。留空就是 default。' },
@@ -603,10 +657,12 @@ function resident() {
     ] }
   ];
   // The rows of the settings page, in order: the groups above, and the two sections with their own cards.
-  var CONFIG_MENU = ['aelios', 'chat', 'voice', 'stickers', 'web', 'mcp', 'thinking', 'custom'].map(function (id) {
+  var CONFIG_MENU = ['aelios', 'chat', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom'].map(function (id) {
     var group = CONFIG_GROUPS.find(function (g) { return g.id === id; });
     return { id: id, title: group ? group.title : { stickers: '表情包', mcp: '别的 MCP' }[id] };
   });
+  // How a cloud task stands, in words (cloud-tasks.ts TaskStatus).
+  var TASK_STATUS = { sent: '派出去了', working: '在干活', done: '做完了', failed: '没做成', needs_you: '等你拍板', quiet: '没回音' };
   var HEART = '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>';
   // Styles inside deep-chat's shadow root. CSS variables from :root reach in, so the theme switch applies there too.
   var CHAT_CSS = [
@@ -636,6 +692,17 @@ function resident() {
     '.activity-only { min-width: 180px; }',
     '.message-bubble:has(> .sticker-row) { background: transparent; border: 0; box-shadow: none; backdrop-filter: none; padding: 4px 0; }',
     '.sticker-row img, .sticker-row video { display: block; width: 120px; height: auto; image-rendering: pixelated; }',
+    '.message-bubble:has(> .task-card) { border-style: dashed; }',
+    '.task-card { display: flex; flex-direction: column; gap: 6px; min-width: 200px; }',
+    '.task-top { display: flex; align-items: center; gap: 8px; }',
+    '.task-title { flex: 1; min-width: 0; font-weight: 600; word-break: break-word; }',
+    '.task-status { flex: none; font-size: 12px; border: 1px solid var(--panel-border); border-radius: 999px; padding: 2px 8px; color: var(--text-3); }',
+    '.task-status.s-working, .task-status.s-sent { color: var(--coral); border-color: var(--coral); }',
+    '.task-status.s-needs_you { color: var(--coral); border-color: var(--coral); font-weight: 600; }',
+    '.task-status.s-failed, .task-status.s-quiet { color: var(--err); border-color: var(--err); }',
+    '.task-note { font-size: 13px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }',
+    '.task-links { display: flex; flex-wrap: wrap; gap: 6px; }',
+    '.task-links a { font-size: 13px; color: var(--coral); text-decoration: none; border: 1px solid var(--panel-border); border-radius: 9px; padding: 3px 9px; }',
     '.letter { font-size: 13px; color: var(--text-3); }',
     '.letter summary { cursor: pointer; color: var(--text-2); }',
     '.letter .text { margin-top: 8px; color: var(--text-2); }',
@@ -708,6 +775,9 @@ function resident() {
     mcpError: '',
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
     stickers: { on: true, packs: [], left: 0 },
+    cloud: { on: false, configured: false, origin: '', prompt: '', today: 0, limit: 10, tasks: [] },
+    cloudBusy: false,
+    cloudError: '',
     stickerBusy: '',
     stickerError: '',
     stickerSkipped: [],
@@ -886,7 +956,20 @@ function resident() {
           ? '<video src="' + esc(sticker.url) + '" autoplay loop muted playsinline></video>'
           : '<img src="' + esc(sticker.url) + '" alt="表情" loading="lazy">';
         return { role: 'ai', html: '<div class="sticker-row" data-row="' + esc(line.id) + '">' + picture + '</div>' };
-      }));
+      }), (line.role === 'assistant' ? line.tasks || [] : []).map(function (task) { return { role: 'ai', html: self.taskCardHtml(line, task) }; }));
+    },
+    // A cloud task the reply sent or reports on, like a thread's card in a project: its title, how it stands, links.
+    taskCardHtml(line, task) {
+      var self = this;
+      var https = function (url) { return /^https:\/\//.test(url || ''); };
+      var links = (https(task.sessionUrl) ? [{ url: task.sessionUrl, text: '打开会话' }] : [])
+        .concat((task.links || []).filter(https).map(function (url) { return { url: url, text: self.linkText(url) }; }));
+      var note = task.status === 'sent' || task.status === 'working' ? task.progress : (task.summary || task.progress);
+      return '<div class="task-card" data-row="' + esc(line.id) + '" data-task="' + esc(task.id) + '">'
+        + '<div class="task-top"><span class="task-title">' + esc(task.title) + '</span><span class="task-status s-' + esc(task.status) + '">' + esc(this.taskStatusText(task.status)) + '</span></div>'
+        + (note ? '<div class="task-note">' + esc(note) + '</div>' : '')
+        + (links.length ? '<div class="task-links">' + links.map(function (link) { return '<a href="' + esc(link.url) + '" target="_blank" rel="noopener noreferrer">' + esc(link.text) + '</a>'; }).join('') + '</div>' : '')
+        + '</div>';
     },
     metaHtml(line) {
       var bits = [];
@@ -1370,6 +1453,7 @@ function resident() {
     },
     sectionNeeds(id) {
       var voice = this.config.voice || {};
+      if (id === 'tasks') return this.inEffect(this.metaOf('CLOUD_TASKS')) === 'on' && !this.cloud.configured;
       return id === 'voice' && Boolean(voice.gap) && voice.gap !== 'off';
     },
     // The one line under each row of the list.
@@ -1398,6 +1482,9 @@ function resident() {
           return '搜网' + (this.inEffect(this.metaOf('WEB_SEARCH')) === 'off' ? '关' : '开') + ' · 读网页' + choice('WEB_FETCH');
         case 'mcp':
           return this.mcp.servers.length ? this.mcp.servers.map(function (server) { return server.name; }).join('、') : '没接';
+        case 'tasks':
+          if (this.inEffect(this.metaOf('CLOUD_TASKS')) !== 'on') return '关';
+          return this.cloud.configured ? '接好了 · 24 小时内派了 ' + this.cloud.today + ' 单' : '开了，还没接好';
         case 'thinking':
           return 'Claude 想多久：' + choice('THINKING_EFFORT') + ' · 缓存 ' + choice('CACHE_TTL');
         case 'custom':
@@ -1428,6 +1515,7 @@ function resident() {
       this.view = 'config';
       this.loadMcp().catch(function () {});
       this.loadStickers().catch(function () {});
+      this.loadTasks().catch(function () {});
     },
     closeConfig() {
       var self = this;
@@ -1448,10 +1536,48 @@ function resident() {
         this.configDraft = keep;
         this.notify(value ? '存好了，下一句开始用' : '清掉了，用回 Cloudflare 里的或默认的');
         if (key.indexOf('AELIOS_') === 0) this.aelios = Boolean((await this.api('/web/check')).aelios);
+        if (key.indexOf('CLOUD_TASK') === 0) await this.loadTasks();
       } catch (error) {
         this.configError[key] = error.message;
       } finally {
         this.configBusy = '';
+      }
+    },
+
+    // ---- cloud Claude Code ----
+    async loadTasks() {
+      this.cloud = await this.api('/web/tasks');
+    },
+    cloudHost() {
+      try { return new URL(this.cloud.origin).host; } catch (e) { return ''; }
+    },
+    taskStatusText(status) {
+      return TASK_STATUS[status] || status;
+    },
+    linkText(link) {
+      var pull = link.match(/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/);
+      if (pull) return pull[1] + ' #' + pull[2];
+      try { return new URL(link).host; } catch (e) { return '链接'; }
+    },
+    async copyPrompt() {
+      try {
+        await navigator.clipboard.writeText(this.cloud.prompt);
+        this.notify('复制好了，贴进定时任务的提示词');
+      } catch (e) {
+        this.notify('复制不了，点一下那段文字全选后自己复制');
+      }
+    },
+    async testTask() {
+      if (this.cloudBusy) return;
+      this.cloudBusy = true;
+      this.cloudError = '';
+      try {
+        this.cloud = await this.api('/web/tasks/test', { method: 'POST', body: {} });
+        this.notify('派出去了，几分钟后回来看');
+      } catch (error) {
+        this.cloudError = error.message;
+      } finally {
+        this.cloudBusy = false;
       }
     },
 
@@ -1570,7 +1696,7 @@ function resident() {
 
     // ---- small things ----
     viaLabel(via) {
-      return { telegram: 'Telegram', web: '网页', checkin: '主动找你' }[via] || '';
+      return { telegram: 'Telegram', web: '网页', checkin: '主动找你', task: '云端交回' }[via] || '';
     },
     fmt(at) {
       var date = new Date(at);

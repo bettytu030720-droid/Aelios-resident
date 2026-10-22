@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m => m[1]).find(s => s.includes('function resident()'));
-const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; } }, setTimeout, clearTimeout, console, Date, window: {} });
+const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; } }, setTimeout, clearTimeout, console, Date, URL, window: {} });
 vm.runInContext(code, context);
 const page = vm.runInContext('resident()', context);
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
@@ -75,7 +75,7 @@ assert.equal(page.placeholderFor(metaOf('VOICE_ID')), '模型自己的');
 console.log('PASS voice settings show once a provider is picked, with that provider\'s models to pick from');
 page.config = { fields: [...voiceFields('elevenlabs'), { key: 'STICKERS', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] }, { key: 'TG_ALLOWED', kind: 'text', value: '', fromWorker: '@her' }], voice: { hears: 'whisper', gap: 'VOICE_ID' } };
 page.stickers = { on: true, packs: [{ id: 'a' }, { id: 'b' }], left: 0 };
-assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.id), ['aelios', 'chat', 'voice', 'stickers', 'web', 'mcp', 'thinking', 'custom']);
+assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.id), ['aelios', 'chat', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom']);
 assert.equal(page.sectionSummary('voice'), '还差声音');
 assert.ok(page.sectionNeeds('voice'));
 assert.equal(page.tagText(metaOf('VOICE_ID')), '要填');
@@ -110,3 +110,38 @@ page.fillDrafts();
 page.configBack();
 assert.equal(page.view, 'chat');
 console.log('PASS the settings page opens on a list with a line of state per section; back goes one step at a time');
+// Cloud tasks: a card under the reply that sent it, escaped, with https links only; the settings shown once it is on.
+const task = { id: 't_0123456789', title: '<b>修</b>错字', status: 'done', sessionUrl: 'https://claude.ai/code/session_1', progress: '', summary: '好了"<img src=x onerror=unsafe()>',
+  links: ['https://github.com/o/r/pull/7', 'javascript:unsafe()', 'http://example.com/a'], test: false };
+const withTask = page.toMessages({ ...line, activity: [], text: '派出去了', tasks: [task] });
+assert.equal(withTask.length, 2);
+const card = withTask[1].html;
+assert.ok(card.startsWith('<div class="task-card"') && card.includes('data-task="t_0123456789"'));
+assert.ok(card.includes('&lt;b&gt;修&lt;/b&gt;错字') && !card.includes('<b>') && !card.includes('<img'));
+assert.ok(card.includes('class="task-status s-done">做完了<'));
+assert.ok(card.includes('<a href="https://claude.ai/code/session_1" target="_blank" rel="noopener noreferrer">打开会话</a>'));
+assert.ok(card.includes('>r #7</a>') && !card.includes('javascript') && !card.includes('http://example.com'));
+assert.ok(!page.toMessages({ ...line, role: 'user', activity: [], text: 'x', tasks: [task] }).some((m) => m.html && m.html.includes('task-card')), 'only under the resident\'s own lines');
+assert.ok(page.toMessages({ ...line, activity: [], text: 'x', tasks: [{ ...task, status: 'working', progress: '改到一半', summary: '' }] })[1].html.includes('<div class="task-note">改到一半</div>'));
+const taskGroup = page.CONFIG_GROUPS.find((group) => group.id === 'tasks');
+const taskFields = (on) => [
+  { key: 'CLOUD_TASKS', kind: 'choice', value: on, fromWorker: '', choices: ['on', 'off'] },
+  { key: 'CLOUD_TASK_URL', kind: 'text', value: '', fromWorker: '' },
+  { key: 'CLOUD_TASK_TOKEN', kind: 'secret', value: '', fromWorker: '', saved: false, workerHas: true }
+];
+page.config = { fields: taskFields('') };
+page.cloud = { on: false, configured: false, origin: 'https://r.example', prompt: 'p', today: 0, limit: 10, tasks: [] };
+assert.equal(page.inEffect(taskGroup.fields[0]), 'off', 'off unless turned on');
+assert.equal(page.shown(taskGroup.fields[1]), false);
+assert.equal(page.sectionSummary('tasks'), '关');
+assert.ok(!page.sectionNeeds('tasks'));
+page.config = { fields: taskFields('on') };
+assert.equal(page.shown(taskGroup.fields[1]), true);
+assert.equal(page.sectionSummary('tasks'), '开了，还没接好');
+assert.ok(page.sectionNeeds('tasks'));
+assert.equal(page.tagText(taskGroup.fields[2]), 'Cloudflare：CLOUD_TASK_TOKEN', 'a token kept as a Cloudflare secret is shown as such');
+assert.equal(page.cloudHost(), 'r.example');
+page.cloud = { ...page.cloud, on: true, configured: true, today: 3 };
+assert.equal(page.sectionSummary('tasks'), '接好了 · 24 小时内派了 3 单');
+assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');
+console.log('PASS cloud tasks: a card under the reply, escaped and https only; the settings appear once it is turned on');

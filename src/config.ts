@@ -2,6 +2,7 @@
 // one falls back to the Worker's variable or secret of the same name, then to the code's default (README).
 // Only what is needed before the door opens stays in Cloudflare: TG_BOT_TOKEN, TG_WEBHOOK_SECRET, WEB_KEY.
 
+import { fireUrlProblem } from "./cloud-tasks";
 import { VOICE_PROVIDERS, VOICE_REPLIES } from "./voice";
 
 type Kind = "text" | "secret" | "choice";
@@ -65,7 +66,10 @@ export const FIELDS: readonly Field[] = [
   { key: "VOICE_MODEL", kind: "text" },
   { key: "VOICE_ID", kind: "text" },
   { key: "VOICE_REPLY", kind: "choice", choices: VOICE_REPLIES },
-  { key: "VOICE_BASE_URL", kind: "text", check: address }
+  { key: "VOICE_BASE_URL", kind: "text", check: address },
+  { key: "CLOUD_TASKS", kind: "choice", choices: ["on", "off"] },
+  { key: "CLOUD_TASK_URL", kind: "text", check: fireUrlProblem },
+  { key: "CLOUD_TASK_TOKEN", kind: "secret" }
 ];
 
 /** One setting as the web door shows it. Secrets only say whether they are set, never what they are. */

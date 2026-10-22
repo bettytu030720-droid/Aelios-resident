@@ -36,6 +36,13 @@ interface Env {
   VOICE_REPLY?: string;
   // Sends voice requests straight there instead of through AI Gateway (a proxy; the local tests).
   VOICE_BASE_URL?: string;
+  // Cloud Claude Code as the resident's hands (cloud-tasks.ts): a scheduled task's API trigger, its address and token.
+  CLOUD_TASKS?: string;
+  CLOUD_TASK_URL?: string;
+  CLOUD_TASK_TOKEN?: string;
+  // Local tests only: where the trigger is fired instead of api.anthropic.com, and how many minutes before a task is quiet.
+  CLOUD_TASK_API_BASE?: string;
+  CLOUD_TASK_QUIET_MINUTES?: string;
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
   TG_API_BASE?: string;

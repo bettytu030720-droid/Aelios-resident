@@ -45,6 +45,8 @@ function lastOf(prompt: Prompt, role: string): string {
   return "";
 }
 
+const cloudJob = (title: string) => ({ title, job: `把 README 里的「recieve」改成「receive」，开一个 PR。（${title}）` });
+
 /** What the fake model says, or a tool it calls. */
 function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown } {
   const prompt = options.prompt;
@@ -62,7 +64,22 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("只发表情") && last?.role === "tool") return { text: "" };
   // A voice message sent with send_voice, and nothing written after it.
   if (said.includes("发条语音") && last?.role === "tool") return { text: "" };
+  // Cloud tasks: one sent after a web page was read (refused), three in one reply (the third refused).
+  if (said.includes("读完再派活") && last?.role === "tool" && toolOf(last.content) === "web_fetch") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
+  if (said.includes("派三单") && last?.role === "tool" && toolResultsSince(prompt) < 3) return { tool: "cloud_task", input: cloudJob(`第 ${toolResultsSince(prompt) + 1} 单`) };
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
+  if (said.includes("读完再派活")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
+  if (said.includes("派三单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
+  if (said.includes("派活")) return { tool: "cloud_task", input: { ...cloudJob("修 README 的错字"), repo: "wusaki0723/aelios-resident" } };
+  if (said.includes("接着派")) {
+    const earlier = [...prompt.map((m) => textOf(m.content)).join("\n").matchAll(/\bt_[0-9a-f]{10}\b/g)].at(-1)?.[0];
+    return { tool: "cloud_task", input: { ...cloudJob("接着修"), follow_up_of: earlier } };
+  }
+  if (said.startsWith("(Not from them: your cloud task")) return { text: `云端回来了：${said}` };
+  if (said.includes("云端工具有哪些")) {
+    const names = (options.tools ?? []).filter((t) => t.type === "function").map((t) => t.name);
+    return { text: names.includes("cloud_task") ? "有 cloud_task。" : "没有 cloud_task。" };
+  }
   if (said.includes("只发表情") || said.includes("发两张") || said.includes("发表情")) return { tool: "send_sticker", input: { sticker: "test/wave" } };
   if (said.includes("发静图")) return { tool: "send_sticker", input: { sticker: "still/smile" } };
   if (said.includes("画一张")) {

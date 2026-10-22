@@ -7,12 +7,15 @@
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
+//   POST /tasks/<id>/progress|result    a cloud Claude Code session reporting on its task (cloud-tasks.ts), with the
+//                                       task's one-time code in x-task-code
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
 import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini-app";
 import { MCP_CALLBACK_PATH } from "./mcp-servers";
 import { MAX_ZIP_BYTES } from "./stickers";
+import { REPORT_MAX_BYTES } from "./cloud-tasks";
 import { commandOf, isAllowed, sendBubbles, setWebhook, timingSafeEqual, type TelegramUpdate } from "./telegram";
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
@@ -197,6 +200,12 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     }
     case "POST /web/stickers/delete":
       return Response.json(await agent.webRemoveSticker(String(body.key ?? "")));
+    case "GET /web/tasks":
+      return Response.json(await agent.webTasks(url.origin));
+    case "POST /web/tasks/test": {
+      const tried = await agent.webTestTask(url.origin);
+      return Response.json(tried, { status: "error" in tried ? 400 : 200 });
+    }
     default:
       return new Response("not found", { status: 404 });
   }
@@ -216,6 +225,21 @@ export default {
         return new Response(file.bytes, {
           headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" }
         });
+      }
+      const report = url.pathname.match(/^\/tasks\/(t_[0-9a-f]{10})\/(progress|result)$/);
+      if (report && request.method === "POST") {
+        if (Number(request.headers.get("content-length") ?? 0) > REPORT_MAX_BYTES) return Response.json({ error: "too large" }, { status: 413 });
+        const text = await request.text();
+        if (text.length > REPORT_MAX_BYTES) return Response.json({ error: "too large" }, { status: 413 });
+        let body: unknown;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          return Response.json({ error: "the body must be JSON" }, { status: 400 });
+        }
+        const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+        const answer = await agent.taskReport(report[1], request.headers.get("x-task-code") ?? "", report[2] as "progress" | "result", body);
+        return Response.json(answer.body, { status: answer.status });
       }
       // The resident checks the state against the sign-in it started; anything else is not for it. Only the
       // address goes in, never the caller's headers: a WebSocket upgrade here would otherwise open a connection

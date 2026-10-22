@@ -14,7 +14,7 @@
   // The web door (public/index.html). Everything else goes to the Worker first.
   "assets": {
     "directory": "public",
-    "run_worker_first": ["/messengers/*", "/tg/*", "/web/*", "/mcp/*", "/stickers/*"]
+    "run_worker_first": ["/messengers/*", "/tg/*", "/web/*", "/mcp/*", "/stickers/*", "/tasks/*"]
   },
   "durable_objects": {
     "bindings": [{ "name": "RESIDENT", "class_name": "Resident" }]
