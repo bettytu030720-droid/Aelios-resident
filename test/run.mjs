@@ -8,14 +8,17 @@
 //   crash-2  checks what she got after the restart
 //   migrate  needs the old model variable (start wrangler with --var MODEL:fake)
 //   custom   your own provider, without Aelios (start wrangler with --var AELIOS_URL:)
+//   mcp      other MCP servers: open, with a key, with a sign-in, and connected from the chat
+//   mcp-2    run after mcp and restart.sh: the connections come back
 import assert from "node:assert/strict";
+import http from "node:http";
 
 const WORKER = "http://127.0.0.1:8787";
 const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -623,6 +626,157 @@ if (phase === "custom") {
     const turn = (await log()).filter((e) => e.kind === "custom.messages").at(-1);
     assert.deepEqual(turn.body.thinking, { type: "adaptive", display: "summarized" });
     assert.deepEqual(turn.body.output_config, { effort: "xhigh" });
+  });
+}
+
+if (phase === "mcp") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const servers = async () => (await (await web("/web/mcp", KEY)).json()).servers;
+  const say = async (text) => {
+    const before = (await sent()).length;
+    await post(text);
+    return (await waitForSends(before, 1)).join("\n");
+  };
+
+  await step("an open server is added on the settings page and its tools are counted", async () => {
+    const response = await web("/web/mcp", KEY, { name: "demo", url: `${MOCK}/ext/mcp` });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    const demo = body.servers.find((s) => s.id === "demo");
+    assert.equal(demo.state, "ready", JSON.stringify(demo));
+    assert.equal(demo.tools, 2);
+    assert.equal(demo.hasKey, false);
+    assert.ok(demo.tokens > 0 && demo.tokens < 400, `tokens ${demo.tokens}`);
+    const methods = (await log()).filter((e) => e.kind === "ext.ext").map((e) => e.method);
+    assert.ok(methods.includes("tools/list"), JSON.stringify(methods));
+  });
+
+  await step("the model gets its tools with the descriptions cut and every parameter kept", async () => {
+    const out = await say("MCP工具有哪些");
+    const echo = out.split("; ").find((t) => t.startsWith("mcp_demo_echo:"));
+    assert.ok(echo, out);
+    const [, length, params] = echo.split(":");
+    assert.ok(Number(length) <= 310, `description ${length}`);
+    assert.equal(params, "text|title");
+    assert.match(out, /mcp_demo_add:/);
+    assert.match(out, /connect_mcp_server:/);
+    assert.match(out, /disconnect_mcp_server:/);
+  });
+
+  await step("the model calls one and reads its answer", async () => {
+    const out = await say("用MCP");
+    assert.match(out, /ext echo: hi/);
+    const call = (await log()).find((e) => e.kind === "ext.ext" && e.method === "tools/call");
+    assert.deepEqual(call.args, { text: "hi", title: "t" });
+  });
+
+  await step("a server that wants a key fails without one and is not kept, and works with it", async () => {
+    let body = await (await web("/web/mcp", KEY, { name: "keyed", url: `${MOCK}/keyed/mcp` })).json();
+    assert.ok(body.error, JSON.stringify(body));
+    assert.ok(!(await servers()).some((s) => s.id === "keyed"));
+    body = await (await web("/web/mcp", KEY, { name: "keyed", url: `${MOCK}/keyed/mcp`, key: "x-api-key: k1" })).json();
+    const keyed = body.servers?.find((s) => s.id === "keyed");
+    assert.equal(keyed?.state, "ready", JSON.stringify(body));
+    assert.equal(keyed.hasKey, true);
+    assert.ok(!JSON.stringify(body).includes("k1"), "the key is never sent back");
+    // Connected again without a key: tried where it is, the key kept.
+    body = await (await web("/web/mcp", KEY, { name: "keyed", url: `${MOCK}/keyed/mcp` })).json();
+    assert.deepEqual(body.servers?.filter((s) => s.id === "keyed").map((s) => [s.state, s.hasKey]), [["ready", true]], JSON.stringify(body));
+    body = await (await web("/web/mcp/retry", KEY, { id: "keyed" })).json();
+    assert.equal(body.servers?.find((s) => s.id === "keyed")?.state, "ready", JSON.stringify(body));
+  });
+
+  await step("an unreachable server is reported and not kept", async () => {
+    const body = await (await web("/web/mcp", KEY, { name: "nope", url: `${MOCK}/nope/mcp?api_key=SECRET1` })).json();
+    assert.ok(body.error, JSON.stringify(body));
+    assert.ok(!body.error.includes("SECRET1"), `the address's key is not repeated: ${body.error}`);
+    assert.ok(!(await servers()).some((s) => s.id === "nope"));
+    const bad = await (await web("/web/mcp", KEY, { url: "http://example.com/mcp" })).json();
+    assert.match(bad.error, /https/);
+  });
+
+  await step("a server that wants a sign-in gives a link, and the sign-in comes back to the resident", async () => {
+    const body = await (await web("/web/mcp", KEY, { name: "oauth", url: `${MOCK}/oauth/mcp` })).json();
+    const pending = body.servers?.find((s) => s.id === "oauth");
+    assert.equal(pending?.state, "authenticating", JSON.stringify(body));
+    assert.ok(pending.authUrl?.startsWith(`${MOCK}/oauth/authorize`), pending.authUrl);
+    // Asked again before signing in: the same server, still waiting, a link that still works.
+    const again = await (await web("/web/mcp/retry", KEY, { id: "oauth" })).json();
+    const still = again.servers?.find((s) => s.id === "oauth");
+    assert.equal(still?.state, "authenticating", JSON.stringify(again));
+    assert.ok(still.authUrl?.startsWith(`${MOCK}/oauth/authorize`), still.authUrl);
+    const authorize = await fetch(still.authUrl, { redirect: "manual" });
+    assert.equal(authorize.status, 302);
+    const back = authorize.headers.get("location");
+    assert.ok(back.startsWith(`${WORKER}/mcp/callback`), back);
+    const page = await fetch(back, { redirect: "manual" });
+    const html = await page.text();
+    assert.equal(page.status, 200, html.slice(0, 300));
+    assert.match(html, /接好了/);
+    // Only the address reaches the resident: a WebSocket upgrade on the callback is not let through.
+    const upgraded = await new Promise((resolve) => {
+      const request = http.request(`${WORKER}/mcp/callback?state=x.oauth`, {
+        headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version": "13" }
+      });
+      request.on("upgrade", (_response, socket) => (socket.destroy(), resolve(true)));
+      request.on("response", (response) => (response.resume(), resolve(false)));
+      request.on("error", () => resolve(false));
+      request.end();
+    });
+    assert.equal(upgraded, false, "the callback opened a WebSocket to the resident");
+    let oauth;
+    for (let i = 0; i < 20; i += 1) {
+      oauth = (await servers()).find((s) => s.id === "oauth");
+      if (oauth?.state === "ready") break;
+      await sleep(250);
+    }
+    assert.equal(oauth?.state, "ready", JSON.stringify(oauth));
+    assert.equal(oauth.tools, 2);
+    const used = (await log()).filter((e) => e.kind === "ext.oauth" && e.auth === "Bearer tok-1");
+    assert.ok(used.length, "the token is used");
+  });
+
+  await step("the model connects one when she asks", async () => {
+    const out = await say("接上MCP");
+    assert.match(out, /Connected second/);
+    assert.equal((await servers()).find((s) => s.id === "second")?.state, "ready");
+  });
+
+  await step("never because a page it read said so", async () => {
+    const out = await say("读完再接MCP");
+    assert.match(out, /Not done: this turn has read a web page/);
+    assert.ok(!(await servers()).some((s) => s.id === "sneaky"));
+  });
+
+  await step("/status lists them", async () => {
+    const out = await say("/status");
+    assert.match(out, /别的 MCP：.*demo（2 个工具）/);
+  });
+
+  await step("the model disconnects one when she asks, and the page removes one", async () => {
+    const out = await say("断开MCP");
+    assert.match(out, /Disconnected second/);
+    assert.ok(!(await servers()).some((s) => s.id === "second"));
+    const body = await (await web("/web/mcp/remove", KEY, { id: "keyed" })).json();
+    assert.deepEqual(body.servers.map((s) => s.id).sort(), ["demo", "oauth"]);
+  });
+}
+
+if (phase === "mcp-2") {
+  // After restart.sh: the servers come back on their own, the signed-in one with its token.
+  await fetch(`${MOCK}/__reset`);
+  await step("connections come back after a restart", async () => {
+    await post("用MCP");
+    const out = (await waitForSends(0, 1)).join("\n");
+    assert.match(out, /ext echo: hi/);
+    const list = (await (await web("/web/mcp", "test-web-key")).json()).servers;
+    assert.deepEqual(list.map((s) => [s.id, s.state]).sort(), [["demo", "ready"], ["oauth", "ready"]]);
+    const before = (await sent()).length;
+    await post("用授权MCP");
+    assert.match((await waitForSends(before, 1)).join("\n"), /我查到了：3/);
+    const call = (await log()).find((e) => e.kind === "ext.oauth" && e.method === "tools/call");
+    assert.equal(call?.auth, "Bearer tok-1", "the signed-in server is called with its saved token");
   });
 }
 

@@ -176,6 +176,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .choice:hover { border-color: var(--coral); }
   .choice.on { border-color: var(--coral); background: var(--mine-bg); color: var(--text-1); }
   .choice:disabled { opacity: .45; cursor: default; }
+  .field a.btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
+  .field a.btn.primary { color: var(--on-accent); }
 
   /* Model picker: a sheet with a search box, not a dropdown. */
   .backdrop { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-start; justify-content: center;
@@ -322,6 +324,36 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </template>
       </div>
     </template>
+    <div class="card">
+      <h2>别的 MCP</h2>
+      <p class="hint">填一个 MCP 服务的地址，它的工具就加进每一轮。要登录的点「去授权」；要 key 的把 key 填在这里，只能填不能看，默认当 Bearer 发，写成 x-api-key: 你的key 就放在那个头里。也可以在聊天里跟它说「接上 …」，但 key 和带 key 的地址别在聊天里发，聊天会被记下来。每个工具的说明每轮都要带上，接得越多越费。</p>
+      <template x-for="server in mcp.servers" :key="server.id">
+        <div class="field">
+          <div class="name"><span x-text="server.name"></span><span class="var" x-text="server.url"></span></div>
+          <span class="now" x-text="mcpText(server)"></span>
+          <p class="error" x-show="server.error && server.state !== 'ready'" x-text="server.error"></p>
+          <div class="row">
+            <a class="btn primary" x-show="server.authUrl" :href="server.authUrl || '#'" target="_blank" rel="noopener noreferrer" @click="openAuth(server, $event)">去授权</a>
+            <button class="btn" type="button" x-show="server.state !== 'ready'" :disabled="Boolean(mcpBusy)" @click="retryMcp(server)" x-text="mcpBusy === server.id ? '连接中…' : (server.state === 'not-connected' || server.state === 'failed' ? '重连' : '刷新')"></button>
+            <div class="spacer"></div>
+            <button class="btn" type="button" :disabled="Boolean(mcpBusy)" @click="removeMcp(server)">断开</button>
+          </div>
+        </div>
+      </template>
+      <div class="field">
+        <div class="name"><span>接一个</span><span class="var" x-show="!mcp.servers.length">还没接</span></div>
+        <div class="row"><input x-model="mcpDraft.url" type="url" placeholder="https://…/mcp" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="MCP 地址"></div>
+        <div class="row">
+          <input x-model="mcpDraft.name" type="text" placeholder="名字，可不填" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="名字">
+          <input x-model="mcpDraft.key" type="password" placeholder="key，可不填" autocomplete="off" aria-label="key">
+        </div>
+        <div class="row">
+          <div class="spacer"></div>
+          <button class="btn primary" type="button" :disabled="Boolean(mcpBusy) || !mcpDraft.url.trim()" @click="addMcp()" x-text="mcpBusy === 'add' ? '连接中…' : '接上'"></button>
+        </div>
+        <p class="error" x-show="mcpError" x-text="mcpError"></p>
+      </div>
+    </div>
     <div class="bar">
       <div class="spacer"></div>
       <button class="btn" type="button" @click="logout()">锁上网页门</button>
@@ -510,6 +542,10 @@ function resident() {
     configDraft: {},
     configError: {},
     configBusy: '',
+    mcp: { servers: [] },
+    mcpDraft: { name: '', url: '', key: '' },
+    mcpBusy: '',
+    mcpError: '',
     persona: { text: '', at: null, fallback: '', versions: [] },
     model: { model: '', at: null, fallback: '', recent: [], lastUsage: null, memoryOff: false },
     catalog: [],
@@ -523,7 +559,12 @@ function resident() {
 
     async start() {
       var self = this;
-      document.addEventListener('visibilitychange', function () { if (!document.hidden && self.authed) self.refresh().catch(function () {}); });
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden || !self.authed) return;
+        self.refresh().catch(function () {});
+        // Back from an MCP sign-in in another tab: show how it went.
+        if (self.view === 'config') self.loadMcp().catch(function () {});
+      });
       fetch('/models.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
         if (!data) return;
         self.catalog = data.models || [];
@@ -1067,7 +1108,9 @@ function resident() {
       }
       this.fillDrafts();
       this.configError = {};
+      this.mcpError = '';
       this.view = 'config';
+      this.loadMcp().catch(function () {});
     },
     closeConfig() {
       var self = this;
@@ -1092,6 +1135,65 @@ function resident() {
         this.configError[key] = error.message;
       } finally {
         this.configBusy = '';
+      }
+    },
+
+    // ---- other MCP servers ----
+    async loadMcp() {
+      this.mcp = await this.api('/web/mcp');
+    },
+    mcpText(server) {
+      if (server.state === 'ready') return '能用 · ' + server.tools + ' 个工具 · 每轮约 ' + server.tokens + ' token' + (server.hasKey ? ' · 带 key' : '');
+      if (server.state === 'authenticating') return '等你授权：点「去授权」登录，授权完回来就好了';
+      if (server.state === 'connecting' || server.state === 'connected' || server.state === 'discovering') return '连接中…';
+      return '没连上' + (server.hasKey ? '（带 key，重连不用再填）' : '') + '：点「重连」再试，一直不行就断开重接';
+    },
+    // Inside Telegram a sign-in opens in the browser, which can come back here.
+    openAuth(server, event) {
+      if (!telegram || !server.authUrl) return;
+      event.preventDefault();
+      try { telegram.openLink(server.authUrl); } catch (error) { window.open(server.authUrl, '_blank', 'noopener'); }
+    },
+    async addMcp() {
+      if (this.mcpBusy) return;
+      this.mcpBusy = 'add';
+      this.mcpError = '';
+      try {
+        this.mcp = await this.api('/web/mcp', { method: 'POST', body: { name: this.mcpDraft.name.trim(), url: this.mcpDraft.url.trim(), key: this.mcpDraft.key.trim() } });
+        this.mcpDraft = { name: '', url: '', key: '' };
+        var waiting = this.mcp.servers.some(function (server) { return server.authUrl; });
+        this.notify(waiting ? '还要登录授权：点「去授权」' : '接上了，下一句开始能用');
+      } catch (error) {
+        this.mcpError = error.message;
+      } finally {
+        this.mcpBusy = '';
+      }
+    },
+    // A server that dropped is tried again where it is; one waiting for a sign-in just shows how it is now.
+    async retryMcp(server) {
+      if (this.mcpBusy) return;
+      this.mcpBusy = server.id;
+      this.mcpError = '';
+      try {
+        this.mcp = server.state === 'not-connected' || server.state === 'failed'
+          ? await this.api('/web/mcp/retry', { method: 'POST', body: { id: server.id } })
+          : await this.api('/web/mcp');
+      } catch (error) {
+        this.mcpError = error.message;
+      } finally {
+        this.mcpBusy = '';
+      }
+    },
+    async removeMcp(server) {
+      if (this.mcpBusy || !confirm('断开 ' + server.name + '？要用再接。')) return;
+      this.mcpBusy = server.id;
+      try {
+        this.mcp = await this.api('/web/mcp/remove', { method: 'POST', body: { id: server.id } });
+        this.notify('断开了');
+      } catch (error) {
+        this.mcpError = error.message;
+      } finally {
+        this.mcpBusy = '';
       }
     },
 

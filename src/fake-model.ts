@@ -29,6 +29,10 @@ function textOf(content: unknown): string {
     .join("");
 }
 
+function toolOf(content: unknown): string {
+  return Array.isArray(content) ? ((content.find((part) => part.type === "tool-result") as { toolName?: string } | undefined)?.toolName ?? "") : "";
+}
+
 function lastOf(prompt: Prompt, role: string): string {
   for (let i = prompt.length - 1; i >= 0; i -= 1) if (prompt[i].role === role) return textOf(prompt[i].content);
   return "";
@@ -42,7 +46,25 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const last = prompt[prompt.length - 1];
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
 
+  // A web page read first, then a server connected: the second step must be refused.
+  if (said.includes("读完再接MCP") && last?.role === "tool" && toolOf(last.content) === "web_fetch") {
+    return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "sneaky" } };
+  }
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
+  if (said.includes("读完再接MCP")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
+  if (said.includes("接上MCP")) return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "second" } };
+  if (said.includes("断开MCP")) return { tool: "disconnect_mcp_server", input: { name: "second" } };
+  if (said.includes("用授权MCP")) return { tool: "mcp_oauth_add", input: { a: 1, b: 2 } };
+  if (said.includes("用MCP")) return { tool: "mcp_demo_echo", input: { text: "hi", title: "t" } };
+  // Which tools it was given: name, description length and parameters, for the tests to read.
+  if (said.includes("MCP工具有哪些")) {
+    const tools = (options.tools ?? []).filter((t) => t.type === "function" && /^(mcp_|connect_|disconnect_)/.test(t.name)) as {
+      name: string;
+      description?: string;
+      inputSchema?: { properties?: Record<string, unknown> };
+    }[];
+    return { text: tools.map((t) => `${t.name}:${t.description?.length ?? 0}:${Object.keys(t.inputSchema?.properties ?? {}).join("|")}`).join("; ") || "没有" };
+  }
   if (said.includes("查记忆")) return { tool: "memory_recall", input: { query: "生日" } };
   if (said.includes("记一下")) return { tool: "memory_remember", input: { content: "她喜欢春天" } };
   if (said.includes("读本机")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };

@@ -1,13 +1,85 @@
-// Stands in for the Telegram Bot API and Aelios during local tests. Records every call.
+// Stands in for the Telegram Bot API, Aelios and other MCP servers during local tests. Records every call.
 import http from "node:http";
 
 const log = [];
 let nextMessageId = 1000;
+const ORIGIN = "http://127.0.0.1:9999";
+
+// Other MCP servers: /ext and /ext2 are open, /keyed wants x-api-key: k1, /oauth wants a token from its sign-in.
+// echo's descriptions are long on purpose, and one of its parameters is called title, which must survive trimming.
+const TOOLS = [
+  {
+    name: "echo",
+    description: `Echo the text back. ${"It says it again. ".repeat(30)}\n\nUsage notes nobody needs every turn.`,
+    inputSchema: {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+      title: "EchoArgs",
+      properties: {
+        text: { type: "string", description: `What to echo. ${"More words. ".repeat(30)}` },
+        title: { type: "string", description: "A parameter that happens to be called title." }
+      },
+      required: ["text"]
+    }
+  },
+  { name: "add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } }
+];
+
+function mcpServer(name, req, res, json) {
+  const send = (status, obj, headers = {}) => {
+    res.writeHead(status, { "content-type": "application/json", ...headers });
+    res.end(obj === undefined ? "" : JSON.stringify(obj));
+  };
+  if (req.method !== "POST") return send(405, { error: "method not allowed" });
+  const messages = Array.isArray(json) ? json : [json];
+  const answers = [];
+  for (const message of messages) {
+    if (!message || message.id === undefined) continue;
+    const result = (() => {
+      switch (message.method) {
+        case "initialize":
+          return { protocolVersion: message.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name, version: "1.0.0" } };
+        case "ping":
+          return {};
+        case "tools/list":
+          return { tools: TOOLS };
+        case "tools/call": {
+          const args = message.params?.arguments ?? {};
+          if (message.params?.name === "echo") return { content: [{ type: "text", text: `${name} echo: ${args.text}` }] };
+          if (message.params?.name === "add") return { content: [{ type: "text", text: String(Number(args.a) + Number(args.b)) }] };
+          return { content: [{ type: "text", text: "no such tool" }], isError: true };
+        }
+        default:
+          return null;
+      }
+    })();
+    answers.push(result ? { jsonrpc: "2.0", id: message.id, result } : { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } });
+  }
+  if (!answers.length) return send(202);
+  return send(200, Array.isArray(json) ? answers : answers[0]);
+}
+
+const authServer = {
+  issuer: `${ORIGIN}/oauth`,
+  authorization_endpoint: `${ORIGIN}/oauth/authorize`,
+  token_endpoint: `${ORIGIN}/oauth/token`,
+  registration_endpoint: `${ORIGIN}/oauth/register`,
+  response_types_supported: ["code"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+  code_challenge_methods_supported: ["S256"],
+  token_endpoint_auth_methods_supported: ["none"]
+};
 
 const server = http.createServer(async (req, res) => {
   let body = "";
   for await (const chunk of req) body += chunk;
-  const json = body ? JSON.parse(body) : undefined;
+  let json;
+  try {
+    json = body ? JSON.parse(body) : undefined;
+  } catch {
+    // The OAuth token request is a form.
+    json = undefined;
+  }
   const url = new URL(req.url, "http://x");
   const reply = (obj, status = 200) => {
     res.writeHead(status, { "content-type": "application/json" });
@@ -53,6 +125,45 @@ const server = http.createServer(async (req, res) => {
         // e.g. sendRichMessage: an older Bot API, so the adapter falls back to sendMessage.
         return reply({ ok: false, error_code: 404, description: "Not Found: method not found" }, 404);
     }
+  }
+  const mcp = url.pathname.match(/^\/(ext|ext2|keyed|oauth)\/mcp$/);
+  if (mcp) {
+    const who = mcp[1];
+    log.push({ kind: `ext.${who}`, httpMethod: req.method, method: json?.method ?? null, auth: req.headers.authorization ?? null,
+      apiKey: req.headers["x-api-key"] ?? null, tool: json?.params?.name ?? null, args: json?.params?.arguments ?? null });
+    if (who === "keyed" && req.headers["x-api-key"] !== "k1") return reply({ error: "a key is needed" }, 403);
+    if (who === "oauth" && req.headers.authorization !== "Bearer tok-1") {
+      res.writeHead(401, { "content-type": "application/json", "www-authenticate": `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/oauth/mcp"` });
+      return res.end(JSON.stringify({ error: "invalid_token" }));
+    }
+    return mcpServer(who, req, res, json);
+  }
+  if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+    log.push({ kind: "oauth.resource", path: url.pathname });
+    return reply({ resource: `${ORIGIN}/oauth/mcp`, authorization_servers: [`${ORIGIN}/oauth`] });
+  }
+  if (url.pathname.includes("/.well-known/oauth-authorization-server") || url.pathname.includes("/.well-known/openid-configuration")) {
+    log.push({ kind: "oauth.metadata", path: url.pathname });
+    return reply(authServer);
+  }
+  if (url.pathname === "/oauth/register") {
+    log.push({ kind: "oauth.register", body: json });
+    return reply({ ...json, client_id: "cid-1", token_endpoint_auth_method: "none" }, 201);
+  }
+  if (url.pathname === "/oauth/authorize") {
+    // Stands in for her signing in: straight back to the resident with a code.
+    log.push({ kind: "oauth.authorize", query: Object.fromEntries(url.searchParams) });
+    const back = new URL(url.searchParams.get("redirect_uri"));
+    back.searchParams.set("code", "code-1");
+    back.searchParams.set("state", url.searchParams.get("state") ?? "");
+    res.writeHead(302, { location: back.href });
+    return res.end();
+  }
+  if (url.pathname === "/oauth/token") {
+    const form = Object.fromEntries(new URLSearchParams(body));
+    log.push({ kind: "oauth.token", form });
+    if (form.grant_type === "authorization_code" && form.code !== "code-1") return reply({ error: "invalid_grant" }, 400);
+    return reply({ access_token: "tok-1", token_type: "Bearer", expires_in: 3600, refresh_token: "ref-1" });
   }
   const auth = req.headers.authorization;
   if (url.pathname === "/v1/memory/recall") {

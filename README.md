@@ -7,7 +7,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 网页门（public/，WEB_KEY）────────────▶ Worker /web/* ──┤
                                                      ▼
                          Resident（一个 Durable Object，一段对话）
-            模型（网页上选）← 人设（网页上填）+ 聊天规矩 + Aelios 开机包；工具：Aelios 记忆 6 个、web_search、web_fetch
+            模型（网页上选）← 人设（网页上填）+ 聊天规矩 + Aelios 开机包；工具：Aelios 记忆 6 个、web_search、web_fetch、接上的别的 MCP
             接了 Aelios 时聊天从 Aelios 过（它想起旧事、它记）；没动静 55 分钟写交接信；到点可以主动找你
 ```
 
@@ -24,6 +24,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **提示词**：住户自带的聊天规矩、交接信和定时提示都是英文写的，不预设对方是谁、什么性别，称呼用人设和聊天里的；人设用什么语言，它就用什么语言聊。
 - **主动找你**：设置页里「主动找你」填了（`CHECKIN_SCHEDULE`，比如 `every day at 09:00`），到点住户自己想想要不要找你；不合适打扰就不发。
 - **查网页**（默认开）：`web_search` 搜网。在设置页填了自己的搜索 key（Tavily、Brave、Perplexity，有几个填几个）就按 Tavily → Brave → Perplexity 的顺序用，前一家报错或免费额度用完就换下一家，不花 Gateway 的钱；一个都没填时用 Cloudflare 的 Web Search（按次收一点 AI Gateway 额度，见下）。`web_fetch` 把一个网页读成 Markdown，搜到的结果、你发的链接都能打开，照 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的做法长在住户里，不用另外部署：先普通地抓，每一次跳转都先查目的地再跟过去，本机和内网地址一律不读；抓回来几乎是空的（靠 JavaScript 才显示的页面）就交给 Cloudflare 的浏览器（`BROWSER` 绑定，不加载图片字体；浏览器跑在 Cloudflare 的机器上，网址里写明的本机和内网 IP 在浏览器里也拦掉，最后落到哪儿再查一遍，但解析到内网的域名只在最后这一查里拦得住）；读过的页面在住户自己的存储里留 1 小时，再问同一页不用重抓；长页面先用一个便宜的模型压一遍（`WEB_FETCH_MODEL`，默认 Workers AI 的 Qwen3 30B；填法和网页上换主模型一样，`@cf/` 开头的在 Cloudflare 上跑，别的接了 Aelios 就从 Aelios 过、标成不是你说的话，没接就走 AI Gateway），带了问题就只摘跟问题有关的段落，这样一页新闻不会占掉一大截聊天记录。GBK 之类的老编码也认。
+- **接别的 MCP**：设置页「别的 MCP」填服务地址（https），它的工具从下一句起加进每一轮，名字是 `mcp_<服务>_<工具>`。要登录的（OAuth）点「去授权」，授权完回到住户的 `/mcp/callback`；要 key 的把 key 填在那里，只能填不能看，默认当 `Authorization: Bearer` 发，写成 `x-api-key: 你的key` 这种就放进那个头。也可以在聊天里跟它说「接上 https://…」「断开 …」，它用 `connect_mcp_server` / `disconnect_mcp_server` 自己接，要登录的会把授权链接发给你；key 和地址里带 key 的（比如 `?api_key=…`）不要在聊天里发（聊天会记进 Aelios），这种只在设置页接；报错里的地址只留到域名，免得把地址里的 key 带进聊天。已经接过的再说一次「接上」或在设置页点「重连」，是原地再连一次，key 和登录都留着。只认你自己开口的那一轮：这一轮里读过网页、搜过网或者调过别的 MCP 工具，它就不接，免得网页上一句「接上 …」替你做主。每个工具的说明每轮都要带上，所以说明只留第一段、最多 300 字，参数说明 120 字，结果最长 6000 字；最多接 8 个、一轮最多带 40 个工具。连接用的是 Think 自带的 MCP 客户端（agents SDK），存在 Durable Object 里，休眠、重启后自己接回来。代码在 `src/mcp-servers.ts`。
 - **命令**：`/status` 看模型、人设、对话长度、交接信封数、上一次调用的缓存命中；`/letter` 看最近一封信；`/handoff` 马上写信。
 
 ## 测过什么
@@ -38,6 +39,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - 发给 Claude 前的整理（`node test/claude-run.mjs`）4 项：system 合成一段；之前几轮的思考块拿掉、回复和工具调用留着、这一轮工具之间的思考留着、只有思考的那条整条去掉；第一轮和没思考块的原样发；别家模型不动。另外用真的 AI SDK 和 Cloudflare provider 核过：不整理时历史里的思考块会带着签名发出去，整理后没有。
 - 交接信收哪些聊天（`node test/fold.mjs`）9 项：中文一个字算 1 token、全角标点也算，思考不算，图片和工具调用、结果算；留最近 6000 token，从她的那条开始留，她连发的几条和回复不拆开；聊得少时不写信、不调模型；更早的信不再收一遍；写出来是空的就不收。
 - 读网页（`node test/web.mjs`，不用起 Worker，网络全是假的）17 项：跳转先查再跟；跳到本机或内网（包括域名解析到内网）不跟；无限跳转会停；本机地址直接拒；JavaScript 空壳交给浏览器且不加载图片、浏览器里也拦内网 IP；没有浏览器时原样返回；404 和图片不送浏览器；读过的页面再问不重抓、同一页同一个问题连压缩结果也不重算；模型回 NOTHING_RELEVANT 的段落丢掉、只是提到这个词的留着；带问题的长页只留摘出来的部分（Qwen3 带 `/no_think`）；换成 Claude 之类的别家模型也能压、不带 `/no_think`；短页不送模型；回答里的 think 块去掉；模型挂了原样返回；工具超时会把模型调用一起取消；GBK 页面（GBK 在本地 workerd 里也核过能解）。
+- 别的 MCP（`node test/run.mjs mcp`，再 `mcp-2`）10 项 + 重启 1 项：设置页接一个不用 key 的，数出 2 个工具；模型拿到的说明截短了、叫 `title` 的参数还在；调一次读到结果；要 key 的不填接不上、也不留着，填了能用，key 不往回发；接不上的报错不留；要登录的给出授权链接，假的授权服务跳回 `/mcp/callback`，页面写「接好了」、换到 token、之后的请求带着它；聊天里说「接上」接上了；先读了网页再接的被拒；`/status` 列出来；聊天里断开、设置页断开；重启后不用重连就在，登录过的那个带着存下的 token 调得通。`node test/mcp-servers.mjs` 12 项测地址检查、名字、key 放哪个头、截短、工具名不撞、结果转文字、顺序固定、授权页转义。
 - 回复写到一半把进程杀掉：重启后住户自己醒过来，发一句「刚才回到一半断了，再发一次好吗？」，不会把半截重发一遍。
 - 网页门在 Chromium 里点过（手机宽度夜间、电脑宽度白天）：错钥匙提示、手机宽度没有横向滚动、发消息收到回复（自己那条也带上时间和心形）、心形按钮、Telegram 那边发的消息 5 秒内自己出现且不重复、交接信折叠；换模型：搜 `opus` 只出 opus、调不通的不换并显示原因、目录里没有的 id 可以直接试、方向键和回车能选、Esc 关掉；人设：没填时的提醒、写了「Claude Code」会提示、保存后提醒消失。
 
@@ -102,6 +104,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **Workers 免费档**：超出免费额度是报错，不扣钱。Durable Object 每天 10 万次请求，Workers AI 每天 1 万 neurons，UTC 0 点重置。闲着能休眠的 Durable Object 不算时长费。网页门开着时每 5 秒刷新一次，一小时大约 720 次请求，关掉页面或切到后台就停。
 - **默认模型** `glm-4.7-flash`：免费档能用（DeepSeek v4、Kimi、GLM 5.3 这些在 Workers AI 上要付费账户）。按官方价目，每百万输入 token 5500 neurons、输出 36400 neurons，一万 neurons 大约够每天 80 到 200 轮，看对话多长（估算）。定时找你每次也算一轮。
 - **搜网**：用你自己的 Tavily、Brave、Perplexity key 时按那几家自己的免费额度和价格算。没填自己的 key 时走 AI Gateway 的 Web Search，用 Gateway 额度按次付费，默认的 Ceramic.ai 是每 1000 次 0.25 美元（10-14 查的官方价），没有额度就报错。读网页：普通抓不收钱；靠浏览器的页面用 Cloudflare 浏览器渲染，Workers Paid 每月含 10 小时，超出每小时 0.09 美元（免费档每天 10 分钟），一页几秒；长页压缩默认走 Workers AI 的 Qwen3 30B，每百万 token 输入 0.051、输出 0.335 美元（10-14 查的官方价），一页大约千分之一美元；`WEB_FETCH_MODEL` 换成 Claude 之类的收费模型时，按那家的价格从 AI Gateway 额度里扣，一页最多 6 段、每段约 6000 token 进、1500 token 出。搜过网的那一轮，挑知识再多调一次这个模型，约 1 万字进、几百字出。
+- **别的 MCP**：每调一次它的工具就是一次对外请求，跟搜网、读网页一样算在免费档每次请求 50 个子请求里；工具说明每轮都带，设置页上每个服务旁边有「每轮约多少 token」。服务本身收不收钱看那一家。
 - **Workers Paid（5 美元/月）**：超出包含额度才按量收，这个量级基本碰不到。
 - **换 Claude**：接了 Aelios 时从 Aelios 过，花的是 Aelios 那边配的供应商和 key。没接时走 AI Gateway，花的是 Gateway 的预付额度；Gateway 里存了你自己的 Anthropic key 时用那把。每轮带缓存标记，命中的部分按缓存价算（读是输入价的 1/10）；1 小时缓存写入是输入价的 2 倍（5 分钟的是 1.25 倍），换来的是停一会儿再聊、写交接信都还能读缓存。Cloudflare 这条路只收一整段文字的 system，AI SDK 发的是一组文字块，所以住户在发出去前把它们合成一段（`src/claude-run.ts`），缓存标记照带。Claude 的思考块签名绑着写下它时的系统提示、工具和前面每条消息，而住户会改这些（网页上换人设、开机包几小时刷新一次、交接信收掉旧聊天、部署了新规矩或新工具），旧思考块原样发回去就会报「bound to a different conversation」、之后每轮都失败；所以同一个文件里也把之前几轮的思考块拿掉，只回传这一轮工具调用之间的思考，回复本身都留着。用 Max 附带的 API key 时，人设里别出现「Claude Code」这几个字。
 
@@ -130,7 +133,7 @@ NO_PROXY=127.0.0.1 npx wrangler dev --config wrangler.test.jsonc --port 8787 &
 NO_PROXY=127.0.0.1 node test/run.mjs main
 ```
 
-`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），不需要登录 Cloudflare，也不花钱。定时、空闲交接信、没接 Aelios 时自己的供应商要另外起一次，见 `test/run.mjs` 开头的说明。读网页的测试 `node test/web.mjs`、`node test/claude-run.mjs`、Mini App 进门的 `node test/history.mjs` 测思考、工具投影与计数，`node test/history-worker.mjs` 在本地 Worker 上测实时思考与工具记录；`node test/mini-app.mjs`（加 `worker` 再连本地 Worker 测一遍）、交接信收哪些聊天的 `node test/fold.mjs` 、从 Aelios 过的 `node test/via-aelios.mjs` 和搜网后存知识的 `node test/learn.mjs` 不用起 Worker。
+`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），不需要登录 Cloudflare，也不花钱。定时、空闲交接信、没接 Aelios 时自己的供应商要另外起一次，见 `test/run.mjs` 开头的说明。读网页的测试 `node test/web.mjs`、`node test/claude-run.mjs`、Mini App 进门的 `node test/history.mjs` 测思考、工具投影与计数，`node test/history-worker.mjs` 在本地 Worker 上测实时思考与工具记录；`node test/mini-app.mjs`（加 `worker` 再连本地 Worker 测一遍）、交接信收哪些聊天的 `node test/fold.mjs` 、从 Aelios 过的 `node test/via-aelios.mjs` 、搜网后存知识的 `node test/learn.mjs` 和接别的 MCP 的 `node test/mcp-servers.mjs` 不用起 Worker。
 
 ## 许可证
 

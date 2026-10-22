@@ -5,10 +5,12 @@
 //   /web/*                              the web page's API (same conversation as Telegram, the model, the persona
 //                                       and the settings), behind WEB_KEY, or inside Telegram behind signed
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
+//   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
 import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini-app";
+import { MCP_CALLBACK_PATH } from "./mcp-servers";
 import { commandOf, isAllowed, sendBubbles, setWebhook, timingSafeEqual, type TelegramUpdate } from "./telegram";
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
@@ -67,6 +69,8 @@ async function handleSetup(env: Env, url: URL): Promise<Response> {
   const secret = env.TG_WEBHOOK_SECRET?.trim();
   if (!secret || !env.TG_BOT_TOKEN) return new Response("set TG_BOT_TOKEN and TG_WEBHOOK_SECRET first", { status: 400 });
   if (!timingSafeEqual(url.searchParams.get("secret") ?? "", secret)) return new Response("unauthorized", { status: 401 });
+  // The address an MCP sign-in started from the chat comes back to.
+  await (await getAgentByName(env.RESIDENT, AGENT_NAME)).noteOrigin(url.origin);
   // Telegram only opens Mini Apps from https; over http (local tests) the menu button is left alone.
   const https = url.protocol === "https:";
   const result = await setWebhook(telegram(env), `${url.origin}${WEBHOOK_PATH}`, secret, https ? { miniAppUrl: `${url.origin}/` } : {});
@@ -115,13 +119,17 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     );
   }
   const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
-  const body = request.method === "POST" ? ((await request.json().catch(() => ({}))) as { text?: string; key?: string }) : {};
+  const body =
+    request.method === "POST"
+      ? ((await request.json().catch(() => ({}))) as { text?: string; key?: string; name?: string; url?: string; id?: string })
+      : {};
   switch (`${request.method} ${url.pathname}`) {
     case "GET /web/check":
       return Response.json({ ok: true, aelios: await agent.hasMemory(), via: who.via });
     case "GET /web/messages":
       return Response.json({ data: await agent.webHistory() });
     case "POST /web/say":
+      await agent.noteOrigin(url.origin);
       return Response.json(await agent.webSay(String(body.text ?? "")));
     case "POST /web/pin":
       return Response.json({ ok: await agent.webPin(String(body.text ?? "")) });
@@ -143,6 +151,18 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       const saved = await agent.webSetConfig(String(body.key ?? ""), String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
     }
+    case "GET /web/mcp":
+      return Response.json(await agent.webMcp());
+    case "POST /web/mcp": {
+      const saved = await agent.webAddMcp(String(body.name ?? ""), String(body.url ?? ""), String(body.key ?? ""), url.origin);
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/mcp/retry": {
+      const tried = await agent.webRetryMcp(String(body.id ?? ""));
+      return Response.json(tried, { status: "error" in tried ? 400 : 200 });
+    }
+    case "POST /web/mcp/remove":
+      return Response.json(await agent.webRemoveMcp(String(body.id ?? "")));
     default:
       return new Response("not found", { status: 404 });
   }
@@ -155,6 +175,12 @@ export default {
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
       if (url.pathname === "/tg/setup") return await handleSetup(env, url);
       if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);
+      // The resident checks the state against the sign-in it started; anything else is not for it. Only the
+      // address goes in, never the caller's headers: a WebSocket upgrade here would otherwise open a connection
+      // to the resident, which streams the conversation to every connection it has.
+      if (url.pathname === MCP_CALLBACK_PATH && request.method === "GET" && url.searchParams.has("state")) {
+        return await (await getAgentByName(env.RESIDENT, AGENT_NAME)).fetch(new Request(url.href));
+      }
       return new Response("not found", { status: 404 });
     } catch (error) {
       // Non-2xx makes Telegram redeliver; the messenger dedupes by message id.
