@@ -132,10 +132,11 @@ if (phase === "main") {
     assert.equal((await sent()).length, before);
   });
 
-  await step("the Aelios boot packet is in the system prompt", async () => {
+  await step("the Aelios boot packet is in the system prompt: the diary, without precious notes or the glossary", async () => {
     const before = (await sent()).length;
     await post("开机包");
-    assert.deepEqual(await waitForSends(before, 1), ["开机包在。"]);
+    const [out] = await waitForSends(before, 1);
+    assert.match(out, /^开机包在，第 \d+ 次取的。$/);
     const boot = (await log()).filter((e) => e.kind === "aelios.boot");
     assert.ok(boot.length >= 1);
     assert.equal(boot[0].auth, "Bearer test-key");
@@ -240,6 +241,27 @@ if (phase === "main") {
     assert.equal(asked.via, "telegram");
     assert.equal(typeof asked.at, "number");
     assert.ok(data.some((l) => l.role === "assistant" && l.text === "交接信在。" && l.via === "telegram"));
+  });
+
+  await step("the boot packet is fetched again only in a new cache window: after a letter, not while the cache is warm", async () => {
+    const fetched = async () => (await log()).filter((e) => e.kind === "aelios.boot").length;
+    const carried = async () => {
+      const before = (await sent()).length;
+      await post("开机包");
+      const [out] = await waitForSends(before, 1);
+      return Number(out.match(/第 (\d+) 次取/)?.[1]);
+    };
+    const first = await carried();
+    const count = await fetched();
+    assert.equal(await carried(), first, "a warm cache keeps the packet it has");
+    assert.equal(await fetched(), count, "and Aelios is not asked again");
+    const before = (await sent()).length;
+    await post("/handoff");
+    const [letter] = await waitForSends(before, 1, 30000);
+    assert.match(letter, /^交接信写好了/);
+    const fresh = await carried();
+    assert.ok(fresh > first, `the letter folded the chat, so the next turn takes a fresh packet: ${first} then ${fresh}`);
+    assert.equal(await carried(), fresh);
   });
 
   await step("a message typed on the web is answered there, not on Telegram", async () => {
@@ -943,8 +965,10 @@ if (phase === "stickers") {
 
   await step("the model is told every sticker of the packs that are on; a pack or the whole thing can be turned off", async () => {
     const tools = async () => (await ask("表情工具有哪些")).text;
-    assert.equal(await tools(), "make_sticker:; send_sticker:mine/heart|test/wave|test/love|testpack/1|testpack/2|testpack/3");
+    // The list is held while the cache is warm: the one it drew joins it in the next window, so the tools stay the same.
+    assert.equal(await tools(), "make_sticker:; send_sticker:test/wave|test/love|testpack/1|testpack/2|testpack/3");
     await web("/web/stickers/pack", KEY, { id: "testpack", on: false });
+    // A change on the settings page shows from the next message, as any setting does, and the drawn one comes with it.
     assert.equal(await tools(), "make_sticker:; send_sticker:mine/heart|test/wave|test/love");
     const off = await web("/web/config", KEY, { key: "STICKERS", text: "off" });
     assert.equal(off.status, 200);

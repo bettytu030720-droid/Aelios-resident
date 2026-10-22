@@ -61,6 +61,8 @@ export class StickerStore {
       emoji TEXT NOT NULL, when_text TEXT NOT NULL, seq INTEGER NOT NULL, web BLOB, web_type TEXT NOT NULL, web_remote TEXT,
       tg BLOB, tg_type TEXT, tg_file TEXT, tg_kind TEXT, at INTEGER NOT NULL)`;
     sql`CREATE UNIQUE INDEX IF NOT EXISTS res_stickers_name ON res_stickers (pack, name)`;
+    sql`CREATE TABLE IF NOT EXISTS res_sticker_menu (id INTEGER PRIMARY KEY CHECK (id = 1), opened INTEGER NOT NULL,
+      lines TEXT NOT NULL)`;
   }
 
   private packRows(): PackRow[] {
@@ -79,6 +81,30 @@ export class StickerStore {
    */
   listed(): string[] {
     return this.catalog().lines;
+  }
+
+  /**
+   * listed() as the model sees it in send_sticker, held for one prompt cache window (`opened`, cache-window.ts):
+   * the list is part of the tools, and a sticker the resident draws would otherwise change them and make the next
+   * turn write the whole conversation into the cache again. A drawn sticker joins the list in the next window. A
+   * change on the settings page shows from the next message (dropMenu), as any setting does.
+   */
+  menu(opened: number): string[] {
+    const [row] = this.sql<{ opened: number; lines: string }>`SELECT opened, lines FROM res_sticker_menu WHERE id = 1`;
+    if (row && row.opened === opened) {
+      try {
+        return JSON.parse(row.lines) as string[];
+      } catch {
+        // Rebuilt below.
+      }
+    }
+    const lines = this.listed();
+    this.sql`INSERT OR REPLACE INTO res_sticker_menu (id, opened, lines) VALUES (1, ${opened}, ${JSON.stringify(lines)})`;
+    return lines;
+  }
+
+  private dropMenu(): void {
+    this.sql`DELETE FROM res_sticker_menu`;
   }
 
   /** listed(), and how many stickers of the packs that are on it left out. */
@@ -147,6 +173,7 @@ export class StickerStore {
             NULL, ${sticker.telegram ? buffer(sticker.telegram.bytes) : null}, ${sticker.telegram?.type ?? null}, NULL, NULL, ${now})`;
       }
     });
+    this.dropMenu();
     return { id };
   }
 
@@ -173,15 +200,18 @@ export class StickerStore {
 
   setEnabled(id: string, enabled: boolean): void {
     this.sql`UPDATE res_sticker_packs SET enabled = ${enabled ? 1 : 0} WHERE id = ${id}`;
+    this.dropMenu();
   }
 
   removePack(id: string): void {
     this.sql`DELETE FROM res_stickers WHERE pack = ${id}`;
     this.sql`DELETE FROM res_sticker_packs WHERE id = ${id}`;
+    this.dropMenu();
   }
 
   removeSticker(key: string): void {
     this.sql`DELETE FROM res_stickers WHERE key = ${key}`;
+    this.dropMenu();
   }
 
   /** What a sticker is for (and its emoji), as written on the settings page. */
@@ -190,6 +220,7 @@ export class StickerStore {
     if (!row) return false;
     if (emoji === null) this.sql`UPDATE res_stickers SET when_text = ${when} WHERE key = ${key}`;
     else this.sql`UPDATE res_stickers SET when_text = ${when}, emoji = ${emoji} WHERE key = ${key}`;
+    this.dropMenu();
     return true;
   }
 

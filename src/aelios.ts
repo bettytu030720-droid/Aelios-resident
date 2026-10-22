@@ -2,7 +2,8 @@
 // Aelios recalls for her message and records the exchange. Besides that:
 //   POST /v1/memory/recall   the memory_recall tool
 //   POST /v1/memory/ingest   handoff letters and check-ins, which Aelios does not record as conversation
-//   GET  /v1/memory_boot     yesterday's diary, precious notes and glossary, added to the system prompt
+//   GET  /v1/memory_boot     yesterday's diary, added to the system prompt (precious notes and the glossary are
+//                            left to Aelios' recall, which brings them in on the turns they matter to)
 //   POST /mcp                remember, keep a moment, forget, learn a word, read the diary: Aelios' own MCP
 //                            tools, wrapped here with short descriptions so they cost few tokens per turn
 // Unset AELIOS_URL or AELIOS_API_KEY and all of it quietly does nothing.
@@ -137,30 +138,35 @@ export async function ingest(config: AeliosConfig, messages: IngestMessage[], so
   }
 }
 
-type BootData = {
-  daily_log?: { title?: string; summary?: string } | null;
-  precious?: { content?: string }[];
-  glossary?: { term?: string; definition?: string }[];
+export type BootData = {
+  daily_log?: { date?: string; title?: string; summary?: string } | null;
 };
 
-/** A compact text of Aelios' boot packet, or "" when there is none. */
-export async function fetchBoot(config: AeliosConfig): Promise<string> {
+/**
+ * The boot packet as it goes into the system prompt: the latest day's diary, under its date. Precious notes and the
+ * glossary stay out. Aelios' recall adds the ones that bear on her message to that turn, and every line kept here
+ * would have to wait for a new cache window to change (cache-window.ts).
+ */
+export function bootText(data: BootData | undefined): string {
+  const diary = data?.daily_log;
+  if (!diary?.summary) return "";
+  const text = `${diary.date ? `${diary.date} 的日记` : "昨天"}：${diary.summary}`;
+  return text.length > BOOT_MAX_CHARS ? `${text.slice(0, BOOT_MAX_CHARS)}…` : text;
+}
+
+/** Aelios' boot packet as text ("" when there is none), or null when Aelios could not be asked. */
+export async function fetchBoot(config: AeliosConfig): Promise<string | null> {
   try {
     const response = await aelios(config, `/v1/memory_boot?namespace=${encodeURIComponent(config.namespace)}`);
-    if (!response.ok) return "";
+    if (!response.ok) {
+      console.error("aelios: boot failed", { status: response.status });
+      return null;
+    }
     const { data } = (await response.json()) as { data?: BootData };
-    if (!data) return "";
-    const parts: string[] = [];
-    if (data.daily_log?.summary) parts.push(`昨天：${data.daily_log.summary}`);
-    const precious = (data.precious ?? []).map((p) => p.content).filter(Boolean);
-    if (precious.length) parts.push(`珍贵的原话：\n${precious.map((p) => `- ${p}`).join("\n")}`);
-    const glossary = (data.glossary ?? []).filter((g) => g.term);
-    if (glossary.length) parts.push(`我们的黑话：\n${glossary.map((g) => `- ${g.term}：${g.definition ?? ""}`).join("\n")}`);
-    const text = parts.join("\n\n");
-    return text.length > BOOT_MAX_CHARS ? `${text.slice(0, BOOT_MAX_CHARS)}…` : text;
+    return bootText(data);
   } catch (error) {
     console.error("aelios: boot failed", { error: String(error) });
-    return "";
+    return null;
   }
 }
 

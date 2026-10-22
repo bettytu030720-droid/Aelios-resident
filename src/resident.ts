@@ -33,6 +33,7 @@ import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, tool, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
+import { cacheTtlMs, opensWindow } from "./cache-window";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { claudeOnRunPath } from "./claude-run";
@@ -123,6 +124,7 @@ import {
   MAX_MCP_SERVERS,
   MCP_CALLBACK_PATH,
   callbackPage,
+  catalogOf,
   checkServerUrl,
   connectReport,
   hideUrls,
@@ -143,7 +145,6 @@ const PERSONA_MAX_CHARS = 30000;
 const PERSONA_VERSIONS = 10;
 // How many models that passed their trial call the web page's picker lists first.
 const RECENT_MODELS = 8;
-const BOOT_REFRESH_MS = 6 * 60 * 60 * 1000;
 // How long a page web_fetch read is kept, so asking about it again costs no second fetch.
 const PAGE_KEEP_MS = 60 * 60 * 1000;
 // Claude models ("anthropic/…") go out on Anthropic's Messages API, where this asks for prompt caching:
@@ -771,7 +772,8 @@ export class Resident extends Think<Env> {
   /** send_sticker and make_sticker, unless STICKERS is off. send_sticker lists every sticker of the packs that are on. */
   private stickerTools(): ToolSet {
     if (!this.stickersOn()) return {};
-    const lines = this.stickers().listed();
+    // Held for the cache window: one it draws joins the list in the next window (sticker-store.ts).
+    const lines = this.stickers().menu(this.cacheWindow());
     const tools: ToolSet = {
       make_sticker: tool({
         description: MAKE_STICKER_DESCRIPTION,
@@ -835,10 +837,22 @@ export class Resident extends Think<Env> {
     const name = slug(String(input.name ?? "")) || `s${Date.now().toString(36)}`;
     const saved = this.stickers().saveOwn({ name, emoji: emojiOf(input.emoji), when: String(input.when ?? "").trim().slice(0, 160), ...drawn });
     if ("error" in saved) return saved;
-    if (!send) return { saved: saved.handle };
+    const note = this.listedLater(saved.handle);
+    if (!send) return { saved: saved.handle, ...note };
     const row = this.stickers().find(saved.handle, false);
     if (row) this.queueSticker(row.key);
-    return { saved: saved.handle, sent: saved.handle };
+    return { saved: saved.handle, sent: saved.handle, ...note };
+  }
+
+  /** What to tell the model about a sticker it drew that send_sticker's list does not show yet. */
+  private listedLater(handle: string): { note?: string } {
+    const lines = this.stickers().menu(this.cacheWindow());
+    if (lines.some((line) => line === handle || line.startsWith(`${handle} `))) return {};
+    return {
+      note: lines.length
+        ? "send_sticker's list shows it from a later conversation; send_sticker takes this name already."
+        : "You can send it with send_sticker from a later conversation."
+    };
   }
 
   /** The stickers waiting in one box, to her chat. Returns the last one posted. */
@@ -898,21 +912,55 @@ export class Resident extends Think<Env> {
     return shown.length ? shown : undefined;
   }
 
-  /** The tools of the MCP servers that are connected now, as mcp_<server>_<tool>. */
+  /**
+   * The tools of the MCP servers set up, as mcp_<server>_<tool>. A server still reconnecting keeps the tools it
+   * listed last time (catalogOf), so the tools stay the same and the prompt cache keeps hitting.
+   */
   private mcpTools(): ToolSet {
+    const servers = this.mcp.listServers();
     const ready = new Set(
       Object.entries(this.mcp.mcpConnections)
         .filter(([, connection]) => connection.connectionState === "ready")
         .map(([id]) => id)
     );
-    const catalog = this.mcp.listTools().filter((item) => ready.has(item.serverId)) as CatalogTool[];
+    const ids = servers.map((server) => server.id);
+    const catalog = catalogOf(ids, ready, this.mcp.listTools() as CatalogTool[], this.keptMcpTools(ids, ready));
     if (!catalog.length) return {};
-    const names = Object.fromEntries(this.mcp.listServers().map((server) => [server.id, server.name]));
+    const names = Object.fromEntries(servers.map((server) => [server.id, server.name]));
     return mcpToolSet(catalog, (serverId, name, args) => this.callMcp(serverId, name, args), names).tools;
+  }
+
+  /**
+   * The tools each server listed the last time it was ready. Ready servers' lists are saved here as they are now,
+   * and servers no longer set up are forgotten.
+   */
+  private keptMcpTools(ids: readonly string[], ready: ReadonlySet<string>): Map<string, CatalogTool[]> {
+    this.sql`CREATE TABLE IF NOT EXISTS res_mcp_tools (server TEXT PRIMARY KEY, tools TEXT NOT NULL)`;
+    const kept = new Map<string, CatalogTool[]>();
+    for (const row of this.sql<{ server: string; tools: string }>`SELECT server, tools FROM res_mcp_tools`) {
+      if (!ids.includes(row.server)) {
+        this.sql`DELETE FROM res_mcp_tools WHERE server = ${row.server}`;
+        continue;
+      }
+      try {
+        kept.set(row.server, JSON.parse(row.tools) as CatalogTool[]);
+      } catch {
+        // Saved again below once the server is ready.
+      }
+    }
+    for (const id of ids) {
+      if (!ready.has(id)) continue;
+      const now = catalogOf([id], ready, this.mcp.listTools() as CatalogTool[], kept);
+      const text = JSON.stringify(now);
+      if (text !== JSON.stringify(kept.get(id) ?? null)) this.sql`INSERT OR REPLACE INTO res_mcp_tools (server, tools) VALUES (${id}, ${text})`;
+    }
+    return kept;
   }
 
   private async callMcp(serverId: string, name: string, args: unknown): Promise<string> {
     try {
+      // A server whose tools were offered from before may still be reconnecting: give it a little longer.
+      if (this.mcp.mcpConnections[serverId]?.connectionState !== "ready") await this.mcp.waitForConnections({ timeout: 15000 });
       return resultText(await this.mcp.callTool({ serverId, name, arguments: (args ?? {}) as Record<string, unknown> }));
     } catch (error) {
       return `${serverId} unavailable: ${hideUrls(error instanceof Error ? error.message : String(error))}`;
@@ -1112,6 +1160,7 @@ export class Resident extends Think<Env> {
 
   /** Token use of the latest model step, so /status and the web page can show whether the prompt cache is hit. */
   override async onStepFinish(step: StepContext): Promise<void> {
+    this.setWindow("used_at", Date.now());
     const usage = step.usage;
     if (!usage?.inputTokens) return;
     await this.ctx.storage.put<LastUsage>("last_usage", {
@@ -1127,16 +1176,46 @@ export class Resident extends Think<Env> {
     return (await this.ctx.storage.get<LastUsage>("last_usage")) ?? null;
   }
 
-  /** Aelios' boot packet, fetched at most every six hours. */
+  /** Aelios' boot packet, fetched once per cache window, so a new diary never changes a cached prompt. */
   private async boot(): Promise<string> {
     const memory = aeliosConfig(this.cfg);
     if (!memory) return "";
     const cached = await this.ctx.storage.get<{ text: string; at: number }>("aelios_boot");
     // The letter turn keeps the packet the conversation already has, so its request still matches the cache.
-    if (cached && (this.#letterPromptId || Date.now() - cached.at < BOOT_REFRESH_MS)) return cached.text;
-    const text = await fetchBoot(memory);
+    if (cached && (this.#letterPromptId || cached.at >= this.cacheWindow())) return cached.text;
+    // Aelios out of reach: keep the packet the conversation has rather than drop it from the prompt.
+    const text = (await fetchBoot(memory)) ?? cached?.text ?? "";
     await this.ctx.storage.put("aelios_boot", { text, at: Date.now() });
     return text;
+  }
+
+  // ---- the prompt cache's window (cache-window.ts) ----
+
+  private windowState(): Map<string, number> {
+    this.sql`CREATE TABLE IF NOT EXISTS res_cache_window (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`;
+    return new Map(this.sql<{ k: string; v: number }>`SELECT k, v FROM res_cache_window`.map((row) => [row.k, row.v]));
+  }
+
+  private setWindow(key: "used_at" | "opened_at" | "folded", value: number): void {
+    this.sql`CREATE TABLE IF NOT EXISTS res_cache_window (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`;
+    this.sql`INSERT OR REPLACE INTO res_cache_window (k, v) VALUES (${key}, ${value})`;
+  }
+
+  /**
+   * When the prompt cache's current window opened. The first call of a turn that finds the cache run out, or the
+   * older turns folded into a letter, opens a new one; what changes by itself (the boot packet, the stickers it
+   * draws) is taken up then and held until the next one.
+   */
+  private cacheWindow(): number {
+    const saved = this.windowState();
+    const now = Date.now();
+    const current = { usedAt: saved.get("used_at") ?? null, openedAt: saved.get("opened_at") ?? null, folded: saved.get("folded") === 1 };
+    if (current.openedAt !== null && !opensWindow(current, now, cacheTtlMs(this.cfg.CACHE_TTL))) return current.openedAt;
+    this.setWindow("opened_at", now);
+    // Counted as used from now on: the rest of this turn stays in the window it opened.
+    this.setWindow("used_at", now);
+    this.setWindow("folded", 0);
+    return now;
   }
 
   override configureSession(session: ThinkSession) {
@@ -1212,7 +1291,10 @@ export class Resident extends Think<Env> {
     // Cleared before, not after: a message that arrives while the letter is written sets it again.
     await this.ctx.storage.put("wrote_since_letter", false);
     try {
-      return Boolean(await this.session.compact());
+      const folded = Boolean(await this.session.compact());
+      // The older turns are gone from the prompt, so the next turn writes the cache anew: a new window opens there.
+      if (folded) this.setWindow("folded", 1);
+      return folded;
     } finally {
       this.#letterReason = "handoff";
     }

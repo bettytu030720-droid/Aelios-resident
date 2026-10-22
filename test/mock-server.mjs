@@ -280,9 +280,11 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/v1/memory_boot") {
     log.push({ kind: "aelios.boot", query: url.search, auth });
+    // Says how many times it has been fetched, so a test can tell which packet a turn carries.
+    const fetched = log.filter((e) => e.kind === "aelios.boot").length;
     return reply({
       data: {
-        daily_log: { title: "闲聊日", summary: "昨天你们聊了周末去哪儿玩。" },
+        daily_log: { date: "2026-10-21", title: "闲聊日", summary: `昨天你们聊了周末去哪儿玩。（第 ${fetched} 次取）` },
         precious: [{ content: "说好了要一起去看海。" }],
         glossary: [{ term: "小橘", definition: "楼下那只猫" }]
       }
