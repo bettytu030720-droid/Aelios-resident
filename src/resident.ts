@@ -642,7 +642,6 @@ export class Resident extends Think<Env> {
     const follows = earlier ? this.cloudTasks().get(earlier) : null;
     if (earlier && !follows) return { error: `No task ${earlier}.` };
     const id = this.activeTurn!.requestId;
-    if (this.#turnTasks.size > 20) this.#turnTasks.clear();
     this.#turnTasks.set(id, (this.#turnTasks.get(id) ?? 0) + 1);
     const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id }, follows);
     if ("error" in task) return { error: task.error };
@@ -1097,6 +1096,8 @@ export class Resident extends Think<Env> {
       const asked = this.userMessageBefore("")?.text ?? "";
       if (this.#theirTurns.size > 20) this.#theirTurns.clear();
       if (this.#readOutside.size > 20) this.#readOutside.clear();
+      // Cleared as a turn starts, never during one: a turn's count of tasks cannot be reset under it.
+      if (this.#turnTasks.size > 20) this.#turnTasks.clear();
       if (!proactive && !this.#letterPromptId && asked && !isNote(asked)) this.#theirTurns.add(ctx.requestId);
     }
     const boot = await this.boot();
@@ -1472,7 +1473,10 @@ export class Resident extends Think<Env> {
       }
       if (message.role !== "assistant") continue;
       const activity = activityOf(message.parts);
-      if (!text && !activity.length) continue;
+      if (!text && !activity.length) {
+        about = null;
+        continue;
+      }
       if (via === "checkin" && text === SKIP) continue;
       const stickers = this.sentStickers(message.parts as never);
       const tasks = this.taskCards(message.parts as never, about);
