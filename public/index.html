@@ -373,7 +373,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   :placeholder="placeholderFor(meta)" autocomplete="off" autocapitalize="off" spellcheck="false" :aria-label="meta.label"
                   @keydown.enter.prevent="saveConfig(meta.key, configDraft[meta.key])">
                 <button class="btn primary" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)"
-                  @click="saveConfig(meta.key, configDraft[meta.key])">存</button>
+                  @click="saveConfig(meta.key, configDraft[meta.key])">保存</button>
                 <button class="btn" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)"
                   @click="saveConfig(meta.key, '')">清掉</button>
               </div>
@@ -575,8 +575,6 @@ function resident() {
         labels: { mirror: '你发语音才回语音', always: '每条都发语音', tool: '它想发才发' } },
       { key: 'VOICE_API_KEY', label: 'key', needs: 'VOICE_PROVIDER',
         help: 'AI Gateway 的 Provider Keys 里存了这一家的 key（别名 default）就不用填。两边都没有时，Cloudflare 可能从 Gateway 的预付额度里扣。' },
-      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', needs: 'VOICE_PROVIDER', def: 'default',
-        help: '语音的 key 存在哪个 Gateway 里就填哪个，比如 Aelios 用的那个。搜网和没接 Aelios 时的 Claude 也跟着走这个。' },
       { key: 'VOICE_BASE_URL', label: '直连地址', help: '一般不填。填了就不走 AI Gateway，key 要填在上面。', needs: 'VOICE_PROVIDER', more: true }
     ] },
     { id: 'web', title: '搜网和读网页', fields: [
@@ -594,13 +592,14 @@ function resident() {
         labels: { auto: '模型默认' } },
       { key: 'CACHE_TTL', label: 'Claude 的缓存留多久', help: '1 小时的写入贵一点，停一会儿再聊还能读缓存。', def: '1h', labels: { '1h': '1 小时', '5m': '5 分钟' } },
       { key: 'LETTER_IDLE_MINUTES', label: '多久没动静写交接信', help: '分钟，最多比缓存时长少 1 分钟。off 只靠 /handoff。', def: '55（缓存 5m 时 4）', more: true },
-      { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token，更早的才收进信里。', def: '6000', more: true }
+      { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token，更早的才收进信里。', def: '8000', more: true }
     ] },
-    { id: 'custom', title: '自己的供应商', hint: '没接 Aelios 时用：模型填 custom/模型名 就走这里。接了 Aelios 就在 Aelios 后台配。', fields: [
-      { key: 'CUSTOM_BASE_URL', label: '地址', help: '写到 /v1 为止。', placeholder: 'https://…/v1' },
-      { key: 'CUSTOM_API_KEY', label: 'key' },
-      { key: 'CUSTOM_FORMAT', label: '格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } },
-      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', help: '搜网、语音，和没接 Aelios 时的 Claude 走哪个 Gateway。语音的 key 存在哪个 Gateway 里就填哪个。', def: 'default', more: true }
+    { id: 'custom', title: '供应商', hint: '接了 Aelios，聊天的模型和 key 在 Aelios 后台配；这里管住户自己往外发的请求。', fields: [
+      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', def: 'default',
+        help: '搜网、语音，和没接 Aelios 时的模型都走这个 Gateway，Provider Keys 里存的 key 也只在它里面找。留空就是 default。' },
+      { key: 'CUSTOM_BASE_URL', label: '中转地址', help: '没接 Aelios 时，模型填 custom/模型名 就走这个地址，中转、OpenRouter 都行。写到 /v1 为止。', placeholder: 'https://…/v1' },
+      { key: 'CUSTOM_API_KEY', label: '中转 key' },
+      { key: 'CUSTOM_FORMAT', label: '中转格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } }
     ] }
   ];
   // The rows of the settings page, in order: the groups above, and the two sections with their own cards.
@@ -1089,7 +1088,7 @@ function resident() {
     tagFor(id) {
       if (id === 'fake') return '测试';
       if (this.aelios) return '从 Aelios 过';
-      return { gateway: 'Gateway 额度', own: '自己的供应商', '': 'Workers AI' }[this.dotFor(id)];
+      return { gateway: 'Gateway 额度', own: '中转', '': 'Workers AI' }[this.dotFor(id)];
     },
     shortName(id) {
       if (!id) return '模型';
@@ -1326,7 +1325,7 @@ function resident() {
       // Which gateway the key comes from is the usual question when ElevenLabs or Cartesia says no key arrived.
       var keyFrom = this.config.voice && this.config.voice.keyFrom;
       if (meta.key === 'VOICE_API_KEY' && keyFrom) {
-        return '空着就用 AI Gateway「' + keyFrom + '」的 Provider Keys 里这一家的 key（别名 default）。key 存在别的 Gateway，就改下面的「AI Gateway 的名字」，或者直接填在这里。';
+        return '空着就用 AI Gateway「' + keyFrom + '」的 Provider Keys 里这一家的 key（别名 default）。key 存在别的 Gateway，就到「供应商」里改「AI Gateway 的名字」，或者直接填在这里。';
       }
       if (meta.helps) {
         var provider = this.inEffect(this.metaOf('VOICE_PROVIDER'));
@@ -1402,7 +1401,7 @@ function resident() {
         case 'thinking':
           return 'Claude 想多久：' + choice('THINKING_EFFORT') + ' · 缓存 ' + choice('CACHE_TTL');
         case 'custom':
-          return text('CUSTOM_BASE_URL') ? host(text('CUSTOM_BASE_URL')) : '没填';
+          return 'Gateway ' + (text('AI_GATEWAY_ID') || 'default') + (text('CUSTOM_BASE_URL') ? ' · 中转 ' + host(text('CUSTOM_BASE_URL')) : '');
         default:
           return '';
       }

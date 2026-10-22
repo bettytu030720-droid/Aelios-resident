@@ -90,12 +90,15 @@ assert.doesNotMatch(page.voiceStatus(), /Gateway/);
 page.config.voice = { hears: 'whisper', gap: null, keyFrom: 'aelios' };
 assert.match(page.voiceStatus(), /key 用 AI Gateway「aelios」里存的/);
 assert.match(page.helpFor(metaOf('VOICE_API_KEY')), /^空着就用 AI Gateway「aelios」的 Provider Keys/);
-// The gateway's name sits in the voice section itself, not behind 更多设置 (and stays in 自己的供应商 too).
-const gatewayIndex = voiceGroup.fields.findIndex((meta) => meta.key === 'AI_GATEWAY_ID');
-assert.equal(gatewayIndex, voiceGroup.fields.findIndex((meta) => meta.key === 'VOICE_API_KEY') + 1);
-assert.ok(page.shown(metaOf('AI_GATEWAY_ID')) && !metaOf('AI_GATEWAY_ID').more);
-assert.equal(page.placeholderFor(metaOf('AI_GATEWAY_ID')), 'default');
-assert.ok(page.CONFIG_GROUPS.find((group) => group.id === 'custom').fields.some((meta) => meta.key === 'AI_GATEWAY_ID'));
+assert.match(page.helpFor(metaOf('VOICE_API_KEY')), /到「供应商」里改「AI Gateway 的名字」/);
+// The gateway's name has one place: first in 供应商, not behind 更多设置, empty with a grey default.
+const providers = page.CONFIG_GROUPS.find((group) => group.id === 'custom');
+assert.equal(providers.title, '供应商');
+assert.equal(providers.fields[0].key, 'AI_GATEWAY_ID');
+assert.ok(!providers.fields[0].more);
+assert.equal(page.CONFIG_GROUPS.filter((group) => group.fields.some((meta) => meta.key === 'AI_GATEWAY_ID')).length, 1);
+assert.equal(page.placeholderFor(providers.fields[0]), 'default');
+assert.equal(page.sectionSummary('custom'), 'Gateway default');
 page.view = 'config';
 page.openSection('voice');
 assert.equal(page.sectionTitle(), '语音');

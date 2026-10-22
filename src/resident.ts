@@ -149,9 +149,9 @@ function idleMinutes(env: Env): number {
 /** What to do about the two errors you get when Cloudflare's own billing cannot serve a model. */
 function hintFor(reason: string): string {
   if (/unified billing/i.test(reason)) {
-    return "（可以在这个 AI Gateway 的 Provider Keys 里存你自己的 key，别名 default，就不走 Cloudflare 的统一计费；或者填自己的供应商 custom/…，见 README）";
+    return "（可以在这个 AI Gateway 的 Provider Keys 里存你自己的 key，别名 default，就不走 Cloudflare 的统一计费；或者在设置页「供应商」里填中转地址，模型填 custom/…）";
   }
-  if (/unknown gateway provider/i.test(reason)) return "（自己的供应商请填 custom/模型名，并在设置页填好它的地址和 key）";
+  if (/unknown gateway provider/i.test(reason)) return "（中转请填 custom/模型名，并在设置页「供应商」里填好中转地址和 key）";
   return "";
 }
 
@@ -958,7 +958,7 @@ export class Resident extends Think<Env> {
   }
 
   private keepRecentTokens(): number {
-    return num(this.cfg.KEEP_RECENT_TOKENS, 6000);
+    return num(this.cfg.KEEP_RECENT_TOKENS, 8000);
   }
 
   /** Why the letter being written is written. Set while compact() runs. */

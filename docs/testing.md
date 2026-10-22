@@ -1,0 +1,65 @@
+# 测试
+
+住户的测试分两种：要起本地 Worker 的（`test/run.mjs`，按阶段跑），和不用起 Worker、直接测某一块代码的（`test/*.mjs`）。服务商、Telegram、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
+
+## 怎么跑
+
+```sh
+npm install
+node test/mock-server.mjs &                                    # 假 Telegram 和假 Aelios，端口 9999
+NO_PROXY=127.0.0.1 npx wrangler dev --config wrangler.test.jsonc --port 8787 &
+NO_PROXY=127.0.0.1 node test/run.mjs main
+```
+
+`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），回什么由 `src/fake-model.ts` 按你发的话决定。
+
+`test/run.mjs` 后面跟阶段名，每个阶段要一个刚起的 Worker（先删 `.wrangler/state`）。有的阶段要带变量起 Worker，见 `test/run.mjs` 开头：
+
+| 阶段 | 测什么 |
+| --- | --- |
+| `main` | 主流程（默认） |
+| `checkin` | 主动找你（起 Worker 时带 `--var CHECKIN_SCHEDULE:"every 1 minute"`） |
+| `idle` | 空闲交接信（带 `--var LETTER_IDLE_MINUTES:0.05`） |
+| `crash-1`、`crash-2` | 回到一半进程被杀 |
+| `migrate` | 旧的 `MODEL` 变量搬进网页设置（带 `--var MODEL:fake`） |
+| `custom` | 没接 Aelios 时走中转（带 `--var AELIOS_URL:`） |
+| `mcp`、`mcp-2` | 接别的 MCP，重启后接回来 |
+| `stickers` | 表情包 |
+| `voice` | 语音条 |
+
+不用起 Worker 的，直接 `node test/<名字>.mjs`：
+
+| 文件 | 测什么 |
+| --- | --- |
+| `web.mjs` | 读网页 |
+| `claude-run.mjs` | 发给 Claude 前的整理 |
+| `history.mjs` | 网页上思考和工具的折叠、计数 |
+| `history-worker.mjs` | 本地 Worker 上的实时思考和工具记录（要起 Worker） |
+| `mini-app.mjs` | Mini App 进门（加 `worker` 再连本地 Worker 测一遍） |
+| `fold.mjs` | 交接信收哪些聊天 |
+| `via-aelios.mjs` | 从 Aelios 过的规矩 |
+| `learn.mjs` | 搜网后存知识 |
+| `mcp-servers.mjs` | 接别的 MCP |
+| `stickers.mjs` | 表情包 |
+| `voice.mjs` | 语音条 |
+| `web-ui.mjs` | 网页门和设置页 |
+
+## 测过什么
+
+本地用假 Telegram、假 Aelios、脚本模型跑 `test/run.mjs`：
+
+- 主流程 31 项全过：错 secret 拒绝；陌生人和群聊不回；两个气泡和时间戳；正在输入；重发去重；开机包进系统提示；`memory_recall` 打到 Aelios；`memory_remember` 走 Aelios 的 MCP；`web_fetch` 本机地址拒读；连发三条并成一轮；发的照片模型收到的是图（下载不了的还是一行附件说明），网页上显示「[图片]」；`/status`、`/letter`、`/handoff`（写信后对话里带着信；写信那一轮发给模型的前文和上一轮一字不差，所以吃得到缓存）；网页门没钥匙进不去；网页看得到 Telegram 的对话和交接信；网页上说的话在网页回、不发到 Telegram；心形按钮存进珍贵；没填人设时用默认那句；网页上存了人设，下一条 Telegram 消息就按新人设回；人设超过 3 万字拒收；旧版本留着，存空的回到默认；每轮都带 Anthropic 缓存标记（1 小时）；模型在网页上换，写错或调不通的不换，换成功的记进「最近用过」；接了 Aelios 时聊天从 Aelios 过（`anthropic/…` 走 Messages、带 Aelios 的 key 和缓存标记，之前几轮的思考块不发回去，住户自己不搜也不记），试调和交接信那一轮标成不是她说的，Aelios 说不是主模型的不换，换上之后才被拿出主模型的，网页和 `/status` 会说「没记下来」，`@cf/…` 换成 `workers-ai/@cf/…` 走 chat completions；设置页：key 不出现在页面上，时区、数字、选项、网址、排不上的定时都不收，填了身份下一句就以这个身份过，`TG_ALLOWED` 改成别人后她的消息不回、清掉又回，页面上存的 Aelios key 优先于 Worker 里的。另外单独测了旧的 `MODEL` 变量会搬到网页设置里。
+- 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
+- 空闲交接信：把空闲时间调成 3 秒，聊 3 轮后自己写了信：没发 Telegram、记进 Aelios、网页上看得到信、写信的那一问一答撤掉了、前文和上一轮一字不差；之后再说一句会再写一封，不说话就不再写。
+- 没接 Aelios 时走中转（`--var AELIOS_URL:`，`node test/run.mjs custom`）：OpenAI 格式先试调再换上，带着 key 回话；在设置页把格式改成 `anthropic`，下一句就走 Messages：带着 key、每轮有缓存标记，第二轮发回去的第一轮回复留着字、没有思考块。
+- 从 Aelios 过的那几条规矩（`node test/via-aelios.mjs`）5 项：模型名怎么改写、哪个走 Messages；身份怎么放进地址；她说的话是她的，定时和交接信那一轮（包括里面调了工具之后的请求）标成不是她说的，旧的中文提示也认。
+- 发给 Claude 前的整理（`node test/claude-run.mjs`）4 项：system 合成一段；之前几轮的思考块拿掉、回复和工具调用留着、这一轮工具之间的思考留着、只有思考的那条整条去掉；第一轮和没思考块的原样发；别家模型不动。另外用真的 AI SDK 和 Cloudflare provider 核过：不整理时历史里的思考块会带着签名发出去，整理后没有。
+- 交接信收哪些聊天（`node test/fold.mjs`）9 项：中文一个字算 1 token、全角标点也算，思考不算，图片和工具调用、结果算；留最近 6000 token，从她的那条开始留，她连发的几条和回复不拆开；聊得少时不写信、不调模型；更早的信不再收一遍；写出来是空的就不收。
+- 读网页（`node test/web.mjs`，不用起 Worker，网络全是假的）17 项：跳转先查再跟；跳到本机或内网（包括域名解析到内网）不跟；无限跳转会停；本机地址直接拒；JavaScript 空壳交给浏览器且不加载图片、浏览器里也拦内网 IP；没有浏览器时原样返回；404 和图片不送浏览器；读过的页面再问不重抓、同一页同一个问题连压缩结果也不重算；模型回 NOTHING_RELEVANT 的段落丢掉、只是提到这个词的留着；带问题的长页只留摘出来的部分（Qwen3 带 `/no_think`）；换成 Claude 之类的别家模型也能压、不带 `/no_think`；短页不送模型；回答里的 think 块去掉；模型挂了原样返回；工具超时会把模型调用一起取消；GBK 页面（GBK 在本地 workerd 里也核过能解）。
+- 别的 MCP（`node test/run.mjs mcp`，再 `mcp-2`）10 项 + 重启 1 项：设置页接一个不用 key 的，数出 2 个工具；模型拿到的说明截短了、叫 `title` 的参数还在；调一次读到结果；要 key 的不填接不上、也不留着，填了能用，key 不往回发；接不上的报错不留；要登录的给出授权链接，假的授权服务跳回 `/mcp/callback`，页面写「接好了」、换到 token、之后的请求带着它；聊天里说「接上」接上了；先读了网页再接的被拒；`/status` 列出来；聊天里断开、设置页断开；重启后不用重连就在，登录过的那个带着存下的 token 调得通。`node test/mcp-servers.mjs` 12 项测地址检查、名字、key 放哪个头、截短、工具名不撞、结果转文字、顺序固定、授权页转义。
+- 表情包（`node test/run.mjs stickers`）11 项：设置页传 zip 导入（没钥匙不收，不是 zip 的报错）；表情图只凭长长的随机 key 就能取，乱填的 404；贴 Telegram 贴纸包链接导入，图第一次从 Telegram 取、之后不再取，找不到的包、表情符号包、乱填的链接、本机地址的 zip 都报错；Telegram 上表情跟在话后面，第一次上传、之后用 file_id 发；只发一张表情时不再补「没说出话来」；一次回复第二张被拒；自己画一张，存进「mine」并在 Telegram 上当动图发；网页上那条回复下面显示表情，网页上说的话不往 Telegram 发；模型看得到开着的包里的每一张，关掉一个包或整个功能就看不到；设置页改「什么时候用」、删单张、删包；`/status` 那一行。`node test/stickers.mjs` 10 项测 zip 读法（中文文件名、GBK 文件名、`__MACOSX`、加密的拒收、解开后太大的停下）、pack.json 和没有 pack.json 时的读法、名字不撞、Telegram 链接、画出来的 GIF 用解码器读回来每个像素都对、透明色和描边。
+- 语音条（`node test/run.mjs voice`，三家都用假的服务商）11 项：没选服务商时你的语音条照样进模型（本地没有 AI 绑定，所以是「没听清」），模型拿不到 `send_voice`、提示词里没有语音的话；选了 ElevenLabs 没填声音时 `/status` 说缺 `VOICE_ID`、还是没有工具；填好后你的语音条由 Scribe 转成文字，回复整段做成一条语音发出去，显示「正在录音」，不再发文字；打字的照常回字；模型拿到 `send_voice` 和方括号写法，发完一条不补「没说出话来」；老模型不教标记；OpenRouter 上 Gemini 的模型教尖括号、`send_voice` 能带「怎么说」，`always` 时每条都按 OpenAI 格式要 MP3；服务商报错时照常发字、`/status` 写着为什么；带链接的说完再发链接、不带标记；Cartesia 带版本头、默认 `sonic-3.6`、按字认出中文；网页上显示「🎤 0:03」。`node test/voice.mjs` 10 项测 AI Gateway 的地址（三家各自的端点，没填 key 时不带 key 让 Gateway 用存的那把）、不是 MP3 的拒收、Whisper 和 Scribe 退回 Whisper、语音条怎么并进你的消息、MP3 时长、去掉链接和 emoji、每家的标记和去标记、缺什么设置、靠 Gateway 里存的 key 却被拒时报错写明是哪个 Gateway。`node test/web-ui.mjs` 测设置页选了服务商才显示语音那几项、按服务商给模型按钮和说明，目录每栏那行小字、「要填」和 Cloudflare 变量名的标记、返回一次退一层，「AI Gateway 的名字」只在「供应商」一处。
+- 回复写到一半把进程杀掉：重启后住户自己醒过来，发一句「刚才回到一半断了，再发一次好吗？」，不会把半截重发一遍。
+- 网页门在 Chromium 里点过（手机宽度夜间、电脑宽度白天）：错钥匙提示、手机宽度没有横向滚动、发消息收到回复（自己那条也带上时间和心形）、心形按钮、Telegram 那边发的消息 5 秒内自己出现且不重复、交接信折叠；换模型：搜 `opus` 只出 opus、调不通的不换并显示原因、目录里没有的 id 可以直接试、方向键和回车能选、Esc 关掉；人设：没填时的提醒、写了「Claude Code」会提示、保存后提醒消失。
+
+没测过：真的模型、部署到线上（免费档的 CPU 和启动时间只在线上能验）；语音条从 AI Gateway 过到真的 ElevenLabs、OpenRouter（Cartesia 10-22 在真账号上通了），以及真的 Whisper 听中文（调研时直接调过 Workers AI，出来是简体）；Cloudflare 浏览器和长页压缩（Qwen 或别的模型）只用假的测过；Claude 走 Cloudflare 这条路时 1 小时缓存有没有生效，要上线后看 `/status` 的缓存读写。
