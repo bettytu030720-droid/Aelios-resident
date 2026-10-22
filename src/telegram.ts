@@ -1,7 +1,8 @@
 // Telegram pieces the Think messenger does not do the way we want:
 //   - bubbles: a blank line in the reply starts a new Telegram message, posted as soon as
 //     the paragraph is finished, instead of one message edited as it streams;
-//   - the Worker's own Bot API calls (slash commands, webhook setup).
+//   - a reply that goes out as one voice message instead (voice.ts);
+//   - the Worker's own Bot API calls (slash commands, webhook setup, stickers, voice messages).
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
 // sendMessage allows 4096 UTF-16 code units; leave room for markdown escapes.
@@ -39,19 +40,37 @@ export type BubbleAdapter = {
 };
 
 /**
- * Replace the adapter's post-and-edit streaming with bubbles: each paragraph is
- * sent as its own message the moment the next one starts, and the typing
- * indicator comes back on while the next paragraph is being written.
+ * A reply to send as one voice message. `send` gives the voice message it became (null when none could be sent) and
+ * whatever is still to be posted as text ("" for nothing).
  */
+export type VoiceOut = {
+  recording(): Promise<void>;
+  send(text: string): Promise<{ posted: PostedMessage | null; text: string }>;
+};
+
 /**
  * What happens when a reply's text is all in. `keepLast` can drop its last bubble (the placeholder for a reply
- * with no words, when a sticker is the reply); `after` posts what goes after the words (a sticker).
+ * with no words, when a sticker is the reply); `after` posts what goes after the words (a sticker). `voice` sends the
+ * whole reply as one voice message instead of bubbles. `instead` gives the message that already was the reply (a
+ * voice message from send_voice) when the text is only the placeholder: nothing is posted, and that message stands
+ * for the reply.
  */
 export type BubbleEnd = {
   keepLast?(threadId: string, text: string): boolean;
   after?(threadId: string): Promise<PostedMessage | null>;
+  voice?(threadId: string): VoiceOut | null;
+  instead?(threadId: string, text: string): PostedMessage | null;
 };
 
+// Telegram shows "recording a voice message" for about 5 seconds per call.
+const RECORDING_REFRESH_MS = 4000;
+
+/**
+ * Replace the adapter's post-and-edit streaming with bubbles: each paragraph is
+ * sent as its own message the moment the next one starts, and the typing
+ * indicator comes back on while the next paragraph is being written.
+ * A reply that goes out as voice is gathered whole and sent as one voice message, as text if that fails.
+ */
 export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
   adapter.stream = async (
     threadId: string,
@@ -63,24 +82,41 @@ export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
     const post = async (text: string) => {
       for (const bubble of splitIntoBubbles(text)) last = await adapter.postMessage(threadId, { markdown: bubble });
     };
-    for await (const part of textStream) {
-      if (options?.signal?.aborted) break;
-      buffer += typeof part === "string" ? part : part.type === "markdown_text" ? (part.text ?? "") : "";
-      for (let match = BUBBLE_BREAK.exec(buffer); match; match = BUBBLE_BREAK.exec(buffer)) {
-        await post(buffer.slice(0, match.index));
-        buffer = buffer.slice(match.index + match[0].length);
-        void adapter.startTyping(threadId).catch(() => undefined);
+    const voice = end.voice?.(threadId) ?? null;
+    const recording = () => void voice?.recording().catch(() => undefined);
+    recording();
+    const timer = voice ? setInterval(recording, RECORDING_REFRESH_MS) : undefined;
+    try {
+      for await (const part of textStream) {
+        if (options?.signal?.aborted) break;
+        buffer += typeof part === "string" ? part : part.type === "markdown_text" ? (part.text ?? "") : "";
+        // A voice message waits for the whole reply.
+        if (voice) continue;
+        for (let match = BUBBLE_BREAK.exec(buffer); match; match = BUBBLE_BREAK.exec(buffer)) {
+          await post(buffer.slice(0, match.index));
+          buffer = buffer.slice(match.index + match[0].length);
+          void adapter.startTyping(threadId).catch(() => undefined);
+        }
       }
+      const instead = last ? null : (end.instead?.(threadId, buffer) ?? null);
+      if (instead) last = instead;
+      const keep = !instead && (end.keepLast?.(threadId, buffer) ?? true);
+      if (keep && voice) {
+        const said = await voice.send(buffer);
+        if (said.posted) last = said.posted;
+        clearInterval(timer);
+        if (said.text) await post(said.text);
+      } else if (keep) await post(buffer);
+      if (!options?.signal?.aborted && end.after) {
+        const after = await end.after(threadId).catch(() => null);
+        if (after) last = after;
+        // The sticker that was to be the whole reply did not go out: say so after all.
+        else if (!keep && !instead) await post(buffer);
+      }
+      return last;
+    } finally {
+      clearInterval(timer);
     }
-    const keep = end.keepLast?.(threadId, buffer) ?? true;
-    if (keep) await post(buffer);
-    if (!options?.signal?.aborted && end.after) {
-      const after = await end.after(threadId).catch(() => null);
-      if (after) last = after;
-      // The sticker that was to be the whole reply did not go out: say so after all.
-      else if (!keep) await post(buffer);
-    }
-    return last;
   };
 }
 
@@ -108,6 +144,25 @@ async function answer<T>(response: Response): Promise<Answer<T>> {
 /** Her chat id in a private chat's thread id ("telegram:42"); null for anything else. */
 export function chatIdOf(threadId: string): string | null {
   return threadId.match(/^telegram:(-?\d+)$/)?.[1] ?? null;
+}
+
+/** "record_voice" while a voice message is being made. */
+export async function chatAction(config: TelegramConfig, chatId: string, action: "record_voice" | "typing"): Promise<void> {
+  await call(config, "sendChatAction", { chat_id: chatId, action });
+}
+
+/**
+ * One voice message (MP3, which Telegram shows as a voice message like OGG/Opus), and the id of the message it became.
+ * Throws with Telegram's reason when it is refused, as for someone whose privacy settings let no one send them one.
+ */
+export async function sendVoice(config: TelegramConfig, chatId: string, voice: { audio: Uint8Array; seconds: number }): Promise<string> {
+  const form = new FormData();
+  form.set("chat_id", chatId);
+  form.set("voice", new Blob([voice.audio], { type: "audio/mpeg" }), "voice.mp3");
+  if (voice.seconds > 0) form.set("duration", String(Math.max(1, Math.round(voice.seconds))));
+  const sent = await answer<{ message_id: number }>(await call(config, "sendVoice", form));
+  if (!sent.ok || !sent.result) throw new Error(`Telegram: ${sent.description ?? "sendVoice failed"}`);
+  return String(sent.result.message_id);
 }
 
 /** How a file goes to a chat: as a sticker (WebM, WebP, TGS), an animation (GIF) or a photo. */

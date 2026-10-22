@@ -60,6 +60,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // Stickers: one alone, one after words, two asked for in one reply (the second is refused), one drawn, a still WebP.
   if (said.includes("发两张") && last?.role === "tool" && toolResultsSince(prompt) === 1) return { tool: "send_sticker", input: { sticker: "test/love" } };
   if (said.includes("只发表情") && last?.role === "tool") return { text: "" };
+  // A voice message sent with send_voice, and nothing written after it.
+  if (said.includes("发条语音") && last?.role === "tool") return { text: "" };
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
   if (said.includes("只发表情") || said.includes("发两张") || said.includes("发表情")) return { tool: "send_sticker", input: { sticker: "test/wave" } };
   if (said.includes("发静图")) return { tool: "send_sticker", input: { sticker: "still/smile" } };
@@ -71,6 +73,15 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const tools = (options.tools ?? []).filter((t) => t.type === "function" && /sticker/.test(t.name)) as { name: string; description?: string }[];
     return { text: tools.map((t) => `${t.name}:${(t.description?.match(/^\S+\/\S+/gm) ?? []).join("|")}`).join("; ") || "没有" };
   }
+  if (said.includes("发条语音")) return { tool: "send_voice", input: { text: "晚安呀，[laughs] 早点睡。" } };
+  // Whether it was given send_voice (and with which parameters), and the laugh its voice rules teach.
+  if (said.includes("语音工具有哪些")) {
+    const voice = (options.tools ?? []).find((t) => t.type === "function" && t.name === "send_voice") as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
+    const rule = system.split("\n").find((line) => line.includes("voice message")) ?? "";
+    const laugh = rule.match(/\[laughs\]|\[laughter\]|<laugh>|\(laughs\)/)?.[0];
+    return { text: `工具:${voice ? Object.keys(voice.inputSchema?.properties ?? {}).join("|") : "没有"}；提示:${rule ? (laugh ?? "没有标记") : "没有"}` };
+  }
+  if (said.includes("带链接")) return { text: "你看这个 https://example.com/a <laugh> 好不好" };
   if (said.includes("读完再接MCP")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   if (said.includes("接上MCP")) return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "second" } };
   if (said.includes("断开MCP")) return { tool: "disconnect_mcp_server", input: { name: "second" } };

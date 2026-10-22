@@ -28,6 +28,14 @@ interface Env {
   CUSTOM_BASE_URL?: string;
   CUSTOM_FORMAT?: string;
   CHECKIN_SCHEDULE?: string;
+  // Voice messages (voice.ts): off (default), openrouter, elevenlabs or cartesia; the model and the voice it speaks in;
+  // mirror (a voice message is answered with one, default), always, or tool (only when the resident chooses to).
+  VOICE_PROVIDER?: string;
+  VOICE_MODEL?: string;
+  VOICE_ID?: string;
+  VOICE_REPLY?: string;
+  // Sends voice requests straight there instead of through AI Gateway (a proxy; the local tests).
+  VOICE_BASE_URL?: string;
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
   TG_API_BASE?: string;
@@ -38,5 +46,7 @@ interface Env {
   BRAVE_API_KEY?: string;
   PERPLEXITY_API_KEY?: string;
   CUSTOM_API_KEY?: string;
+  // Empty: AI Gateway uses the key stored on the gateway for the voice provider (BYOK).
+  VOICE_API_KEY?: string;
   WEB_KEY?: string;
 }

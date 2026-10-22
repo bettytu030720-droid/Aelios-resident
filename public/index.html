@@ -161,9 +161,31 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .card h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; color: var(--text-1); }
   .card > .hint { margin-bottom: 4px; }
   .field { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--panel-border); }
-  .card h2 + .field, .card > .hint + .field { border-top: 0; }
+  .card h2 + .field, .card > .field:first-of-type { border-top: 0; }
   .field .name { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--text-2); }
   .field .var { font-size: 11px; color: var(--text-4); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  /* Where a value comes from, only when it is worth a glance. */
+  .tag:empty { display: none; }
+  .tag { font-size: 11px; color: var(--text-4); border: 1px solid var(--panel-border); border-radius: 999px; padding: 0 7px; line-height: 18px;
+    word-break: break-all; }
+  .tag.saved { color: var(--text-3); }
+  .tag.needs { color: var(--coral); border-color: var(--mine-border); }
+  .config .status { margin: 2px 0 6px; padding: 8px 10px; border-radius: 12px; background: var(--bg-deep); font-size: 13px; color: var(--text-2); }
+  .config .status.needs { color: var(--coral); }
+  .more-toggle { margin-top: 2px; padding: 8px 0 2px; border: 0; background: transparent; color: var(--text-3); font-size: 13px; cursor: pointer; }
+  .more-toggle:hover { color: var(--text-1); }
+  /* The list the settings page opens on. */
+  .menu-wrap { display: flex; flex-direction: column; gap: 12px; }
+  .menu { border-radius: 18px; border: 1px solid var(--panel-border); background: var(--panel-bg); overflow: hidden; }
+  .menu-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 0; border-top: 1px solid var(--panel-border);
+    background: transparent; text-align: left; cursor: pointer; }
+  .menu-row:first-child { border-top: 0; }
+  .menu-row:hover { background: var(--panel-bg-strong); }
+  .menu-row .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .menu-row .title { font-size: 15px; color: var(--text-1); }
+  .menu-row .summary { font-size: 12px; color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu-row .summary.needs { color: var(--coral); }
+  .menu-row svg { flex: none; width: 16px; height: 16px; color: var(--text-4); }
   .field .row { display: flex; gap: 8px; }
   .field input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--panel-border);
     background: var(--bg-deep); outline: none; font-size: 15px; }
@@ -175,6 +197,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .choice { height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--panel-border); background: transparent; cursor: pointer; font-size: 13px; color: var(--text-2); }
   .choice:hover { border-color: var(--coral); }
   .choice.on { border-color: var(--coral); background: var(--mine-bg); color: var(--text-1); }
+  .choice.small { height: 28px; padding: 0 10px; font-size: 12px; }
   .choice:disabled { opacity: .45; cursor: default; }
   .field a.btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
   .field input[type=file] { display: none; }
@@ -236,11 +259,11 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   </template>
 
   <header x-show="authed">
-    <button class="icon-btn" type="button" x-show="view !== 'chat'" @click="view === 'config' ? closeConfig() : closeSettings()" aria-label="回到聊天" title="回到聊天">
+    <button class="icon-btn" type="button" x-show="view !== 'chat'" @click="view === 'config' ? configBack() : closeSettings()" :aria-label="view === 'config' && configSection ? '回到设置' : '回到聊天'" :title="view === 'config' && configSection ? '回到设置' : '回到聊天'">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
     <div x-show="view !== 'chat'">
-      <h1 x-text="view === 'config' ? '设置' : '人设'"></h1>
+      <h1 x-text="view === 'config' ? sectionTitle() : '人设'"></h1>
       <div class="sub">改完下一句就生效</div>
     </div>
     <button class="chip" type="button" x-show="view === 'chat'" @click="openPicker()" :title="'现在用 ' + currentModel() + '，点这里换'" aria-label="换模型">
@@ -302,21 +325,45 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     </details>
   </section>
 
-  <section class="config" x-show="authed && view === 'config'">
-    <p class="hint">这里存的优先；空着的用 Cloudflare 里同名的变量，那边也没有就用默认。key 只能填不能看。只有 TG_BOT_TOKEN、TG_WEBHOOK_SECRET、WEB_KEY 还得在 Cloudflare 里填。</p>
-    <template x-for="group in CONFIG_GROUPS" :key="group.title">
-      <div class="card">
-        <h2 x-text="group.title"></h2>
-        <p class="hint" x-show="group.hint" x-text="group.hint"></p>
+  <section class="config" x-ref="config" x-show="authed && view === 'config'">
+    <!-- The settings page opens on a short list; each row opens one section. -->
+    <template x-if="!configSection">
+      <div class="menu-wrap">
+        <div class="menu">
+          <template x-for="item in CONFIG_MENU" :key="item.id">
+            <button class="menu-row" type="button" @click="openSection(item.id)">
+              <span class="body">
+                <span class="title" x-text="item.title"></span>
+                <span class="summary" :class="sectionNeeds(item.id) ? 'needs' : ''" x-text="sectionSummary(item.id)"></span>
+              </span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+          </template>
+        </div>
+        <p class="hint">这里存的优先，空着的用 Cloudflare 里同名的变量，再没有就用默认。key 只能填不能看。TG_BOT_TOKEN、TG_WEBHOOK_SECRET、WEB_KEY 只能在 Cloudflare 里填。</p>
+        <div class="bar">
+          <div class="spacer"></div>
+          <button class="btn" type="button" @click="logout()">锁上网页门</button>
+        </div>
+      </div>
+    </template>
+
+    <template x-for="group in CONFIG_GROUPS" :key="group.id">
+      <div class="card" x-show="configSection === group.id">
+        <p class="hint" x-show="groupHint(group)" x-text="groupHint(group)"></p>
+        <p class="status" x-show="group.id === 'voice'" :class="sectionNeeds('voice') ? 'needs' : ''" x-text="voiceStatus()"></p>
         <template x-for="meta in group.fields" :key="meta.key">
-          <div class="field" x-show="field(meta.key)">
-            <div class="name"><span x-text="meta.label"></span><span class="var" x-text="meta.key"></span></div>
-            <p class="hint" x-show="meta.help" x-text="meta.help"></p>
+          <div class="field" x-show="field(meta.key) && shown(meta) && (!meta.more || configMore)">
+            <div class="name">
+              <span x-text="meta.label"></span>
+              <span class="tag" :class="tagClass(meta)" x-text="tagText(meta)"></span>
+            </div>
+            <p class="hint" x-show="helpFor(meta)" x-text="helpFor(meta)"></p>
             <template x-if="field(meta.key) && field(meta.key).kind === 'choice'">
               <div class="choices">
                 <template x-for="choice in field(meta.key).choices" :key="choice">
                   <button class="choice" type="button" :class="inEffect(meta) === choice ? 'on' : ''" :disabled="Boolean(configBusy)"
-                    @click="pickChoice(meta, choice)" x-text="choice"></button>
+                    @click="pickChoice(meta, choice)" x-text="choiceLabel(meta, choice)"></button>
                 </template>
               </div>
             </template>
@@ -331,19 +378,26 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   @click="saveConfig(meta.key, '')">清掉</button>
               </div>
             </template>
-            <span class="now" x-text="nowText(meta)"></span>
+            <div class="choices" x-show="picksFor(meta).length">
+              <template x-for="pick in picksFor(meta)" :key="pick">
+                <button class="choice small" type="button" :class="textInEffect(meta) === pick ? 'on' : ''" :disabled="Boolean(configBusy)"
+                  @click="pickText(meta, pick)" x-text="pick"></button>
+              </template>
+            </div>
             <p class="error" x-show="configError[meta.key]" x-text="configError[meta.key]"></p>
           </div>
         </template>
+        <button class="more-toggle" type="button" x-show="hasMore(group)" @click="configMore = !configMore"
+          x-text="configMore ? '收起 ▴' : '更多设置 ▾'"></button>
       </div>
     </template>
-    <div class="card">
-      <h2>别的 MCP</h2>
-      <p class="hint">填一个 MCP 服务的地址，它的工具就加进每一轮。要登录的点「去授权」；要 key 的把 key 填在这里，只能填不能看，默认当 Bearer 发，写成 x-api-key: 你的key 就放在那个头里。也可以在聊天里跟它说「接上 …」，但 key 和带 key 的地址别在聊天里发，聊天会被记下来。每个工具的说明每轮都要带上，接得越多越费。</p>
+
+    <div class="card" x-show="configSection === 'mcp'">
+      <p class="hint">填一个 MCP 服务的地址，它的工具就加进来。要登录的点「去授权」。key 只在这里填，别在聊天里发。接得越多，每轮越费。</p>
       <template x-for="server in mcp.servers" :key="server.id">
         <div class="field">
-          <div class="name"><span x-text="server.name"></span><span class="var" x-text="server.url"></span></div>
-          <span class="now" x-text="mcpText(server)"></span>
+          <div class="name"><span x-text="server.name"></span><span class="tag" x-text="mcpText(server)"></span></div>
+          <span class="now" x-text="server.url"></span>
           <p class="error" x-show="server.error && server.state !== 'ready'" x-text="server.error"></p>
           <div class="row">
             <a class="btn primary" x-show="server.authUrl" :href="server.authUrl || '#'" target="_blank" rel="noopener noreferrer" @click="openAuth(server, $event)">去授权</a>
@@ -354,12 +408,13 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
       </template>
       <div class="field">
-        <div class="name"><span>接一个</span><span class="var" x-show="!mcp.servers.length">还没接</span></div>
+        <div class="name"><span>接一个</span></div>
         <div class="row"><input x-model="mcpDraft.url" type="url" placeholder="https://…/mcp" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="MCP 地址"></div>
         <div class="row">
           <input x-model="mcpDraft.name" type="text" placeholder="名字，可不填" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="名字">
           <input x-model="mcpDraft.key" type="password" placeholder="key，可不填" autocomplete="off" aria-label="key">
         </div>
+        <p class="hint">key 默认当 Bearer 发；写成「x-api-key: 你的key」就放进那个头。</p>
         <div class="row">
           <div class="spacer"></div>
           <button class="btn primary" type="button" :disabled="Boolean(mcpBusy) || !mcpDraft.url.trim()" @click="addMcp()" x-text="mcpBusy === 'add' ? '连接中…' : '接上'"></button>
@@ -367,11 +422,11 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <p class="error" x-show="mcpError" x-text="mcpError"></p>
       </div>
     </div>
-    <div class="card">
-      <h2>表情包</h2>
-      <p class="hint">聊天时它偶尔发一张，一次最多一张，你难过或说正事时不发。它也能自己画像素表情，画的放进「它自己画的」。开着的包，每张的「什么时候用」每轮都要带给模型，包越多越费。</p>
+
+    <div class="card" x-show="configSection === 'stickers'">
+      <p class="hint">聊天时它偶尔发一张，一次最多一张，你难过或说正事时不发。它也会自己画，画的放进「它自己画的」。开着的包每轮都要带给模型，包越多越费。</p>
       <div class="field">
-        <div class="name"><span>发表情包</span><span class="var">STICKERS</span></div>
+        <div class="name"><span>发表情包</span></div>
         <div class="choices" x-show="field('STICKERS')">
           <template x-for="choice in ['on', 'off']" :key="choice">
             <button class="choice" type="button" :class="inEffect(STICKER_META) === choice ? 'on' : ''" :disabled="Boolean(configBusy)"
@@ -382,7 +437,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <p class="hint" x-show="stickers.left" x-text="'开着的包加起来太多了，后面 ' + stickers.left + ' 张没带给模型（每轮最多带约 6000 token、200 张）。把不常用的包关掉就好。'"></p>
       <template x-for="pack in stickers.packs" :key="pack.id">
         <div class="field">
-          <div class="name"><span x-text="pack.name"></span><span class="var" x-text="packText(pack)"></span></div>
+          <div class="name"><span x-text="pack.name"></span><span class="tag" x-text="packText(pack)"></span></div>
           <p class="hint" x-show="pack.description || pack.license" x-text="[pack.description, pack.license].filter(Boolean).join(' ')"></p>
           <div class="row">
             <button class="choice" type="button" :class="pack.enabled ? 'on' : ''" :disabled="Boolean(stickerBusy)" @click="togglePack(pack)" x-text="pack.enabled ? '开着' : '关着'"></button>
@@ -412,8 +467,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
       </template>
       <div class="field">
-        <div class="name"><span>导入一个包</span><span class="var" x-show="!stickers.packs.length">还没有</span></div>
-        <p class="hint">Telegram 的贴纸包：在聊天里点一下那张贴纸，弹出整包后点右上角，「复制链接」就是 t.me/addstickers/… 的链接，贴到下面。自己做的：把 GIF（PNG、WebP 也行）打成一个 zip，文件名就是什么时候用，比如「开心.gif」；要写得细一点，放一个 pack.json，格式见 README。同名的包再导一次会替换旧的。</p>
+        <div class="name"><span>导入一个包</span></div>
         <div class="row">
           <input x-model="stickerLink" type="url" placeholder="t.me/addstickers/… 或 zip 的网址" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="贴纸包链接"
             @keydown.enter.prevent="importStickerLink()">
@@ -425,13 +479,13 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             <span x-text="stickerBusy === 'file' ? '导入中…' : '选一个 zip'"></span>
           </label>
         </div>
+        <details class="packs">
+          <summary>怎么导入</summary>
+          <p class="hint">Telegram 的贴纸包：在聊天里点一下那张贴纸，弹出整包后点右上角「复制链接」，贴到上面。自己做的：把 GIF（PNG、WebP 也行）打成一个 zip，文件名就是什么时候用，比如「开心.gif」；要写细一点放一个 pack.json，格式见 README。同名的包再导一次会替换旧的。</p>
+        </details>
         <p class="error" x-show="stickerError" x-text="stickerError"></p>
         <p class="hint" x-show="stickerSkipped.length" x-text="'没导进来的：' + stickerSkipped.join('；')"></p>
       </div>
-    </div>
-    <div class="bar">
-      <div class="spacer"></div>
-      <button class="btn" type="button" @click="logout()">锁上网页门</button>
     </div>
   </section>
 
@@ -486,47 +540,72 @@ function resident() {
   var RESULTS_MAX = 60;
   // Shown first in the picker, under the ones used recently.
   var FAVORITES = ['anthropic/claude-opus-5.5', 'anthropic/claude-sonnet-5.5', 'anthropic/claude-fable-5.1', 'anthropic/claude-haiku-5.5', '@cf/zai-org/glm-4.7-flash'];
-  // The settings page, in the order shown. Defaults are the code's (README, 设置).
+  // The settings page: a list of sections (CONFIG_MENU), each opened on its own. A field marked `more` waits behind
+  // 更多设置. `labels` names a choice in words; `helps`, `defs` and `picks` depend on the voice provider picked.
+  // Defaults are the code's (README, 设置).
+  var ON_OFF = { on: '开', off: '关' };
   var CONFIG_GROUPS = [
-    { title: '长期记忆 Aelios', hint: '填了地址和 key，聊天就从 Aelios 过：它想起旧事、它记下来，模型用它那边配好的供应商和 key。不填就没有长期记忆。', fields: [
+    { id: 'aelios', title: '长期记忆', hint: '填了地址和 key，聊天就从 Aelios 过：它记得旧事，模型和 key 也用 Aelios 那边配好的。不填就没有长期记忆。', fields: [
       { key: 'AELIOS_URL', label: '地址', placeholder: 'https://….workers.dev' },
-      { key: 'AELIOS_API_KEY', label: 'key', help: '跟 Aelios 那边 CHATBOX_API_KEY、IM_API_KEY、MEMORY_MCP_API_KEY 任意一把同一个值；用别的空间只能用 CHATBOX_API_KEY。' },
-      { key: 'AELIOS_NAMESPACE', label: '记忆空间', help: '工具、开机包、交接信用这个空间；聊天记进哪个空间看下面那个身份在 Aelios 里的设置，两边对上。', def: 'default' },
-      { key: 'AELIOS_IDENTITY', label: '身份', help: 'Aelios 后台给住户建的身份名。聊天以它的身份从 Aelios 过，用的模型要在它的主模型里。', def: '这把 key 的第一个身份' }
+      { key: 'AELIOS_API_KEY', label: 'key', help: 'Aelios 的 CHATBOX_API_KEY（IM_API_KEY、MEMORY_MCP_API_KEY 也行）。' },
+      { key: 'AELIOS_IDENTITY', label: '身份', help: 'Aelios 里给住户建的身份，用的模型要在它的主模型里。', def: '这把 key 的第一个身份', more: true },
+      { key: 'AELIOS_NAMESPACE', label: '记忆空间', help: '记忆工具、开机包、交接信用哪个空间，跟身份在 Aelios 里的设置对上。', def: 'default', more: true }
     ] },
-    { title: 'Telegram', fields: [
-      { key: 'TG_ALLOWED', label: '谁能跟它说话', help: '@用户名或 chat id，逗号隔开。都不填就谁都不回。', placeholder: '@your_name' }
+    { id: 'chat', title: '聊天', fields: [
+      { key: 'TG_ALLOWED', label: '谁能在 Telegram 上跟它说话', help: '@用户名或 chat id，逗号隔开。空着谁都不回。', placeholder: '@your_name' },
+      { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
+      { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
     ] },
-    { title: '时间', fields: [
-      { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' },
-      { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: 'every day at 09:00、every weekday at 21:30、every 3 hours 这种写法。不填就不主动找。', def: '不主动找' }
+    { id: 'voice', title: '语音', fields: [
+      { key: 'VOICE_PROVIDER', label: '发语音用哪家', def: 'off',
+        labels: { off: '不发', elevenlabs: 'ElevenLabs', cartesia: 'Cartesia', openrouter: 'OpenRouter' },
+        helps: { '': 'MiniMax、Gemini、OpenAI 这些选 OpenRouter。', off: 'MiniMax、Gemini、OpenAI 这些选 OpenRouter。' } },
+      { key: 'VOICE_ID', label: '声音', needs: 'VOICE_PROVIDER',
+        defs: { openrouter: '模型自己的' },
+        helps: { elevenlabs: '从 ElevenLabs 的声音库复制 voice id，自己克隆的也行。', cartesia: '从 Cartesia 的声音库复制 voice id。', openrouter: '声音的名字，比如 Gemini 的 Kore。可以不填。' } },
+      { key: 'VOICE_MODEL', label: '模型', needs: 'VOICE_PROVIDER',
+        defs: { elevenlabs: 'eleven_v4', cartesia: 'sonic-3.6' },
+        helps: { elevenlabs: 'v3、v4 会用 [laughs] 这类语气标记。', openrouter: '点一个，或填 OpenRouter 上的模型 id。笑、叹气的写法跟着模型走。' },
+        picks: {
+          openrouter: ['minimax/speech-2.8-hd', 'google/gemini-3.8-flash-tts', 'elevenlabs/eleven-v4', 'openai/gpt-4o-mini-tts-2025-12-15', 'fish-audio/s2.1-pro-free:free'],
+          elevenlabs: ['eleven_v4', 'eleven_v3', 'eleven_multilingual_v2', 'eleven_flash_v2_5'],
+          cartesia: ['sonic-3.6', 'sonic-3.5']
+        } },
+      { key: 'VOICE_REPLY', label: '什么时候发语音', def: 'mirror', needs: 'VOICE_PROVIDER',
+        labels: { mirror: '你发语音才回语音', always: '每条都发语音', tool: '它想发才发' } },
+      { key: 'VOICE_API_KEY', label: 'key', needs: 'VOICE_PROVIDER',
+        help: 'AI Gateway 的 Provider Keys 里存了这一家的 key（别名 default）就不用填。两边都没有时，Cloudflare 可能从 Gateway 的预付额度里扣。' },
+      { key: 'VOICE_BASE_URL', label: '直连地址', help: '一般不填。填了就不走 AI Gateway，key 要填在上面。', needs: 'VOICE_PROVIDER', more: true }
     ] },
-    { title: '思考', fields: [
-      { key: 'THINKING_EFFORT', label: 'Claude 想多久', help: 'low 回得最快最省，max 想得最久最贵。auto 用模型自己的默认：Opus 5.5 是 medium，Sonnet 5.5 是 high。只管 Claude（从 Aelios 过，或者自己 Anthropic 格式的供应商）；换档后第一句要重写一次缓存。', def: 'auto' }
+    { id: 'web', title: '搜网和读网页', fields: [
+      { key: 'WEB_SEARCH', label: '搜网', def: 'on', help: '先用你自己的搜索 key（在「更多设置」里填），都没有就用 Cloudflare 的，按次扣 Gateway 额度。',
+        labels: { on: '开', off: '关', ceramic: 'Ceramic', exa: 'Exa', linkup: 'Linkup' } },
+      { key: 'WEB_FETCH', label: '读网页', def: 'on', labels: ON_OFF },
+      { key: 'WEB_LEARN', label: '搜到的知识存进 Aelios', help: '挑几条长期都对的存起来，下次聊到不用再搜。要接着 Aelios。', def: 'on', labels: ON_OFF },
+      { key: 'TAVILY_API_KEY', label: 'Tavily key', help: '自己的搜索 key，有几个填几个，按 Tavily、Brave、Perplexity 的顺序用。', more: true },
+      { key: 'BRAVE_API_KEY', label: 'Brave key', more: true },
+      { key: 'PERPLEXITY_API_KEY', label: 'Perplexity key', more: true },
+      { key: 'WEB_FETCH_MODEL', label: '压长网页用的模型', help: '主模型能填的 id 这里都能填。off 不压，只截断。', def: '@cf/qwen/qwen3-30b-a3b-fp8', more: true }
     ] },
-    { title: '交接信和缓存', fields: [
-      { key: 'CACHE_TTL', label: 'Claude 的缓存留多久', help: '1 小时的缓存写入是输入价的 2 倍，5 分钟的是 1.25 倍。', def: '1h' },
-      { key: 'LETTER_IDLE_MINUTES', label: '没动静多少分钟写交接信', help: '最多比缓存时长少 1 分钟。填 off 只靠 /handoff。', def: '55（缓存 5m 时 4）' },
-      { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token。比这更早的才收进信里。', def: '6000' }
+    { id: 'thinking', title: '思考和交接信', fields: [
+      { key: 'THINKING_EFFORT', label: 'Claude 想多久', help: 'low 最快最省，max 最久最贵。只管 Claude；换了以后第一句要重写一次缓存。', def: 'auto',
+        labels: { auto: '模型默认' } },
+      { key: 'CACHE_TTL', label: 'Claude 的缓存留多久', help: '1 小时的写入贵一点，停一会儿再聊还能读缓存。', def: '1h', labels: { '1h': '1 小时', '5m': '5 分钟' } },
+      { key: 'LETTER_IDLE_MINUTES', label: '多久没动静写交接信', help: '分钟，最多比缓存时长少 1 分钟。off 只靠 /handoff。', def: '55（缓存 5m 时 4）', more: true },
+      { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token，更早的才收进信里。', def: '6000', more: true }
     ] },
-    { title: '自己的供应商', hint: '没接 Aelios 时才用：模型填 custom/模型名 时用这里的地址和 key。接了 Aelios 就在 Aelios 后台配。', fields: [
+    { id: 'custom', title: '自己的供应商', hint: '没接 Aelios 时用：模型填 custom/模型名 就走这里。接了 Aelios 就在 Aelios 后台配。', fields: [
       { key: 'CUSTOM_BASE_URL', label: '地址', help: '写到 /v1 为止。', placeholder: 'https://…/v1' },
       { key: 'CUSTOM_API_KEY', label: 'key' },
-      { key: 'CUSTOM_FORMAT', label: '格式', help: 'openai 是 chat completions；anthropic 是 Messages，带缓存。', def: 'openai' }
-    ] },
-    { title: 'Cloudflare', fields: [
-      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', help: '搜网走哪个 Gateway；没接 Aelios 时 Claude 这类厂商模型也走它。', def: 'default' }
-    ] },
-    { title: '搜网和读网页', hint: '自己的搜索 key 按 Tavily、Brave、Perplexity 的顺序轮着用，都没填才用 Cloudflare 的 Web Search。', fields: [
-      { key: 'WEB_SEARCH', label: '搜网', help: 'off 关掉；ceramic、exa、linkup 是自己的 key 都失败后用 Cloudflare 的哪一家。', def: 'on' },
-      { key: 'TAVILY_API_KEY', label: 'Tavily key' },
-      { key: 'BRAVE_API_KEY', label: 'Brave key' },
-      { key: 'PERPLEXITY_API_KEY', label: 'Perplexity key' },
-      { key: 'WEB_LEARN', label: '搜到的存进 Aelios', help: '搜过网以后，用下面读网页那个模型挑出长期都对的知识（最多 3 条，不含天气、新闻、价格这类会变的），带日期存进 Aelios，下次聊到就想得起来。要接着 Aelios 才有用。', def: 'on' },
-      { key: 'WEB_FETCH', label: '读网页', def: 'on' },
-      { key: 'WEB_FETCH_MODEL', label: '压长网页用的模型', help: '主模型能填的 id 这里都能填：@cf/ 开头的在 Cloudflare 上跑，别的接了 Aelios 就从 Aelios 过（不记）。off 不压，只截断。', def: '@cf/qwen/qwen3-30b-a3b-fp8' }
+      { key: 'CUSTOM_FORMAT', label: '格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } },
+      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', help: '搜网、语音，和没接 Aelios 时的 Claude 走哪个 Gateway。', def: 'default', more: true }
     ] }
   ];
+  // The rows of the settings page, in order: the groups above, and the two sections with their own cards.
+  var CONFIG_MENU = ['aelios', 'chat', 'voice', 'stickers', 'web', 'mcp', 'thinking', 'custom'].map(function (id) {
+    var group = CONFIG_GROUPS.find(function (g) { return g.id === id; });
+    return { id: id, title: group ? group.title : { stickers: '表情包', mcp: '别的 MCP' }[id] };
+  });
   var HEART = '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>';
   // Styles inside deep-chat's shadow root. CSS variables from :root reach in, so the theme switch applies there too.
   var CHAT_CSS = [
@@ -615,7 +694,10 @@ function resident() {
     view: 'chat',
     PERSONA_MAX: PERSONA_MAX,
     CONFIG_GROUPS: CONFIG_GROUPS,
-    config: { fields: [] },
+    CONFIG_MENU: CONFIG_MENU,
+    config: { fields: [], voice: { hears: null, gap: 'off' } },
+    configSection: '',
+    configMore: false,
     configDraft: {},
     configError: {},
     configBusy: '',
@@ -676,7 +758,7 @@ function resident() {
         ['viewportChanged', 'safeAreaChanged', 'contentSafeAreaChanged'].forEach(function (event) { tg.onEvent(event, viewport); });
         tg.onEvent('activated', function () { if (self.authed) self.refresh().catch(function () {}); });
         this.syncTelegramTheme();
-        if (tg.BackButton) tg.BackButton.onClick(function () { if (self.picker.open) self.closePicker(); else if (self.view === 'config') self.closeConfig(); else self.closeSettings(); });
+        if (tg.BackButton) tg.BackButton.onClick(function () { if (self.picker.open) self.closePicker(); else if (self.view === 'config') self.configBack(); else self.closeSettings(); });
         this.$watch('view', function () { self.syncTelegramBack(); });
         this.$watch('picker.open', function () { self.syncTelegramBack(); });
         await this.check('');
@@ -1176,19 +1258,146 @@ function resident() {
       if (!f || choice === this.inEffect(meta)) return;
       this.saveConfig(meta.key, choice === (f.fromWorker.toLowerCase() || meta.def) ? '' : choice);
     },
+    // A setting that only matters once another is on (the voice ones once a provider is picked).
+    shown(meta) {
+      if (!meta.needs) return true;
+      var f = this.field(meta.needs);
+      return Boolean(f) && (f.value || f.fromWorker.toLowerCase() || 'off') !== 'off';
+    },
+    // A default that depends on the voice provider, such as the voice model.
+    defFor(meta) {
+      if (!meta.defs) return meta.def;
+      var f = this.field('VOICE_PROVIDER');
+      return f ? meta.defs[f.value || f.fromWorker.toLowerCase()] : undefined;
+    },
+    picksFor(meta) {
+      if (!meta.picks) return [];
+      var f = this.field('VOICE_PROVIDER');
+      return (f && meta.picks[f.value || f.fromWorker.toLowerCase()]) || [];
+    },
+    textInEffect(meta) {
+      var f = this.field(meta.key);
+      return f ? (f.value || f.fromWorker || this.defFor(meta) || '') : '';
+    },
+    // Like pickChoice: picking what is already in effect saves nothing.
+    pickText(meta, pick) {
+      var f = this.field(meta.key);
+      if (!f || pick === this.textInEffect(meta)) return;
+      this.saveConfig(meta.key, pick === (f.fromWorker || this.defFor(meta)) ? '' : pick);
+    },
     placeholderFor(meta) {
       var f = this.field(meta.key);
       if (f && f.kind === 'secret') return f.saved || f.workerHas ? '已填，要换就填新的' : '没填';
       if (f && f.fromWorker) return f.fromWorker;
-      return meta.placeholder || meta.def || '';
+      return meta.placeholder || this.defFor(meta) || '';
     },
-    nowText(meta) {
+    // ---- the settings page's sections ----
+    metaOf(key) {
+      for (var i = 0; i < CONFIG_GROUPS.length; i++) {
+        var meta = CONFIG_GROUPS[i].fields.find(function (m) { return m.key === key; });
+        if (meta) return meta;
+      }
+      return key === 'STICKERS' ? this.STICKER_META : { key: key };
+    },
+    sectionTitle() {
+      var self = this;
+      var item = CONFIG_MENU.find(function (m) { return m.id === self.configSection; });
+      return item ? item.title : '设置';
+    },
+    openSection(id) {
+      this.configSection = id;
+      this.configMore = false;
+      var box = this.$refs && this.$refs.config;
+      if (box) box.scrollTop = 0;
+    },
+    // Back one step: from a section to the list, from the list to the chat.
+    configBack() {
+      if (!this.configSection) return this.closeConfig();
+      this.configSection = '';
+      var box = this.$refs && this.$refs.config;
+      if (box) box.scrollTop = 0;
+    },
+    choiceLabel(meta, choice) {
+      return (meta.labels && meta.labels[choice]) || choice;
+    },
+    helpFor(meta) {
+      if (meta.helps) {
+        var provider = this.inEffect(this.metaOf('VOICE_PROVIDER'));
+        if (meta.helps[provider] !== undefined) return meta.helps[provider];
+      }
+      return meta.help || '';
+    },
+    hasMore(group) {
+      var self = this;
+      return group.fields.some(function (meta) { return meta.more && self.field(meta.key) && self.shown(meta); });
+    },
+    groupHint(group) {
+      return group.hint || '';
+    },
+    // Only what is worth a glance: saved here, set in Cloudflare (and as which variable), or still to be filled in.
+    tagText(meta) {
       var f = this.field(meta.key);
       if (!f) return '';
-      if (f.kind === 'secret') return f.saved ? '用的是这里存的' : (f.workerHas ? '用的是 Cloudflare 里填的' : '没填');
-      if (f.value) return '用的是这里存的：' + f.value;
-      if (f.fromWorker) return '没存，用 Cloudflare 里填的：' + f.fromWorker;
-      return '没存，用默认' + (meta.def ? '：' + meta.def : '');
+      // What the server says voice messages still wait for (it knows whether AI Gateway can supply the key).
+      if (this.config.voice && this.config.voice.gap === meta.key) return '要填';
+      if (f.kind === 'secret') return f.saved ? '已存' : (f.workerHas ? 'Cloudflare：' + meta.key : '');
+      if (f.value) return f.kind === 'choice' ? '' : '已存';
+      if (f.fromWorker) return 'Cloudflare：' + meta.key;
+      return meta.defs && !this.defFor(meta) ? '要填' : '';
+    },
+    tagClass(meta) {
+      var text = this.tagText(meta);
+      return text === '要填' ? 'needs' : (text === '已存' ? 'saved' : '');
+    },
+    voiceGapLabel() {
+      return { VOICE_ID: '声音', VOICE_MODEL: '模型', VOICE_API_KEY: '一把 key' }[this.config.voice && this.config.voice.gap] || '';
+    },
+    voiceStatus() {
+      var voice = this.config.voice || {};
+      var hear = voice.hears === 'scribe' ? '你的语音条用 ElevenLabs 转成文字给它' : voice.hears === 'whisper' ? '你的语音条会先转成文字给它' : '听不了语音条：Worker 没绑 AI';
+      if (voice.gap === 'off') return hear + '；它不发语音。';
+      if (voice.gap) return '还差' + this.voiceGapLabel() + '，填好它才发语音。';
+      var provider = this.metaOf('VOICE_PROVIDER');
+      var reply = this.metaOf('VOICE_REPLY');
+      return hear + '；用 ' + this.choiceLabel(provider, this.inEffect(provider)) + ' 说话，' + this.choiceLabel(reply, this.inEffect(reply)) + '。';
+    },
+    sectionNeeds(id) {
+      var voice = this.config.voice || {};
+      return id === 'voice' && Boolean(voice.gap) && voice.gap !== 'off';
+    },
+    // The one line under each row of the list.
+    sectionSummary(id) {
+      var self = this;
+      var text = function (key) { return self.textInEffect(self.metaOf(key)); };
+      var choice = function (key) { var meta = self.metaOf(key); return self.choiceLabel(meta, self.inEffect(meta)); };
+      var host = function (url) { try { return new URL(url).host; } catch (e) { return url; } };
+      if (!this.config.fields.length) return '';
+      switch (id) {
+        case 'aelios':
+          if (!text('AELIOS_URL')) return '没接';
+          return (this.aelios ? '接着 ' : '填了，还没连上 ') + host(text('AELIOS_URL'));
+        case 'chat':
+          return (text('TG_ALLOWED') || '谁都不回') + ' · ' + (text('CHECKIN_SCHEDULE') || '不主动找');
+        case 'voice': {
+          var voice = this.config.voice || {};
+          if (voice.gap === 'off') return '只听，不发语音';
+          if (voice.gap) return '还差' + this.voiceGapLabel();
+          return choice('VOICE_PROVIDER') + ' · ' + choice('VOICE_REPLY');
+        }
+        case 'stickers':
+          if (this.inEffect(this.STICKER_META) === 'off') return '关';
+          return '开 · ' + (this.stickers.packs.length ? this.stickers.packs.length + ' 个包' : '还没有包');
+        case 'web':
+          return '搜网' + (this.inEffect(this.metaOf('WEB_SEARCH')) === 'off' ? '关' : '开') + ' · 读网页' + choice('WEB_FETCH');
+        case 'mcp':
+          return this.mcp.servers.length ? this.mcp.servers.map(function (server) { return server.name; }).join('、') : '没接';
+        case 'thinking':
+          return 'Claude 想多久：' + choice('THINKING_EFFORT') + ' · 缓存 ' + choice('CACHE_TTL');
+        case 'custom':
+          return text('CUSTOM_BASE_URL') ? host(text('CUSTOM_BASE_URL')) : '没填';
+        default:
+          return '';
+      }
     },
     fillDrafts() {
       var drafts = {};
@@ -1203,6 +1412,8 @@ function resident() {
         return;
       }
       this.fillDrafts();
+      this.configSection = '';
+      this.configMore = false;
       this.configError = {};
       this.mcpError = '';
       this.stickerError = '';
