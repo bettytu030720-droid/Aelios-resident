@@ -21,6 +21,7 @@ import {
 } from "@cloudflare/think";
 import {
   defaultChatSdkEvent,
+  toMessengerUserMessage,
   type MessengerConcurrency,
   type MessengerContext,
   type MessengerEvent,
@@ -40,16 +41,19 @@ import { customModel, isCustom } from "./custom";
 import { foldIntoLetter, tokensOf } from "./fold";
 import { withPictures, type Download } from "./pictures";
 import {
+  chatAction,
   chatIdOf,
   downloadFile,
   getStickerSet,
   mediaKindOf,
   sendMedia,
+  sendVoice,
   splitIntoBubbles,
   useBubbles,
   type BubbleAdapter,
   type MediaKind,
-  type TelegramConfig
+  type TelegramConfig,
+  type VoiceOut
 } from "./telegram";
 import { StickerStore, type PackView, type RemoteSticker } from "./sticker-store";
 import {
@@ -69,6 +73,23 @@ import {
   type Drawing,
   type StickerFile
 } from "./stickers";
+import {
+  SPEAK_MAX_CHARS,
+  VOICE_MARK,
+  dialectOf,
+  heard,
+  hearing,
+  hearsBy,
+  needsText,
+  noteVoiceLengths,
+  providerOf,
+  replyOf,
+  speakable,
+  speaker,
+  speakingGap,
+  unmarked,
+  voiceRules
+} from "./voice";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { searchEngines, searchSource } from "./web/search";
@@ -368,7 +389,8 @@ export class Resident extends Think<Env> {
 
   // Think asks for this on every turn (nothing freezes it), so a persona saved on the web applies to the next message.
   override getSystemPrompt(): string {
-    return `${this.personas(1)[0]?.text || DEFAULT_PERSONA}\n\n${CHAT_RULES}`;
+    const voice = voiceRules(this.cfg);
+    return `${this.personas(1)[0]?.text || DEFAULT_PERSONA}\n\n${CHAT_RULES}${voice ? `\n${voice}` : ""}`;
   }
 
   /** Personas saved on the web page, newest first. */
@@ -396,13 +418,16 @@ export class Resident extends Think<Env> {
         interruptedResponseText: "刚才回到一半断了，再发一次好吗？"
       },
       toEvent: (input) =>
-        stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), this.tz)
+        noteVoiceLengths(stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), this.tz))
     });
     const adapter = definition.adapter as unknown as BubbleAdapter & { downloadFile: Download };
     useBubbles(adapter, {
       // A reply that is only a sticker: the sticker is the reply, not "I said nothing".
       keepLast: (thread, text) => !(text.trim() === EMPTY_REPLY && this.#outbox.get(`tg:${thread}`)?.length),
-      after: (thread) => this.flushStickers(`tg:${thread}`, chatIdOf(thread))
+      after: (thread) => this.flushStickers(`tg:${thread}`, chatIdOf(thread)),
+      voice: (thread) => this.voiceReply(thread),
+      // send_voice said it all and the model wrote nothing more: no "I said nothing" line after it.
+      instead: (_thread, text) => (text.trim() === EMPTY_REPLY ? this.#spoke : null)
     });
     this.#telegramFile = (fileId) => adapter.downloadFile(fileId);
     return { telegram: definition };
@@ -411,7 +436,15 @@ export class Resident extends Think<Env> {
   /** Downloads a file she sent on Telegram (set by getMessengers). */
   #telegramFile: Download | null = null;
 
-  /** A Telegram turn: the photos she sent go into her message as pictures (pictures.ts). */
+  /** Whether her messages in the turn now running had a voice message, so the reply can be one too. */
+  #heardVoice = false;
+  /** The voice message send_voice sent in the turn now running, if it did. */
+  #spoke: { id: string; threadId: string } | null = null;
+
+  /**
+   * A Telegram turn: the voice messages she sent go into her message as text (voice.ts), and the photos as pictures
+   * (pictures.ts).
+   */
   override async chatWithMessengerContext(
     userMessage: string | UIMessage,
     callback: StreamCallback,
@@ -420,8 +453,88 @@ export class Resident extends Think<Env> {
   ): Promise<void> {
     if (!this.#telegramFile) this.getMessengers();
     const download = this.#telegramFile;
-    const message = typeof userMessage === "string" || !download ? userMessage : await withPictures(userMessage, context, download);
+    this.#heardVoice = false;
+    let message = userMessage;
+    if (typeof message !== "string" && download) {
+      const listened = await heard(context, download, hearing(this.cfg));
+      if (listened) {
+        this.#heardVoice = true;
+        message = { ...message, parts: toMessengerUserMessage(listened).parts };
+      }
+      message = await withPictures(message, listened ?? context, download);
+    }
     return super.chatWithMessengerContext(message, callback, context, options);
+  }
+
+  /** Her Telegram chat, once she has written from there. */
+  private async herChat(): Promise<string | null> {
+    const thread = await this.ctx.storage.get<string>("tg_thread");
+    return thread ? chatIdOf(thread) : null;
+  }
+
+  /** How this reply goes out as a voice message, or null to post it as text (VOICE_REPLY, voice.ts). */
+  private voiceReply(threadId: string): VoiceOut | null {
+    const mode = replyOf(this.cfg);
+    if (mode === "tool" || (mode === "mirror" && !this.#heardVoice)) return null;
+    const chat = chatIdOf(threadId);
+    if (!chat || !speaker(this.cfg)) return null;
+    return {
+      recording: () => chatAction(this.telegramConfig(), chat, "record_voice"),
+      send: async (text) => {
+        const asText = unmarked(text, dialectOf(this.cfg));
+        const sent = await this.speakTo(chat, text);
+        if ("error" in sent) return { posted: null, text: asText };
+        return { posted: { id: `${chat}:${sent.id}`, threadId }, text: needsText(text) ? asText : "" };
+      }
+    };
+  }
+
+  /**
+   * Say a reply in the voice set up on the settings page and send it to a Telegram chat. Why it was not sent comes
+   * back instead, and is kept for /status.
+   */
+  private async speakTo(chat: string, text: string, style?: string): Promise<{ id: string } | { error: string }> {
+    const speak = speaker(this.cfg);
+    const said = speakable(text);
+    if (!speak) return { error: "voice messages are not set up" };
+    if (!said) return { error: "nothing to say aloud" };
+    if (said.length > SPEAK_MAX_CHARS) return { error: `too long for a voice message (${said.length} characters; at most ${SPEAK_MAX_CHARS})` };
+    try {
+      const id = await sendVoice(this.telegramConfig(), chat, await speak(said, { style }));
+      await this.ctx.storage.delete("voice_error");
+      return { id };
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      console.error("voice: no voice message sent", { error: reason });
+      await this.ctx.storage.put("voice_error", { at: Date.now(), reason });
+      return { error: reason };
+    }
+  }
+
+  /** send_voice, while a voice is set up and not every reply is a voice message already. */
+  private voiceTools(): ToolSet {
+    if (!speaker(this.cfg) || replyOf(this.cfg) === "always") return {};
+    const said = z.string().describe("What to say, written the way you would say it.");
+    // Only models that take a description of the delivery are offered one.
+    const inputSchema = dialectOf(this.cfg).style
+      ? z.object({ text: said, style: z.string().optional().describe("How to say it, in a few words, like: sleepy and soft.") })
+      : z.object({ text: said });
+    return {
+      send_voice: tool({
+        description:
+          "Send them a voice message on Telegram, in your voice. It is not shown as text, so don't write the same words " +
+          "again; if there is nothing else to say, end your turn without writing anything.",
+        inputSchema: inputSchema as z.ZodType<{ text: string; style?: string }>,
+        execute: async ({ text, style: how }) => {
+          const chat = await this.herChat();
+          if (!chat) return "Not sent: they have not written to you on Telegram yet.";
+          const sent = await this.speakTo(chat, text, how);
+          if ("error" in sent) return `Not sent (${sent.error}). Say it in text instead.`;
+          this.#spoke = { id: `${chat}:${sent.id}`, threadId: `telegram:${chat}` };
+          return "Sent as a voice message.";
+        }
+      })
+    };
   }
 
   override getTools(): ToolSet {
@@ -437,7 +550,7 @@ export class Resident extends Think<Env> {
       });
     }
     if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache()));
-    Object.assign(tools, this.stickerTools(), this.mcpManageTools(), this.mcpTools());
+    Object.assign(tools, this.stickerTools(), this.voiceTools(), this.mcpManageTools(), this.mcpTools());
     return tools;
   }
 
@@ -769,6 +882,7 @@ export class Resident extends Think<Env> {
   override async beforeTurn(ctx: TurnContext): Promise<TurnConfig> {
     // A failed turn can finish before an assistant row exists, so no response hook is guaranteed.
     this.#drafts.clear();
+    this.#spoke = null;
     this.#draftActive = null;
     if (ctx.requestId && !this.#letterPromptId) {
       const via = ctx.messenger ? "telegram" : ctx.trigger === "scheduled" || ctx.trigger === "submission" ? "checkin" : "web";
@@ -962,6 +1076,15 @@ export class Resident extends Think<Env> {
     }
   }
 
+  /** With VOICE_REPLY=always, a check-in goes out as a voice message too. False when it was not sent as one. */
+  private async checkinAsVoice(reply: string): Promise<boolean> {
+    if (replyOf(this.cfg) !== "always" || !speaker(this.cfg)) return false;
+    const chat = await this.herChat();
+    if (!chat || "error" in (await this.speakTo(chat, reply))) return false;
+    if (needsText(reply)) for (const bubble of splitIntoBubbles(unmarked(reply, dialectOf(this.cfg)))) await this.toTelegram(bubble);
+    return true;
+  }
+
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     if (result.requestId) this.#drafts.delete(result.requestId);
     if (!this.#drafts.size) this.#draftActive = null;
@@ -989,7 +1112,7 @@ export class Resident extends Think<Env> {
     const trigger = this.activeTurn?.trigger;
     // A scheduled check-in has no messenger turn to reply into: post it ourselves.
     const proactive = trigger === "scheduled" || trigger === "submission";
-    if (proactive && reply && reply !== SKIP) {
+    if (proactive && reply && reply !== SKIP && !(await this.checkinAsVoice(reply))) {
       for (const bubble of splitIntoBubbles(reply)) await this.toTelegram(bubble);
     }
     if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
@@ -1091,12 +1214,26 @@ export class Resident extends Think<Env> {
       `查网页：搜索 ${searchEngines(this.cfg).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.cfg, this.compressor())) : "关"}`,
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
       `表情包：${this.stickersOn() ? `开，${this.stickerSummary()}` : "关"}`,
+      await this.voiceLine(),
       `别的 MCP：${
         this.webMcp()
           .servers.map((server) => `${server.name}（${server.state === "ready" ? `${server.tools} 个工具` : server.state === "authenticating" ? "等你授权" : "没连上"}）`)
           .join("、") || "没接"
       }`
     ].join("\n");
+  }
+
+  /** /status: how voice messages are heard and sent, and why the latest one could not be sent. */
+  private async voiceLine(): Promise<string> {
+    const provider = providerOf(this.cfg);
+    const by = hearsBy(this.cfg);
+    const hear = by === "scribe" ? "ElevenLabs Scribe（不行就 Whisper）" : by === "whisper" ? "Cloudflare 的 Whisper" : "听不了（没有 AI 绑定）";
+    const gap = speakingGap(this.cfg);
+    const modes = { mirror: "你发语音它就回语音", always: "每条都发语音", tool: "它想发的时候才发" };
+    const send =
+      gap === "off" ? "不发语音" : gap ? `发语音还差 ${gap}` : `用 ${provider}${this.cfg.VOICE_MODEL?.trim() ? `（${this.cfg.VOICE_MODEL.trim()}）` : ""}发语音，${modes[replyOf(this.cfg)]}`;
+    const failed = await this.ctx.storage.get<{ at: number; reason: string }>("voice_error");
+    return `语音：收到的用 ${hear} 听；${send}${failed && !gap ? `；${stamp(new Date(failed.at), this.tz)} 那条没发出去：${failed.reason}` : ""}`;
   }
 
   /** The conversation as the web page shows it: what the resident currently carries, letters included. */
@@ -1119,7 +1256,11 @@ export class Resident extends Think<Env> {
         }
         via = meta?.messenger ? "telegram" : "web";
         const pictures = message.parts.filter((part) => part.type === "file").length + (text.match(EVICTED_PICTURE)?.length ?? 0);
-        const said = text.replace(EVICTED_PICTURE, "").trim().replace(STAMP_PREFIX, "");
+        const said = text
+          .replace(EVICTED_PICTURE, "")
+          .trim()
+          .replace(STAMP_PREFIX, "")
+          .replace(VOICE_MARK, (_, length?: string, missed?: string) => `🎤${length ? ` ${length}` : ""}${missed ? "（没听清）" : ""}`);
         lines.push({ id: message.id, role: "user", kind: "chat", text: [said, ...Array(pictures).fill("[图片]")].filter(Boolean).join("\n"), at, via });
         continue;
       }
@@ -1245,15 +1386,16 @@ export class Resident extends Think<Env> {
   }
 
   /** The settings page: each setting, what is saved there and what the Worker has. Secrets only say whether they are set. */
-  webConfig(): { fields: ConfigField[] } {
-    return { fields: describe(this.env, this.savedConfig()) };
+  webConfig(): { fields: ConfigField[]; voice: { hears: "scribe" | "whisper" | null; gap: string | null } } {
+    // What the voice settings still need, which the page cannot tell by itself (whether there is an AI binding).
+    return { fields: describe(this.env, this.savedConfig()), voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg) } };
   }
 
   /**
    * Save one setting from the settings page; empty goes back to the Worker's own value. It applies from the
    * next message. A check-in schedule or time zone is armed right away, and one that cannot be armed is not kept.
    */
-  async webSetConfig(key: string, raw: string): Promise<{ fields: ConfigField[] } | { error: string }> {
+  async webSetConfig(key: string, raw: string): Promise<ReturnType<Resident["webConfig"]> | { error: string }> {
     const field = fieldOf(key);
     if (!field) return { error: "没有这个设置" };
     const result = cleaned(field, raw);

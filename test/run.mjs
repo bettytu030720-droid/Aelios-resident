@@ -11,6 +11,7 @@
 //   mcp      other MCP servers: open, with a key, with a sign-in, and connected from the chat
 //   mcp-2    run after mcp and restart.sh: the connections come back
 //   stickers sticker packs: imported from a zip and from Telegram, sent, drawn, shown on the web page
+//   voice    voice messages: heard, answered in a voice, send_voice, each provider's request, falling back to text
 import assert from "node:assert/strict";
 import http from "node:http";
 import { GIF, PNG, WEBM, WEBP, zip } from "./zip.mjs";
@@ -20,7 +21,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -28,7 +29,7 @@ const plain = (text) => text.replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, "$1");
 const sent = async () =>
   (await log()).filter((e) => e.kind === "tg.sendMessage").map((e) => plain(e.body.text ?? ""));
 
-async function post(text, { username = "her_test", messageId = nextId++, secret = SECRET, chatType = "private", chatId = 42, photo } = {}) {
+async function post(text, { username = "her_test", messageId = nextId++, secret = SECRET, chatType = "private", chatId = 42, photo, voice } = {}) {
   // A photo comes in two sizes, its text as the caption.
   const picture = photo && {
     photo: ["s", ""].map((size, i) => ({ file_id: `${photo}${size}`, file_unique_id: `u-${photo}${size}`, width: 90 * (i * 8 + 1), height: 90 * (i * 8 + 1), file_size: 12 + i })),
@@ -39,7 +40,7 @@ async function post(text, { username = "her_test", messageId = nextId++, secret 
     message: {
       message_id: messageId,
       date: Math.floor(Date.now() / 1000),
-      ...(picture ?? { text }),
+      ...(picture ?? (voice ? { voice: { file_id: voice, file_unique_id: `u-${voice}`, duration: 3, mime_type: "audio/ogg", file_size: 32 } } : { text })),
       from: { id: chatId, is_bot: false, username, first_name: "Her" },
       chat: { id: chatId, type: chatType, username, first_name: "Her" }
     }
@@ -991,6 +992,163 @@ if (phase === "stickers") {
     assert.equal((await tgLog("sendSticker")).length, stickers, "not tried as a sticker again");
     assert.match((await tgLog("sendPhoto")).at(-1).body.photo, /^up-sendPhoto-/);
   });
+}
+
+if (phase === "voice") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const set = async (settings) => {
+    for (const [key, text] of Object.entries(settings)) {
+      const response = await web("/web/config", KEY, { key, text });
+      assert.equal(response.status, 200, `${key}: ${await response.clone().text()}`);
+    }
+  };
+  const ofKind = async (kind) => (await log()).filter((e) => e.kind === kind);
+  const voiceCalls = async () => ofKind("voice");
+  const voicesSent = async () => ofKind("tg.sendVoice");
+  const ask = async (text) => {
+    const before = (await sent()).length;
+    await post(text);
+    return (await waitForSends(before, 1)).join("\n");
+  };
+  // Settle: a reply that is a voice message shows up as sendVoice, not sendMessage.
+  const waitForVoices = async (before, count, timeoutMs = 20000) => {
+    const start = Date.now();
+    for (;;) {
+      const all = await voicesSent();
+      if (all.length >= before + count) return all.slice(before);
+      if (Date.now() - start > timeoutMs) throw new Error(`timed out: wanted ${count} voice messages, have ${all.length - before}`);
+      await sleep(200);
+    }
+  };
+  await set({ VOICE_BASE_URL: "http://127.0.0.1:9999/voice", VOICE_API_KEY: "test-voice-key" });
+
+  await step("with no voice provider, a voice message she sends still reaches the model (here: not heard, no AI binding), and nothing about sending voice is added", async () => {
+    const before = (await sent()).length;
+    await post("", { voice: "voice-a" });
+    const out = await waitForSends(before, 2);
+    assert.match(out[0], /^收到：\[\d\d-\d\d 周. \d\d:\d\d\] \[voice 0:03, could not be heard\]$/);
+    assert.equal((await voicesSent()).length, 0);
+    assert.equal(await ask("语音工具有哪些"), "工具:没有；提示:没有");
+  });
+
+  await step("ElevenLabs picked without a voice: /status says what is missing, and still no tool", async () => {
+    await set({ VOICE_PROVIDER: "elevenlabs" });
+    assert.equal(await ask("语音工具有哪些"), "工具:没有；提示:没有");
+    const status = await ask("/status");
+    assert.match(status, /语音：收到的用 ElevenLabs Scribe（不行就 Whisper） 听；发语音还差 VOICE_ID/);
+  });
+
+  await step("with ElevenLabs set up, her voice message is heard by Scribe and answered with a voice message", async () => {
+    await set({ VOICE_ID: "voice-123" });
+    const before = (await sent()).length;
+    const voices = (await voicesSent()).length;
+    await post("", { voice: "voice-b" });
+    const [voice] = await waitForVoices(voices, 1);
+    await sleep(1500);
+    assert.equal((await sent()).length, before, "the reply is the voice message only");
+    assert.equal(voice.body.chat_id, "42");
+    assert.equal(voice.body.duration, "1");
+    assert.deepEqual([voice.body.voice.type, voice.body.voice.head.slice(0, 3)], ["audio/mpeg", "ID3"]);
+    const [stt, tts] = (await voiceCalls()).slice(-2);
+    assert.equal(stt.endpoint, "v1/speech-to-text");
+    assert.equal(stt.headers["xi-api-key"], "test-voice-key");
+    assert.equal(stt.body.model_id, "scribe_v2");
+    assert.equal(tts.endpoint, "v1/text-to-speech/voice-123");
+    assert.equal(tts.query, "?output_format=mp3_44100_128");
+    assert.equal(tts.body.model_id, "eleven_v4");
+    assert.match(tts.body.text, /今天好累呀/);
+    assert.ok(!/这是第二个气泡。\n\n/.test(tts.body.text), "said as one message");
+    assert.ok((await ofKind("tg.sendChatAction")).some((e) => e.body.action === "record_voice"), "shows recording");
+  });
+
+  await step("in mirror mode a typed message is answered in text", async () => {
+    const voices = (await voicesSent()).length;
+    const out = await ask("打字的");
+    assert.match(out, /打字的/);
+    await sleep(1000);
+    assert.equal((await voicesSent()).length, voices);
+  });
+
+  await step("the model is given send_voice and ElevenLabs v4's square-bracket tags; it sends one, and writes nothing after", async () => {
+    assert.equal(await ask("语音工具有哪些"), "工具:text；提示:[laughs]");
+    const before = (await sent()).length;
+    const voices = (await voicesSent()).length;
+    await post("发条语音");
+    await waitForVoices(voices, 1);
+    await sleep(2000);
+    assert.equal((await sent()).length, before, "no '我好像没说出话来' after it");
+    assert.equal((await voiceCalls()).at(-1).body.text, "晚安呀，[laughs] 早点睡。");
+  });
+
+  await step("an older ElevenLabs model reads no tags, so none are taught", async () => {
+    await set({ VOICE_MODEL: "eleven_multilingual_v2" });
+    assert.equal(await ask("语音工具有哪些"), "工具:text；提示:没有标记");
+    await set({ VOICE_MODEL: "" });
+  });
+
+  await step("OpenRouter with a Gemini voice: angle-bracket marks and a style; always mode speaks every reply in OpenAI's format", async () => {
+    await set({ VOICE_PROVIDER: "openrouter", VOICE_ID: "" });
+    assert.match(await ask("/status"), /发语音还差 VOICE_MODEL/);
+    await set({ VOICE_MODEL: "google/gemini-3.8-flash-tts", VOICE_ID: "Kore" });
+    assert.equal(await ask("语音工具有哪些"), "工具:text|style；提示:<laugh>");
+    await set({ VOICE_REPLY: "always" });
+    let voices = (await voicesSent()).length;
+    await post("语音工具有哪些");
+    await waitForVoices(voices, 1);
+    assert.equal((await voiceCalls()).at(-1).body.input, "工具:没有；提示:<laugh>", "every reply is a voice message, so no send_voice");
+    voices = (await voicesSent()).length;
+    await post("你好呀");
+    await waitForVoices(voices, 1);
+    const call = (await voiceCalls()).at(-1);
+    assert.equal(call.endpoint, "v1/audio/speech");
+    assert.equal(call.headers.authorization, "Bearer test-voice-key");
+    assert.deepEqual([call.body.model, call.body.voice, call.body.response_format], ["google/gemini-3.8-flash-tts", "Kore", "mp3"]);
+    assert.match(call.body.input, /你好呀/);
+  });
+
+  await step("when the voice cannot be made, the reply goes out as text and /status says why", async () => {
+    const before = (await sent()).length;
+    await post("炸了");
+    const out = await waitForSends(before, 2);
+    assert.match(out[0], /炸了/);
+    assert.match(await ask("/status"), /那条没发出去：OpenRouter 500/);
+  });
+
+  await step("a reply with a link is said, then the link follows as text without the marks", async () => {
+    const before = (await sent()).length;
+    const voices = (await voicesSent()).length;
+    await post("带链接");
+    await waitForVoices(voices, 1);
+    const [text] = await waitForSends(before, 1);
+    // MarkdownV2 makes it a link, so the address shows twice in the raw text.
+    assert.match(text, /^你看这个 \[?https:\/\/example\.com\/a.* 好不好$/);
+    assert.ok(!text.includes("laugh"), text);
+    assert.equal((await voiceCalls()).at(-1).body.input, "你看这个 <laugh> 好不好");
+  });
+
+  await step("Cartesia: its own request, sonic-3.6 by default, the language read from the words, its own tags", async () => {
+    await set({ VOICE_PROVIDER: "cartesia", VOICE_MODEL: "", VOICE_ID: "cart-voice", VOICE_REPLY: "tool" });
+    assert.equal(await ask("语音工具有哪些"), "工具:text；提示:[laughter]");
+    const voices = (await voicesSent()).length;
+    await post("发条语音");
+    await waitForVoices(voices, 1);
+    const call = (await voiceCalls()).at(-1);
+    assert.equal(call.endpoint, "tts/bytes");
+    assert.equal(call.headers["cartesia-version"], "2026-08-14");
+    assert.equal(call.headers.authorization, "Bearer test-voice-key");
+    assert.deepEqual(call.body.voice, { mode: "id", id: "cart-voice" });
+    assert.deepEqual([call.body.model_id, call.body.language, call.body.output_format.container], ["sonic-3.6", "zh", "mp3"]);
+  });
+
+  await step("the web page shows her voice messages as a microphone and their length", async () => {
+    const lines = (await (await web("/web/messages", KEY)).json()).data;
+    const theirs = lines.filter((line) => line.role === "user").map((line) => line.text);
+    assert.ok(theirs.some((text) => /🎤 0:03 今天好累呀/.test(text)), JSON.stringify(theirs.slice(-6)));
+    assert.ok(theirs.some((text) => /🎤 0:03（没听清）/.test(text)));
+  });
+
+  await set({ VOICE_PROVIDER: "", VOICE_API_KEY: "", VOICE_MODEL: "", VOICE_ID: "", VOICE_REPLY: "", VOICE_BASE_URL: "" });
 }
 
 if (phase === "crash-1") {

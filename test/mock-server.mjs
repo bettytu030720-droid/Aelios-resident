@@ -83,6 +83,9 @@ const STICKER_SET = {
 };
 const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.from([20, 0, 0, 0]), Buffer.from("WEBPVP8L"), Buffer.alloc(12)]);
 const WEBM = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(16)]);
+// A voice message she sends (Ogg), and one second of 128 kbit/s MP3 behind an ID3 tag, as the voice providers send.
+const OGG = Buffer.concat([Buffer.from("OggS"), Buffer.alloc(28)]);
+const MP3 = Buffer.concat([Buffer.from("ID3"), Buffer.from([4, 0, 0, 0, 0, 0, 0]), Buffer.from([0xff, 0xfb, 0x90, 0x64]), Buffer.alloc(16000 - 4)]);
 
 const server = http.createServer(async (req, res) => {
   const chunks = [];
@@ -124,6 +127,10 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "content-type": "image/webp" });
       return res.end(WEBP);
     }
+    if (file[1].endsWith(".oga")) {
+      res.writeHead(200, { "content-type": "audio/ogg" });
+      return res.end(OGG);
+    }
     if (file[1].endsWith(".webm")) {
       res.writeHead(200, { "content-type": "video/webm" });
       return res.end(WEBM);
@@ -148,7 +155,7 @@ const server = http.createServer(async (req, res) => {
         // "gone" stands for a file Telegram no longer has.
         if (json?.file_id === "gone") return reply({ ok: false, error_code: 400, description: "Bad Request: invalid file_id" }, 400);
         const id = String(json?.file_id ?? "");
-        const path = id === "tg-video" ? `stickers/${id}.webm` : id.startsWith("tg-") ? `stickers/${id}.webp` : `photos/${id}.jpg`;
+        const path = id === "tg-video" ? `stickers/${id}.webm` : id.startsWith("tg-") ? `stickers/${id}.webp` : id.startsWith("voice-") ? `voice/${id}.oga` : `photos/${id}.jpg`;
         return reply({ ok: true, result: { file_id: id, file_path: path } });
       }
       case "getStickerSet":
@@ -170,6 +177,8 @@ const server = http.createServer(async (req, res) => {
         const media = method === "sendSticker" ? { sticker: { file_id: id } } : method === "sendAnimation" ? { animation: { file_id: id }, document: { file_id: id } } : { photo: [{ file_id: `${id}-s` }, { file_id: id }] };
         return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, ...media } });
       }
+      case "sendVoice":
+        return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, voice: { file_id: `up-voice-${nextMessageId}`, duration: Number(json?.duration ?? 0) } } });
       case "sendChatAction":
       case "setWebhook":
       case "setMyCommands":
@@ -180,6 +189,22 @@ const server = http.createServer(async (req, res) => {
         return reply({ ok: false, error_code: 404, description: "Not Found: method not found" }, 404);
     }
   }
+  // Voice providers, reached through VOICE_BASE_URL=http://127.0.0.1:9999/voice: ElevenLabs Scribe and text to
+  // speech, Cartesia, and OpenRouter's speech endpoint. A text with 炸 in it fails, so the reply goes out as text.
+  const voice = url.pathname.match(/^\/voice\/(v1\/speech-to-text|v1\/text-to-speech\/[^/]+|tts\/bytes|v1\/audio\/speech)$/);
+  if (voice) {
+    const headers = Object.fromEntries(["authorization", "xi-api-key", "cartesia-version", "accept"].filter((h) => req.headers[h]).map((h) => [h, req.headers[h]]));
+    log.push({ kind: "voice", endpoint: voice[1], query: url.search, headers, body: json });
+    if (voice[1] === "v1/speech-to-text") {
+      if (json?.file?.head?.startsWith("OggS")) return reply({ text: " 今天好累呀 " });
+      return reply({ detail: "unreadable audio" }, 422);
+    }
+    const said = json?.text ?? json?.transcript ?? json?.input ?? "";
+    if (said.includes("炸")) return reply({ error: { message: "the voice service fell over" } }, 500);
+    res.writeHead(200, { "content-type": "audio/mpeg" });
+    return res.end(MP3);
+  }
+
   const mcp = url.pathname.match(/^\/(ext|ext2|keyed|oauth)\/mcp$/);
   if (mcp) {
     const who = mcp[1];
