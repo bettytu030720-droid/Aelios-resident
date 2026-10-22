@@ -190,6 +190,30 @@ export function toolTokens(tools: readonly CatalogTool[]): number {
   return tools.reduce((sum, item) => sum + tokensOf(item.name, shorten(item.description, DESCRIPTION_MAX_CHARS), inputSchemaOf(item)), 0);
 }
 
+/** The part of a listed tool that goes out to the model, so one kept from before reads the same as a fresh one. */
+export function catalogItem(item: CatalogTool): CatalogTool {
+  const kept: CatalogTool = { serverId: item.serverId, name: item.name };
+  if (item.description !== undefined) kept.description = item.description;
+  if (item.inputSchema !== undefined) kept.inputSchema = item.inputSchema;
+  return JSON.parse(JSON.stringify(kept)) as CatalogTool;
+}
+
+/**
+ * The tools to offer from the servers that are set up: a ready server's as it lists them now; one that is not ready
+ * (still reconnecting after the agent slept, or out of reach for now) as it listed them the last time it was. The
+ * list is part of the prompt's cached prefix, so a server that comes back a few seconds late must not take its tools
+ * away for one turn and give them back the next: each of those turns would write the whole conversation again.
+ * A server that was never ready has nothing kept and offers nothing.
+ */
+export function catalogOf(
+  serverIds: readonly string[],
+  ready: ReadonlySet<string>,
+  live: readonly CatalogTool[],
+  kept: ReadonlyMap<string, readonly CatalogTool[]>
+): CatalogTool[] {
+  return serverIds.flatMap((id) => (ready.has(id) ? live.filter((item) => item.serverId === id).map(catalogItem) : [...(kept.get(id) ?? [])]));
+}
+
 /**
  * The connected servers' tools as ours, in a fixed order (by server, then by name) so the list the model gets
  * is the same from one turn to the next and the prompt cache keeps hitting. At most MAX_MCP_TOOLS.

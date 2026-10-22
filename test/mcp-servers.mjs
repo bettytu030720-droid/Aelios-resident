@@ -124,6 +124,27 @@ await test("the tool set is in a fixed order, capped, and every description says
   assert.deepEqual(Object.keys(shuffled.tools), keys);
 });
 
+await test("a server that is not ready yet offers the tools it listed last time, so the tools stay the same", () => {
+  const live = [
+    { serverId: "notes", name: "search", description: "Search notes", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
+    { serverId: "calendar", name: "today", description: "Today's events" }
+  ];
+  const ready = new Set(["notes", "calendar"]);
+  const first = m.catalogOf(["calendar", "notes"], ready, live, new Map());
+  // Only what goes out to the model, and the same after a trip through storage.
+  assert.deepEqual(first.find((t) => t.name === "search"), { serverId: "notes", name: "search", description: "Search notes", inputSchema: { type: "object", properties: {} } });
+  const kept = new Map([["notes", JSON.parse(JSON.stringify(first.filter((t) => t.serverId === "notes")))]]);
+  // After a sleep: notes has not reconnected yet, and its live list is empty.
+  const asleep = m.catalogOf(["calendar", "notes"], new Set(["calendar"]), live.filter((t) => t.serverId === "calendar"), kept);
+  assert.deepEqual(asleep, first);
+  const call = async () => "";
+  const describe = (set) => JSON.stringify(Object.entries(set.tools).map(([key, t]) => [key, t.description, t.inputSchema.jsonSchema]));
+  assert.equal(describe(m.mcpToolSet(asleep, call)), describe(m.mcpToolSet(first, call)));
+  // A server never ready offers nothing; one no longer set up is not asked about.
+  assert.deepEqual(m.catalogOf(["other"], new Set(), [], kept), []);
+  assert.deepEqual(m.catalogOf(["calendar"], ready, live, kept).map((t) => t.name), ["today"]);
+});
+
 await test("a tool's cost is counted with its description already cut", () => {
   const short = m.toolTokens([{ serverId: "a", name: "t", description: "Short." }]);
   const long = m.toolTokens([{ serverId: "a", name: "t", description: "Short.\n\n" + "x".repeat(5000) }]);

@@ -8,7 +8,7 @@
  *
  * 2. Claude's thinking blocks are signed for the conversation they were written in: the system prompt, the
  *    tools and every message before them. The resident changes that prefix on purpose: a persona saved on
- *    the web, the boot packet refreshed every few hours, a handoff letter that replaces older messages
+ *    the web, the boot packet refreshed when a new cache window opens, a handoff letter that replaces older messages
  *    while keeping the recent ones, a new deploy with other rules or tools. After any of those, sending an
  *    old thinking block back fails the turn with "Invalid `signature` in `thinking` block. The block is
  *    bound to a different conversation", and every turn after it too. So thinking from earlier turns is
