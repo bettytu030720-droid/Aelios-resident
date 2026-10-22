@@ -49,7 +49,8 @@ const voiceFields = (provider, model = '') => [
   { key: 'VOICE_MODEL', kind: 'text', value: model, fromWorker: '' },
   { key: 'VOICE_ID', kind: 'text', value: '', fromWorker: '' },
   { key: 'VOICE_REPLY', kind: 'choice', value: '', fromWorker: '', choices: ['mirror', 'always', 'tool'] },
-  { key: 'VOICE_BASE_URL', kind: 'text', value: '', fromWorker: '' }
+  { key: 'VOICE_BASE_URL', kind: 'text', value: '', fromWorker: '' },
+  { key: 'AI_GATEWAY_ID', kind: 'text', value: '', fromWorker: '' }
 ];
 const voiceGroup = page.CONFIG_GROUPS.find((group) => group.id === 'voice');
 const metaOf = (key) => voiceGroup.fields.find((meta) => meta.key === key);
@@ -85,6 +86,16 @@ page.config.voice = { hears: 'whisper', gap: null };
 assert.equal(page.sectionSummary('voice'), 'ElevenLabs · 你发语音才回语音');
 assert.match(page.voiceStatus(), /用 ElevenLabs 说话，你发语音才回语音/);
 assert.equal(page.helpFor(metaOf('VOICE_ID')), '从 ElevenLabs 的声音库复制 voice id，自己克隆的也行。');
+assert.doesNotMatch(page.voiceStatus(), /Gateway/);
+page.config.voice = { hears: 'whisper', gap: null, keyFrom: 'aelios' };
+assert.match(page.voiceStatus(), /key 用 AI Gateway「aelios」里存的/);
+assert.match(page.helpFor(metaOf('VOICE_API_KEY')), /^空着就用 AI Gateway「aelios」的 Provider Keys/);
+// The gateway's name sits in the voice section itself, not behind 更多设置 (and stays in 自己的供应商 too).
+const gatewayIndex = voiceGroup.fields.findIndex((meta) => meta.key === 'AI_GATEWAY_ID');
+assert.equal(gatewayIndex, voiceGroup.fields.findIndex((meta) => meta.key === 'VOICE_API_KEY') + 1);
+assert.ok(page.shown(metaOf('AI_GATEWAY_ID')) && !metaOf('AI_GATEWAY_ID').more);
+assert.equal(page.placeholderFor(metaOf('AI_GATEWAY_ID')), 'default');
+assert.ok(page.CONFIG_GROUPS.find((group) => group.id === 'custom').fields.some((meta) => meta.key === 'AI_GATEWAY_ID'));
 page.view = 'config';
 page.openSection('voice');
 assert.equal(page.sectionTitle(), '语音');

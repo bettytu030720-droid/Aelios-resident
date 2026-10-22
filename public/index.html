@@ -575,6 +575,8 @@ function resident() {
         labels: { mirror: '你发语音才回语音', always: '每条都发语音', tool: '它想发才发' } },
       { key: 'VOICE_API_KEY', label: 'key', needs: 'VOICE_PROVIDER',
         help: 'AI Gateway 的 Provider Keys 里存了这一家的 key（别名 default）就不用填。两边都没有时，Cloudflare 可能从 Gateway 的预付额度里扣。' },
+      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', needs: 'VOICE_PROVIDER', def: 'default',
+        help: '语音的 key 存在哪个 Gateway 里就填哪个，比如 Aelios 用的那个。搜网和没接 Aelios 时的 Claude 也跟着走这个。' },
       { key: 'VOICE_BASE_URL', label: '直连地址', help: '一般不填。填了就不走 AI Gateway，key 要填在上面。', needs: 'VOICE_PROVIDER', more: true }
     ] },
     { id: 'web', title: '搜网和读网页', fields: [
@@ -598,7 +600,7 @@ function resident() {
       { key: 'CUSTOM_BASE_URL', label: '地址', help: '写到 /v1 为止。', placeholder: 'https://…/v1' },
       { key: 'CUSTOM_API_KEY', label: 'key' },
       { key: 'CUSTOM_FORMAT', label: '格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } },
-      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', help: '搜网、语音，和没接 Aelios 时的 Claude 走哪个 Gateway。', def: 'default', more: true }
+      { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', help: '搜网、语音，和没接 Aelios 时的 Claude 走哪个 Gateway。语音的 key 存在哪个 Gateway 里就填哪个。', def: 'default', more: true }
     ] }
   ];
   // The rows of the settings page, in order: the groups above, and the two sections with their own cards.
@@ -695,7 +697,7 @@ function resident() {
     PERSONA_MAX: PERSONA_MAX,
     CONFIG_GROUPS: CONFIG_GROUPS,
     CONFIG_MENU: CONFIG_MENU,
-    config: { fields: [], voice: { hears: null, gap: 'off' } },
+    config: { fields: [], voice: { hears: null, gap: 'off', keyFrom: null } },
     configSection: '',
     configMore: false,
     configDraft: {},
@@ -1321,6 +1323,11 @@ function resident() {
       return (meta.labels && meta.labels[choice]) || choice;
     },
     helpFor(meta) {
+      // Which gateway the key comes from is the usual question when ElevenLabs or Cartesia says no key arrived.
+      var keyFrom = this.config.voice && this.config.voice.keyFrom;
+      if (meta.key === 'VOICE_API_KEY' && keyFrom) {
+        return '空着就用 AI Gateway「' + keyFrom + '」的 Provider Keys 里这一家的 key（别名 default）。key 存在别的 Gateway，就改下面的「AI Gateway 的名字」，或者直接填在这里。';
+      }
       if (meta.helps) {
         var provider = this.inEffect(this.metaOf('VOICE_PROVIDER'));
         if (meta.helps[provider] !== undefined) return meta.helps[provider];
@@ -1359,7 +1366,8 @@ function resident() {
       if (voice.gap) return '还差' + this.voiceGapLabel() + '，填好它才发语音。';
       var provider = this.metaOf('VOICE_PROVIDER');
       var reply = this.metaOf('VOICE_REPLY');
-      return hear + '；用 ' + this.choiceLabel(provider, this.inEffect(provider)) + ' 说话，' + this.choiceLabel(reply, this.inEffect(reply)) + '。';
+      var key = voice.keyFrom ? 'key 用 AI Gateway「' + voice.keyFrom + '」里存的。' : '';
+      return hear + '；用 ' + this.choiceLabel(provider, this.inEffect(provider)) + ' 说话，' + this.choiceLabel(reply, this.inEffect(reply)) + '。' + key;
     },
     sectionNeeds(id) {
       var voice = this.config.voice || {};

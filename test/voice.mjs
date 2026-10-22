@@ -123,6 +123,19 @@ await test("audio that is not MP3 is refused, so it never reaches Telegram as a 
   await assert.rejects(v.speaker({ AI: failing, VOICE_PROVIDER: "elevenlabs", VOICE_ID: "a" })("hi"), /ElevenLabs 429: quota/);
 });
 
+await test("turned away for want of a key while relying on the gateway's: the error says which gateway", async () => {
+  const refused = () => new Response('{"detail":{"message":"Neither authorization header nor xi-api-key received"}}', { status: 401 });
+  const named = /^Error: ElevenLabs 401 \(no key was sent: AI Gateway "aelios" has none stored for ElevenLabs under the alias default, or that key is wrong\): \{"detail"/;
+  await assert.rejects(v.speaker({ AI: fakeAi({ answer: refused }), AI_GATEWAY_ID: "aelios", VOICE_PROVIDER: "elevenlabs", VOICE_ID: "a" })("hi"), named);
+  await assert.rejects(v.speaker({ AI: fakeAi({ answer: refused }), VOICE_PROVIDER: "cartesia", VOICE_ID: "c" })("hi"), /^Error: Cartesia 401 \(no key was sent: AI Gateway "default"/);
+  // A key of its own was sent, or no gateway: the provider's own words only.
+  await assert.rejects(v.speaker({ AI: fakeAi({ answer: refused }), VOICE_PROVIDER: "elevenlabs", VOICE_ID: "a", VOICE_API_KEY: "k" })("hi"), /^Error: ElevenLabs 401: \{/);
+  assert.equal(v.keyFromGateway({ AI: fakeAi(), AI_GATEWAY_ID: " aelios " }), "aelios");
+  assert.equal(v.keyFromGateway({ AI: fakeAi(), VOICE_API_KEY: "k" }), null);
+  assert.equal(v.keyFromGateway({ AI: fakeAi(), VOICE_BASE_URL: "https://proxy.example" }), null);
+  assert.equal(v.keyFromGateway({}), null);
+});
+
 await test("hearing: Whisper on the AI binding; ElevenLabs Scribe when ElevenLabs is picked, with Whisper behind it", async () => {
   assert.equal(v.hearing({}), null);
   assert.equal(v.hearsBy({ VOICE_PROVIDER: "elevenlabs" }), null, "no key and no binding: nothing hears");

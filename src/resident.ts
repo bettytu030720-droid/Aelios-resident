@@ -80,6 +80,7 @@ import {
   heard,
   hearing,
   hearsBy,
+  keyFromGateway,
   needsText,
   noteVoiceLengths,
   providerOf,
@@ -1230,8 +1231,10 @@ export class Resident extends Think<Env> {
     const hear = by === "scribe" ? "ElevenLabs Scribe（不行就 Whisper）" : by === "whisper" ? "Cloudflare 的 Whisper" : "听不了（没有 AI 绑定）";
     const gap = speakingGap(this.cfg);
     const modes = { mirror: "你发语音它就回语音", always: "每条都发语音", tool: "它想发的时候才发" };
+    const gateway = keyFromGateway(this.cfg);
+    const key = gateway ? `，key 用 AI Gateway「${gateway}」里存的` : "";
     const send =
-      gap === "off" ? "不发语音" : gap ? `发语音还差 ${gap}` : `用 ${provider}${this.cfg.VOICE_MODEL?.trim() ? `（${this.cfg.VOICE_MODEL.trim()}）` : ""}发语音，${modes[replyOf(this.cfg)]}`;
+      gap === "off" ? "不发语音" : gap ? `发语音还差 ${gap}` : `用 ${provider}${this.cfg.VOICE_MODEL?.trim() ? `（${this.cfg.VOICE_MODEL.trim()}）` : ""}发语音${key}，${modes[replyOf(this.cfg)]}`;
     const failed = await this.ctx.storage.get<{ at: number; reason: string }>("voice_error");
     return `语音：收到的用 ${hear} 听；${send}${failed && !gap ? `；${stamp(new Date(failed.at), this.tz)} 那条没发出去：${failed.reason}` : ""}`;
   }
@@ -1386,9 +1389,10 @@ export class Resident extends Think<Env> {
   }
 
   /** The settings page: each setting, what is saved there and what the Worker has. Secrets only say whether they are set. */
-  webConfig(): { fields: ConfigField[]; voice: { hears: "scribe" | "whisper" | null; gap: string | null } } {
-    // What the voice settings still need, which the page cannot tell by itself (whether there is an AI binding).
-    return { fields: describe(this.env, this.savedConfig()), voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg) } };
+  webConfig(): { fields: ConfigField[]; voice: { hears: "scribe" | "whisper" | null; gap: string | null; keyFrom: string | null } } {
+    // What the voice settings still need, which the page cannot tell by itself (whether there is an AI binding), and
+    // the AI Gateway whose stored key voice relies on.
+    return { fields: describe(this.env, this.savedConfig()), voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg), keyFrom: keyFromGateway(this.cfg) } };
   }
 
   /**
