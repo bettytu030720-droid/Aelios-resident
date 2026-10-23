@@ -322,6 +322,10 @@ await step("a keyed page is never opened in the browser, which would not carry t
   assert.match(thin, /^# 壳/);
   const refused = await read({ compressor: null, browser: b, keys: KEYS }, { url: "https://gated.example/a/forbidden" });
   assert.match(refused, /HTTP 403, which refused the key/);
+  const hidden = await read({ compressor: null, browser: b, keys: KEYS }, { url: "https://gated.example/a/missing" });
+  assert.match(hidden, /HTTP 404, which with a key can also mean the key may not see it/);
+  const plain404 = await read({ compressor: null }, { url: "https://example.com/missing" });
+  assert.doesNotMatch(plain404, /key/);
   assert.equal(b.calls.length, 0);
 });
 

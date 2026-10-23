@@ -202,7 +202,13 @@ async function plainFetch(url: string, signal: AbortSignal, keys: readonly SiteK
   }
   if (!response.ok) {
     await response.body?.cancel();
-    const refused = key && (response.status === 401 || response.status === 403) ? ", which refused the key" : "";
+    const refused = !key
+      ? ""
+      : response.status === 401 || response.status === 403
+        ? ", which refused the key"
+        : response.status === 404
+          ? ", which with a key can also mean the key may not see it (GitHub answers 404 for a private repository the token does not cover)"
+          : "";
     const message = `the site answered HTTP ${response.status}${refused}`;
     throw response.status === 404 || response.status === 410 || refused ? new Final(message) : new Error(message);
   }

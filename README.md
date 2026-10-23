@@ -142,7 +142,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
   - GBK 之类的老编码也认。
 - **带钥匙的网站**：设置页「搜网和读网页」里给某个网站存一把钥匙，跟云端环境的网络密钥一个思路：读那个网站时每个请求自动带上，模型看不到钥匙，别的网站（包括跳转去的）和 http 都拿不到。钥匙一行一个「名字: 值」，只填一串就当 Bearer token。最多 10 个网站。
   - **Cloudflare Access 挡着的网站**：在 Zero Trust → Access controls → Service credentials → Service Tokens 里建一个服务令牌（Client Secret 只显示一次，当场抄下），给那个应用加一条动作是「Service Auth」、包含这个令牌的策略；钥匙填两行 `CF-Access-Client-Id: …` 和 `CF-Access-Client-Secret: …`。见 [Cloudflare 的说明](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)。没钥匙或钥匙不对时，它会说是门禁拦的，不会把登录页当正文。
-  - **GitHub 私库的文件**：建一个 fine-grained token，只选要读的仓库、Contents 只读；网站填 `raw.githubusercontent.com`，钥匙填 token。之后叫它读 `https://raw.githubusercontent.com/<owner>/<repo>/<分支>/<路径>`。
+  - **GitHub 私库的文件**：建一个 fine-grained token，只选要读的仓库、Contents 只读；网站填 `raw.githubusercontent.com`，钥匙填 token。之后叫它读 `https://raw.githubusercontent.com/<owner>/<repo>/<分支>/<路径>`。token 没勾上的私库，GitHub 回 404 而不是 403，它会提醒可能是钥匙看不到。
   - 带钥匙的页面不交给浏览器读（浏览器带不上钥匙）。存、换、拿掉钥匙时，读过的页面全部清掉（跳转过去的也算），下一句生效，那一句会重写一次缓存（工具说明里写着哪些网站有钥匙）。
 
 ### 语音条
