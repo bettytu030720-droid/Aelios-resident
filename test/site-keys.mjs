@@ -41,12 +41,15 @@ await test("a site is its https host, typed bare or as any address on it", () =>
   assert.match(k.siteHost("").error, /要填网站/);
   assert.match(k.siteHost("http://example.com").error, /只给 https/);
   assert.match(k.siteHost("https://user:pw@example.com").error, /用户名密码/);
+  assert.match(k.siteHost("team.cloudflareaccess.com").error, /登录页/);
   for (const local of ["localhost", "127.0.0.1", "10.0.0.2", "https://192.168.1.1/", "[::1]"]) assert.match(k.siteHost(local).error ?? "", /不能读|认不出/, local);
 });
 
 await test("a key: one bare token goes as a bearer token, lines of name: value as those headers", () => {
   assert.deepEqual(k.keyHeaders(" github_pat_abc "), { headers: { Authorization: "Bearer github_pat_abc" } });
   assert.deepEqual(k.keyHeaders("Bearer xyz"), { headers: { Authorization: "Bearer xyz" } });
+  assert.deepEqual(k.keyHeaders("Bearer: xyz"), { headers: { Authorization: "Bearer xyz" } });
+  assert.deepEqual(k.keyHeaders("bearer   xyz"), { headers: { Authorization: "Bearer xyz" } });
   assert.deepEqual(k.keyHeaders("CF-Access-Client-Id: id.access\r\nCF-Access-Client-Secret:  s3cret \n\n"), {
     headers: { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "s3cret" }
   });

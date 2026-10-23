@@ -31,6 +31,7 @@ export function siteHost(value: string): { host: string } | { error: string } {
   }
   if (url.protocol !== "https:") return { error: "只给 https 的网站带钥匙" };
   if (url.username || url.password) return { error: "网站里别带用户名密码，填进钥匙里" };
+  if (isAccessSignIn(`https://${url.host}/`)) return { error: "这是 Cloudflare Access 的登录页，钥匙要给被它挡住的那个网站" };
   const check = validateUrl(`https://${url.host}/`);
   if (!check.valid) return { error: `这个网站不能读：${check.error}` };
   return { host: url.host };
@@ -45,10 +46,11 @@ export function keyHeaders(text: string): { headers: Record<string, string> } | 
   if (!lines.length) return { error: "要填钥匙" };
   const named = lines.map((line) => line.match(/^([A-Za-z][A-Za-z0-9-]*):\s*(\S.*)$/));
   if (lines.length === 1 && (!named[0] || named[0][1].toLowerCase() === "bearer")) {
-    const value = lines[0];
+    // A bare token, `Bearer <token>`, or `Bearer: <token>`.
+    const value = (named[0] ? named[0][2] : lines[0]).replace(/^bearer\s+/i, "").trim();
     if (value.length > MAX_VALUE) return { error: "钥匙太长了" };
     if (!SENDABLE.test(value)) return { error: "钥匙里有发不出去的字，比如中文、全角符号或制表符，看看是不是多粘了东西" };
-    return { headers: { Authorization: /^bearer\s/i.test(value) ? value : `Bearer ${value}` } };
+    return { headers: { Authorization: `Bearer ${value}` } };
   }
   if (named.some((match) => !match)) return { error: "好几行时，每行写成「名字: 值」" };
   if (lines.length > MAX_HEADERS) return { error: `最多 ${MAX_HEADERS} 行` };

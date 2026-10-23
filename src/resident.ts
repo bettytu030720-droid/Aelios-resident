@@ -1116,21 +1116,23 @@ export class Resident extends Think<Env> {
   webAddSite(site: string, key: string): { sites: { host: string; names: string[] }[] } | { error: string } {
     const saved = this.siteKeys().put(site, key);
     if ("error" in saved) return saved;
-    this.forgetPagesOf(saved.host);
+    this.forgetPages();
     return this.webSites();
   }
 
   webRemoveSite(host: string): { sites: { host: string; names: string[] }[] } {
     this.siteKeys().remove(host);
-    this.forgetPagesOf(host.trim().toLowerCase());
+    this.forgetPages();
     return this.webSites();
   }
 
-  /** Pages read from a site before its key changed are not served from the cache after. */
-  private forgetPagesOf(host: string): void {
+  /**
+   * Pages read before a key changed are not served from the cache after. The cache is kept by the address that was
+   * asked for, which may have redirected to the site, so it is emptied whole: it only holds the last hour.
+   */
+  private forgetPages(): void {
     this.pageCache();
-    const prefix = `https://${host}/`;
-    this.sql`DELETE FROM res_pages WHERE substr(url, 1, ${prefix.length}) = ${prefix}`;
+    this.sql`DELETE FROM res_pages`;
   }
 
   /** Pages web_fetch read in the last hour, in this agent's SQLite. */
