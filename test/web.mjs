@@ -34,8 +34,21 @@ const pages = {
   "https://example.com/missing": () => new Response("nope", { status: 404 }),
   "https://example.com/photo": () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } }),
   "https://example.com/long": () => html(article("长文", LONG)),
-  "https://example.com/gbk": () => new Response(GBK, { headers: { "content-type": "text/plain; charset=gbk" } })
+  "https://example.com/gbk": () => new Response(GBK, { headers: { "content-type": "text/plain; charset=gbk" } }),
+  // A site behind Cloudflare Access: with the service token's two headers the page, without them its sign-in.
+  "https://gated.example/a/page": (headers) => (hasKey(headers) ? html(article("教材", "第一章的考点。".repeat(80))) : toSignIn()),
+  "https://gated.example/a/moved": (headers) => (hasKey(headers) ? new Response(null, { status: 302, headers: { location: "/a/page" } }) : toSignIn()),
+  "https://gated.example/a/out": () => new Response(null, { status: 302, headers: { location: "https://example.com/b" } }),
+  "https://gated.example/a/shell": (headers) => (hasKey(headers) ? html('<html><head><title>壳</title></head><body><div id="app"></div></body></html>') : toSignIn()),
+  "https://gated.example/a/forbidden": () => new Response("no", { status: 403 }),
+  "http://gated.example/a/page": () => html(article("明文", "不该带钥匙。".repeat(80)))
 };
+
+const KEY = { "CF-Access-Client-Id": "id-1.access", "CF-Access-Client-Secret": "secret-1" };
+const KEYS = [{ host: "gated.example", headers: KEY }];
+const hasKey = (headers) => headers?.["cf-access-client-id"] === KEY["CF-Access-Client-Id"] && headers?.["cf-access-client-secret"] === KEY["CF-Access-Client-Secret"];
+const toSignIn = () => new Response(null, { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login/gated.example" } });
+const carriedKey = (request) => Object.keys(request.headers ?? {}).some((name) => /^cf-access/i.test(name));
 
 function html(body) {
   return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -49,10 +62,12 @@ globalThis.fetch = async (input, init = {}) => {
     const data = name === "evil.test" ? "10.0.0.7" : PUBLIC;
     return Response.json({ Answer: type === "A" ? [{ data }] : [] });
   }
-  requests.push({ url, redirect: init.redirect });
+  // As the site sees them: one value per name, names in lower case.
+  const headers = Object.fromEntries(new Headers(init.headers ?? {}));
+  requests.push({ url, redirect: init.redirect, headers });
   const page = pages[url];
   if (!page) return new Response("not found", { status: 404 });
-  return page();
+  return page(headers);
 };
 
 function browser() {
@@ -264,6 +279,50 @@ await step("when web_fetch gives up, the model call is stopped and the page come
 await step("a page in GBK is decoded", async () => {
   const text = await read({ compressor: null }, { url: "https://example.com/gbk" });
   assert.ok(text.endsWith("你好世界"), text);
+});
+
+await step("a site's key goes with every request to it, and the model is told which sites have one", async () => {
+  const text = await read({ compressor: null, keys: KEYS }, { url: "https://gated.example/a/moved" });
+  assert.match(text, /^# 教材\nhttps:\/\/gated\.example\/a\/page\n/);
+  assert.deepEqual(requests.map((r) => [r.url, carriedKey(r)]), [["https://gated.example/a/moved", true], ["https://gated.example/a/page", true]]);
+  assert.match(webFetchTool({ compressor: null, keys: KEYS }).description, /They gave you a key for gated\.example, so the private pages there open too\./);
+  assert.doesNotMatch(webFetchTool({ compressor: null }).description, /key/);
+  assert.ok(!webFetchTool({ compressor: null, keys: KEYS }).description.includes("secret-1"), "the key itself is never in the prompt");
+});
+
+await step("a header in the key takes the place of the one web_fetch would send, whatever its case", async () => {
+  requests = [];
+  await read({ compressor: null, keys: [{ host: "example.com", headers: { Accept: "application/vnd.github.raw", "User-Agent": "mine" } }] }, { url: "https://example.com/b" });
+  assert.equal(requests[0].headers.accept, "application/vnd.github.raw");
+  assert.equal(requests[0].headers["user-agent"], "mine");
+});
+
+await step("the key never goes to another site, nor over plain http", async () => {
+  await read({ compressor: null, keys: KEYS }, { url: "https://gated.example/a/out" });
+  assert.deepEqual(requests.map((r) => [r.url, carriedKey(r)]), [["https://gated.example/a/out", true], ["https://example.com/b", false]]);
+  requests = [];
+  await read({ compressor: null, keys: KEYS }, { url: "https://example.com/b" });
+  assert.equal(carriedKey(requests[0]), false);
+  requests = [];
+  await read({ compressor: null, keys: KEYS }, { url: "http://gated.example/a/page" });
+  assert.equal(carriedKey(requests[0]), false);
+});
+
+await step("Cloudflare Access's sign-in page is not read: without a key it says one can be added, with a wrong one that it was refused", async () => {
+  const without = await read({ compressor: null, browser: browser() }, { url: "https://gated.example/a/page" });
+  assert.match(without, /^Could not read this page: gated\.example is behind Cloudflare Access \(a sign-in page\); they can add a key for gated\.example on the settings page$/);
+  const wrong = await read({ compressor: null, keys: [{ host: "gated.example", headers: { ...KEY, "CF-Access-Client-Secret": "old" } }] }, { url: "https://gated.example/a/page" });
+  assert.match(wrong, /did not let the key in: the key is wrong or has expired, or the Access application has no Service Auth policy for it/);
+  assert.ok(!requests.some((r) => r.url.includes("cloudflareaccess.com")), "the sign-in page is never fetched");
+});
+
+await step("a keyed page is never opened in the browser, which would not carry the key", async () => {
+  const b = browser();
+  const thin = await read({ compressor: null, browser: b, keys: KEYS }, { url: "https://gated.example/a/shell" });
+  assert.match(thin, /^# 壳/);
+  const refused = await read({ compressor: null, browser: b, keys: KEYS }, { url: "https://gated.example/a/forbidden" });
+  assert.match(refused, /HTTP 403, which refused the key/);
+  assert.equal(b.calls.length, 0);
 });
 
 console.log(failures ? `\n${failures} failed` : "\nall passed");

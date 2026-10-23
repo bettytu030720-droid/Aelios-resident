@@ -114,6 +114,7 @@ import {
 } from "./voice";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
+import { SiteKeyStore } from "./web/site-keys";
 import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
@@ -573,7 +574,7 @@ export class Resident extends Think<Env> {
         maxDescriptionChars: 400
       });
     }
-    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache()));
+    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache(), this.siteKeys().all()));
     Object.assign(tools, this.stickerTools(), this.voiceTools(), this.taskTools(), this.mcpManageTools(), this.mcpTools());
     return tools;
   }
@@ -1099,6 +1100,39 @@ export class Resident extends Think<Env> {
     return this.cfg.WEB_FETCH?.trim().toLowerCase() !== "off";
   }
 
+  #siteKeys: SiteKeyStore | null = null;
+
+  /** Keys for sites web_fetch reads (site-keys.ts): set on the settings page only, never in the chat. */
+  private siteKeys(): SiteKeyStore {
+    this.#siteKeys ??= new SiteKeyStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#siteKeys;
+  }
+
+  /** The settings page's 带钥匙的网站: hosts and header names, never a key. */
+  webSites(): { sites: { host: string; names: string[] }[] } {
+    return { sites: this.siteKeys().list() };
+  }
+
+  webAddSite(site: string, key: string): { sites: { host: string; names: string[] }[] } | { error: string } {
+    const saved = this.siteKeys().put(site, key);
+    if ("error" in saved) return saved;
+    this.forgetPagesOf(saved.host);
+    return this.webSites();
+  }
+
+  webRemoveSite(host: string): { sites: { host: string; names: string[] }[] } {
+    this.siteKeys().remove(host);
+    this.forgetPagesOf(host.trim().toLowerCase());
+    return this.webSites();
+  }
+
+  /** Pages read from a site before its key changed are not served from the cache after. */
+  private forgetPagesOf(host: string): void {
+    this.pageCache();
+    const prefix = `https://${host}/`;
+    this.sql`DELETE FROM res_pages WHERE substr(url, 1, ${prefix.length}) = ${prefix}`;
+  }
+
   /** Pages web_fetch read in the last hour, in this agent's SQLite. */
   private pageCache(): PageCache {
     this.sql`CREATE TABLE IF NOT EXISTS res_pages (url TEXT PRIMARY KEY, at INTEGER NOT NULL, page TEXT NOT NULL)`;
@@ -1484,7 +1518,9 @@ export class Resident extends Think<Env> {
             ? "接着，但这个模型不在 Aelios 那个身份的主模型里，上一句没想起旧事、也没记下来"
             : "开，聊天从 Aelios 过，想起旧事和记下来都由它做"
       }`,
-      `查网页：搜索 ${searchEngines(this.cfg).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.cfg, this.compressor())) : "关"}`,
+      `查网页：搜索 ${searchEngines(this.cfg).join(" → ") || "关"}；读网页 ${this.webFetchOn() ? webFetchVia(readerFor(this.cfg, this.compressor())) : "关"}${
+        this.siteKeys().all().length ? `；带钥匙的网站：${this.siteKeys().all().map((key) => key.host).join("、")}` : ""
+      }`,
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
       `表情包：${this.stickersOn() ? `开，${this.stickerSummary()}` : "关"}`,
       await this.voiceLine(),

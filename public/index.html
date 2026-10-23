@@ -215,6 +215,11 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .sticker-cell input:focus { border-color: var(--coral); }
   .field a.btn.primary { color: var(--on-accent); }
   .tasks-extra { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+  .site-row { align-items: center; }
+  .site-host { font-size: 14px; color: var(--text-1); word-break: break-all; }
+  .key-box { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep);
+    color: var(--text-1); font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; outline: none; -webkit-text-security: disc; }
+  .key-box:focus { border-color: var(--coral); }
   .steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
   .steps code { padding: 1px 5px; border-radius: 6px; background: var(--bg-deep); font-size: 12px; word-break: break-all; }
   .prompt-box { width: 100%; height: 150px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep);
@@ -404,6 +409,30 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </template>
         <button class="more-toggle" type="button" x-show="hasMore(group)" @click="configMore = !configMore"
           x-text="configMore ? '收起 ▴' : '更多设置 ▾'"></button>
+        <template x-if="group.id === 'web'">
+          <div class="tasks-extra" x-show="inEffect(metaOf('WEB_FETCH')) !== 'off'">
+            <div class="field">
+              <div class="name"><span>带钥匙的网站</span></div>
+              <p class="hint">跟云端环境的网络密钥一样：钥匙挂在一个网站上，读那个网站时自动带上，模型看不到，别的网站也拿不到。只认 https。</p>
+              <template x-for="site in sites" :key="site.host">
+                <div class="row site-row">
+                  <span class="site-host" x-text="site.host"></span>
+                  <span class="tag" x-text="site.names.join('、')"></span>
+                  <div class="spacer"></div>
+                  <button class="btn" type="button" :disabled="Boolean(siteBusy)" @click="removeSite(site)">拿掉</button>
+                </div>
+              </template>
+              <div class="row"><input x-model="siteDraft.site" type="text" placeholder="网站，比如 example.com" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="网站"></div>
+              <textarea class="key-box" x-model="siteDraft.key" rows="2" placeholder="钥匙" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="钥匙"></textarea>
+              <p class="hint">一行一个「名字: 值」；只填一串就当 Bearer token。Cloudflare Access 挡着的网站填服务令牌的两行：CF-Access-Client-Id: … 和 CF-Access-Client-Secret: …。GitHub 私库的文件：网站填 raw.githubusercontent.com，钥匙填一个只读的 token。别在聊天里发。</p>
+              <div class="row">
+                <div class="spacer"></div>
+                <button class="btn primary" type="button" :disabled="Boolean(siteBusy) || !siteDraft.site.trim() || !siteDraft.key.trim()" @click="addSite()" x-text="siteBusy === 'add' ? '存…' : '存上'"></button>
+              </div>
+              <p class="error" x-show="siteError" x-text="siteError"></p>
+            </div>
+          </div>
+        </template>
         <template x-if="group.id === 'tasks'">
           <div class="tasks-extra" x-show="shown(metaOf('CLOUD_TASK_URL'))">
             <div class="field">
@@ -773,6 +802,10 @@ function resident() {
     mcpDraft: { name: '', url: '', key: '' },
     mcpBusy: '',
     mcpError: '',
+    sites: [],
+    siteDraft: { site: '', key: '' },
+    siteBusy: '',
+    siteError: '',
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
     stickers: { on: true, packs: [], left: 0 },
     cloud: { on: false, configured: false, origin: '', prompt: '', today: 0, limit: 10, tasks: [] },
@@ -1479,7 +1512,8 @@ function resident() {
           if (this.inEffect(this.STICKER_META) === 'off') return '关';
           return '开 · ' + (this.stickers.packs.length ? this.stickers.packs.length + ' 个包' : '还没有包');
         case 'web':
-          return '搜网' + (this.inEffect(this.metaOf('WEB_SEARCH')) === 'off' ? '关' : '开') + ' · 读网页' + choice('WEB_FETCH');
+          return '搜网' + (this.inEffect(this.metaOf('WEB_SEARCH')) === 'off' ? '关' : '开') + ' · 读网页' + choice('WEB_FETCH')
+            + (this.sites.length && this.inEffect(this.metaOf('WEB_FETCH')) !== 'off' ? ' · ' + this.sites.length + ' 个网站带钥匙' : '');
         case 'mcp':
           return this.mcp.servers.length ? this.mcp.servers.map(function (server) { return server.name; }).join('、') : '没接';
         case 'tasks':
@@ -1514,6 +1548,7 @@ function resident() {
       this.stickerSkipped = [];
       this.view = 'config';
       this.loadMcp().catch(function () {});
+      this.loadSites().catch(function () {});
       this.loadStickers().catch(function () {});
       this.loadTasks().catch(function () {});
     },
@@ -1637,6 +1672,37 @@ function resident() {
         this.mcpError = error.message;
       } finally {
         this.mcpBusy = '';
+      }
+    },
+
+    // ---- keys for sites web_fetch reads ----
+    async loadSites() {
+      this.sites = (await this.api('/web/sites')).sites;
+    },
+    async addSite() {
+      if (this.siteBusy) return;
+      this.siteBusy = 'add';
+      this.siteError = '';
+      try {
+        this.sites = (await this.api('/web/sites', { method: 'POST', body: { site: this.siteDraft.site.trim(), key: this.siteDraft.key } })).sites;
+        this.siteDraft = { site: '', key: '' };
+        this.notify('存上了，下一句开始读那个网站会带上');
+      } catch (error) {
+        this.siteError = error.message;
+      } finally {
+        this.siteBusy = '';
+      }
+    },
+    async removeSite(site) {
+      if (this.siteBusy || !confirm('拿掉 ' + site.host + ' 的钥匙？')) return;
+      this.siteBusy = site.host;
+      try {
+        this.sites = (await this.api('/web/sites/remove', { method: 'POST', body: { host: site.host } })).sites;
+        this.notify('拿掉了');
+      } catch (error) {
+        this.siteError = error.message;
+      } finally {
+        this.siteBusy = '';
       }
     },
 

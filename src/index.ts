@@ -142,6 +142,8 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
           on?: boolean;
           when?: string;
           emoji?: string;
+          site?: string;
+          host?: string;
         })
       : {};
   switch (`${request.method} ${url.pathname}`) {
@@ -182,6 +184,14 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       const tried = await agent.webRetryMcp(String(body.id ?? ""));
       return Response.json(tried, { status: "error" in tried ? 400 : 200 });
     }
+    case "GET /web/sites":
+      return Response.json(await agent.webSites());
+    case "POST /web/sites": {
+      const saved = await agent.webAddSite(String(body.site ?? ""), String(body.key ?? ""));
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/sites/remove":
+      return Response.json(await agent.webRemoveSite(String(body.host ?? "")));
     case "POST /web/mcp/remove":
       return Response.json(await agent.webRemoveMcp(String(body.id ?? "")));
     case "GET /web/stickers":

@@ -14,6 +14,7 @@
 //   voice    voice messages: heard, answered in a voice, send_voice, each provider's request, falling back to text
 //   tasks    cloud Claude Code: a job sent through a scheduled task's trigger, its reports, the cards, the limits
 //   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
+//   sites    keys for sites web_fetch reads, set on the settings page
 import assert from "node:assert/strict";
 import http from "node:http";
 import { GIF, PNG, WEBM, WEBP, zip } from "./zip.mjs";
@@ -23,7 +24,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -1384,6 +1385,53 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal((await tasks()).tasks.find((t) => t.id === id).status, "working");
     });
   }
+}
+
+if (phase === "sites") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const ask = async (text, count = 1) => {
+    const before = (await sent()).length;
+    await post(text);
+    return (await waitForSends(before, count)).join("\n");
+  };
+  const add = (site, key) => web("/web/sites", KEY, { site, key });
+
+  await step("a site's key is saved on the settings page, shown without its values, and the model is told the site", async () => {
+    assert.doesNotMatch(await ask("读网页怎么说"), /key for/);
+    const saved = await add("https://Gated.example/a/", "CF-Access-Client-Id: id-1.access\nCF-Access-Client-Secret: secret-1");
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.deepEqual((await saved.json()).sites, [{ host: "gated.example", names: ["CF-Access-Client-Id", "CF-Access-Client-Secret"] }]);
+    const listed = await (await web("/web/sites", KEY)).text();
+    assert.ok(listed.includes("gated.example") && !listed.includes("secret-1") && !listed.includes("id-1.access"), listed);
+    assert.equal((await fetch(`${WORKER}/web/sites`)).status, 401, "not without the web key");
+    const told = await ask("读网页怎么说");
+    assert.match(told, /They gave you a key for gated\.example, so the private pages there open too\./);
+    assert.ok(!told.includes("secret-1"));
+  });
+
+  await step("what cannot be a site or a key is refused", async () => {
+    for (const [site, key, said] of [
+      ["http://plain.example", "t", /只给 https/],
+      ["localhost", "t", /不能读/],
+      ["127.0.0.1:9999", "t", /不能读/],
+      ["ok.example", "", /要填钥匙/],
+      ["ok.example", "Host: other.example", /Host 不能/],
+      ["ok.example", "a: 1\nwords", /名字: 值/]
+    ]) {
+      const response = await add(site, key);
+      assert.equal(response.status, 400, site);
+      assert.match((await response.json()).error, said, `${site} ${key}`);
+    }
+  });
+
+  await step("/status lists the sites with a key; one is taken off on the settings page", async () => {
+    assert.ok(!(await add("raw.githubusercontent.com", "github_pat_test")).error);
+    assert.match(await ask("/status"), /带钥匙的网站：gated\.example、raw\.githubusercontent\.com/);
+    const removed = await web("/web/sites/remove", KEY, { host: "gated.example" });
+    assert.deepEqual((await removed.json()).sites, [{ host: "raw.githubusercontent.com", names: ["Authorization"] }]);
+    assert.match(await ask("读网页怎么说"), /key for raw\.githubusercontent\.com,/);
+  });
 }
 
 if (phase === "crash-1") {

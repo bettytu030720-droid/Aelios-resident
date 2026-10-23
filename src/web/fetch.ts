@@ -8,6 +8,8 @@
 //      something else about the same page costs no second fetch.
 //   4. A long page is shrunk by a small model before the resident sees it (compress.ts), down to
 //      the parts about `query` when one is given, so one page does not fill the conversation.
+//   5. A site with a key on the settings page (site-keys.ts) gets it in every request to that site and
+//      no other, and is never opened in the browser, which would not carry it.
 //
 // Private and local addresses are refused at every step.
 
@@ -16,6 +18,7 @@ import { z } from "zod";
 import { renderInBrowser } from "./browser";
 import { compressPage, type Compressor } from "./compress";
 import { htmlToMarkdown } from "./html-to-markdown";
+import { headersFor, isAccessSignIn, type SiteKey } from "./site-keys";
 import { validateUrlWithDns } from "./validate-url";
 
 // What the model gets back at most.
@@ -39,15 +42,15 @@ export type Page = { url: string; title?: string; content: string; browser?: boo
 /** Pages read in the last hour, by the URL that was asked for. */
 export type PageCache = { get(url: string): Page | null; put(url: string, page: Page): void };
 
-/** What web_fetch reads with. Missing parts are skipped: no browser, no compression, no cache. */
-export type Reader = { browser?: BrowserRun; compressor: Compressor | null; cache?: PageCache };
+/** What web_fetch reads with. Missing parts are skipped: no browser, no compression, no cache, no keys. */
+export type Reader = { browser?: BrowserRun; compressor: Compressor | null; cache?: PageCache; keys?: readonly SiteKey[] };
 
 /** A refusal the browser must not retry: the address is not allowed, or the page is not there or not text. */
 class Final extends Error {}
 
-export function readerFor(env: Env, compressor: Compressor | null, cache?: PageCache): Reader {
+export function readerFor(env: Env, compressor: Compressor | null, cache?: PageCache, keys?: readonly SiteKey[]): Reader {
   // Undefined when the binding is not configured (the local test config has none).
-  return { browser: (env as { BROWSER?: BrowserRun }).BROWSER, compressor, cache };
+  return { browser: (env as { BROWSER?: BrowserRun }).BROWSER, compressor, cache, keys };
 }
 
 /** How pages are read, for /status. */
@@ -58,11 +61,13 @@ export function webFetchVia(reader: Reader): string {
 }
 
 export function webFetchTool(reader: Reader) {
+  const keyed = (reader.keys ?? []).map((key) => key.host);
   return tool({
     description:
       "Read one web page (a news article, a post, a link she sent) and get its text as Markdown. " +
       "Use it to open a web_search result or a URL she gives you. " +
-      "Pass `query` when you only need part of a long page.",
+      "Pass `query` when you only need part of a long page." +
+      (keyed.length ? ` They gave you a key for ${keyed.join(", ")}, so the private pages there open too.` : ""),
     inputSchema: z.object({
       url: z.string().describe("The page's full http(s) URL."),
       query: z.string().optional().describe("What you want from the page, in a few words. Optional.")
@@ -118,17 +123,19 @@ function render(page: Page, content: string, note?: string): string {
 }
 
 /** Read a page: plainly first, in the browser when that comes back empty or refused. */
-export async function readPage(reader: Pick<Reader, "browser">, url: string, signal: AbortSignal): Promise<Page> {
+export async function readPage(reader: Pick<Reader, "browser" | "keys">, url: string, signal: AbortSignal): Promise<Page> {
+  const keys = reader.keys ?? [];
   let plain: (Page & { thin: boolean }) | null = null;
   let failure = "";
   try {
-    plain = await plainFetch(url, signal);
+    plain = await plainFetch(url, signal, keys);
     if (!plain.thin) return stripThin(plain);
   } catch (error) {
     if (error instanceof Final || signal.aborted) throw error;
     failure = error instanceof Error ? error.message : String(error);
   }
-  if (!reader.browser) {
+  // The browser would open a keyed page without its key, and might be sent its sign-in page instead.
+  if (!reader.browser || headersFor(keys, url)) {
     if (plain) return stripThin(plain);
     throw new Error(failure);
   }
@@ -148,18 +155,30 @@ function stripThin({ thin: _thin, ...page }: Page & { thin: boolean }): Page {
   return page;
 }
 
-async function plainFetch(url: string, signal: AbortSignal): Promise<Page & { thin: boolean }> {
+/** The request's headers with a key's in place of any of the same name, whatever its case (an Accept in a key wins). */
+function withKey(base: Record<string, string>, key: Record<string, string> | null): Headers {
+  const headers = new Headers(base);
+  for (const [name, value] of Object.entries(key ?? {})) headers.set(name, value);
+  return headers;
+}
+
+async function plainFetch(url: string, signal: AbortSignal, keys: readonly SiteKey[] = []): Promise<Page & { thin: boolean }> {
   const fetchSignal = AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]);
   const dns = new Map<string, Promise<string[]>>();
   let current = url;
   let response: Response;
+  // The key is looked up again at every hop: it goes to its own site only, never along a redirect elsewhere.
+  let key = headersFor(keys, current);
   for (let hop = 0; ; hop++) {
     response = await fetch(current, {
-      headers: {
-        "user-agent": USER_AGENT,
-        accept: "text/html,application/xhtml+xml,text/markdown;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.5",
-        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8"
-      },
+      headers: withKey(
+        {
+          "user-agent": USER_AGENT,
+          accept: "text/html,application/xhtml+xml,text/markdown;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.5",
+          "accept-language": "zh-CN,zh;q=0.9,en;q=0.8"
+        },
+        key
+      ),
       redirect: "manual",
       signal: fetchSignal
     });
@@ -168,14 +187,24 @@ async function plainFetch(url: string, signal: AbortSignal): Promise<Page & { th
     await response.body?.cancel();
     if (hop === MAX_REDIRECTS) throw new Error(`it redirected more than ${MAX_REDIRECTS} times`);
     const next = new URL(location, current).toString();
+    if (isAccessSignIn(next)) {
+      const host = new URL(current).host;
+      throw new Final(
+        key
+          ? `${host} is behind Cloudflare Access and did not let the key in: the key is wrong or has expired, or the Access application has no Service Auth policy for it`
+          : `${host} is behind Cloudflare Access (a sign-in page); they can add a key for ${host} on the settings page`
+      );
+    }
     const check = await validateUrlWithDns(next, dns);
     if (!check.valid) throw new Final(`it redirected somewhere it may not go: ${check.error}`);
     current = next;
+    key = headersFor(keys, current);
   }
   if (!response.ok) {
     await response.body?.cancel();
-    const message = `the site answered HTTP ${response.status}`;
-    throw response.status === 404 || response.status === 410 ? new Final(message) : new Error(message);
+    const refused = key && (response.status === 401 || response.status === 403) ? ", which refused the key" : "";
+    const message = `the site answered HTTP ${response.status}${refused}`;
+    throw response.status === 404 || response.status === 410 || refused ? new Final(message) : new Error(message);
   }
   const type = (response.headers.get("content-type") ?? "").toLowerCase();
   if (type.includes("json") || type.includes("text/plain") || type.includes("text/markdown")) {

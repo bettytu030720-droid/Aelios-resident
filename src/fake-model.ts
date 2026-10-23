@@ -76,6 +76,10 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     return { tool: "cloud_task", input: { ...cloudJob("接着修"), follow_up_of: earlier } };
   }
   if (said.startsWith("(Not from them: your cloud task")) return { text: `云端回来了：${said}` };
+  if (said.includes("读网页怎么说")) {
+    const fetch = (options.tools ?? []).find((t) => t.type === "function" && t.name === "web_fetch") as { description?: string } | undefined;
+    return { text: fetch?.description ?? "没有 web_fetch。" };
+  }
   if (said.includes("云端工具有哪些")) {
     const names = (options.tools ?? []).filter((t) => t.type === "function").map((t) => t.name);
     return { text: names.includes("cloud_task") ? "有 cloud_task。" : "没有 cloud_task。" };

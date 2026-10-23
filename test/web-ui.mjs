@@ -145,3 +145,16 @@ page.cloud = { ...page.cloud, on: true, configured: true, today: 3 };
 assert.equal(page.sectionSummary('tasks'), '接好了 · 24 小时内派了 3 单');
 assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');
 console.log('PASS cloud tasks: a card under the reply, escaped and https only; the settings appear once it is turned on');
+// Keys for sites web_fetch reads: counted in the 搜网和读网页 row, only while reading pages is on.
+page.config = { fields: [
+  { key: 'WEB_SEARCH', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] },
+  { key: 'WEB_FETCH', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] }
+] };
+page.sites = [];
+assert.equal(page.sectionSummary('web'), '搜网开 · 读网页开');
+page.sites = [{ host: 'gated.example', names: ['CF-Access-Client-Id', 'CF-Access-Client-Secret'] }];
+assert.equal(page.sectionSummary('web'), '搜网开 · 读网页开 · 1 个网站带钥匙');
+page.config.fields[1].value = 'off';
+assert.equal(page.sectionSummary('web'), '搜网开 · 读网页关');
+assert.ok(html.includes('x-if="group.id === \'web\'"') && html.includes('placeholder="网站，比如 example.com"'));
+console.log('PASS keys for sites: counted in the 搜网和读网页 row while reading pages is on');
