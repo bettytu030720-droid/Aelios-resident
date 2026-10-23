@@ -44,7 +44,8 @@ export function keyHeaders(text: string): { headers: Record<string, string> } | 
     .map((line) => line.trim())
     .filter(Boolean);
   if (!lines.length) return { error: "要填钥匙" };
-  const named = lines.map((line) => line.match(/^([A-Za-z][A-Za-z0-9-]*):\s*(\S.*)$/));
+  // `Name: value`, with or without spaces around the colon, which may be a full-width one.
+  const named = lines.map((line) => line.match(/^([A-Za-z][A-Za-z0-9-]*)\s*[:：]\s*(\S.*)$/));
   if (lines.length === 1 && (!named[0] || named[0][1].toLowerCase() === "bearer")) {
     // A bare token, `Bearer <token>`, or `Bearer: <token>`.
     const value = (named[0] ? named[0][2] : lines[0]).replace(/^bearer\s+/i, "").trim();

@@ -54,6 +54,7 @@ await test("a key: one bare token goes as a bearer token, lines of name: value a
     headers: { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "s3cret" }
   });
   assert.deepEqual(k.keyHeaders("x-api-key: k1"), { headers: { "x-api-key": "k1" } });
+  assert.deepEqual(k.keyHeaders("X-A : 1\nX-B：2\nX-C ： 3"), { headers: { "X-A": "1", "X-B": "2", "X-C": "3" } }, "spaces around the colon, and a full-width colon");
   assert.deepEqual(k.keyHeaders("Accept: application/vnd.github.raw\nAuthorization: Bearer t"), {
     headers: { Accept: "application/vnd.github.raw", Authorization: "Bearer t" }
   });

@@ -156,5 +156,23 @@ page.sites = [{ host: 'gated.example', names: ['CF-Access-Client-Id', 'CF-Access
 assert.equal(page.sectionSummary('web'), '搜网开 · 读网页开 · 1 个网站带钥匙');
 page.config.fields[1].value = 'off';
 assert.equal(page.sectionSummary('web'), '搜网开 · 读网页关');
-assert.ok(html.includes('x-if="group.id === \'web\'"') && html.includes('placeholder="网站，比如 example.com"'));
+assert.ok(html.includes('x-if="group.id === \'web\'"') && html.includes('sitePreset(\'access\')'));
 console.log('PASS keys for sites: counted in the 搜网和读网页 row while reading pages is on');
+// The key is typed as name : value rows; the page joins them into the lines the resident reads.
+page.siteDraft = { site: 'gated.example', lines: [{ name: '', value: '' }] };
+assert.equal(page.siteKeyText(), '', 'nothing typed yet');
+page.sitePreset('access');
+assert.deepEqual(Array.from(page.siteDraft.lines, (line) => line.name), ['CF-Access-Client-Id', 'CF-Access-Client-Secret']);
+page.siteDraft.lines[0].value = ' id.access ';
+assert.equal(page.siteKeyText(), '', 'a row with no value is not a key yet');
+page.siteDraft.lines[1].value = 'CF-Access-Client-Secret: s3cret';
+assert.equal(page.siteKeyText(), 'CF-Access-Client-Id: id.access\nCF-Access-Client-Secret: s3cret', 'a value pasted with its name in front');
+page.siteDraft.lines.push({ name: 'X-Extra：', value: '1' });
+assert.equal(page.siteKeyText().split('\n')[2], 'X-Extra: 1', 'a colon typed after the name');
+page.siteDraft = { site: 'raw.githubusercontent.com', lines: [{ name: '', value: 'github_pat_1' }] };
+page.sitePreset('token');
+assert.deepEqual(JSON.parse(JSON.stringify(page.siteDraft.lines)), [{ name: 'Authorization', value: 'github_pat_1' }], 'a value already typed stays');
+assert.equal(page.siteKeyText(), 'Authorization: Bearer github_pat_1');
+page.siteDraft.lines[0].value = 'token abc';
+assert.equal(page.siteKeyText(), 'Authorization: token abc', 'a value with its own scheme is left alone');
+console.log('PASS keys for sites: name : value rows become the key, presets fill the names, pasted names are dropped');

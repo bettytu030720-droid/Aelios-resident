@@ -217,9 +217,16 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .tasks-extra { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
   .site-row { align-items: center; }
   .site-host { font-size: 14px; color: var(--text-1); word-break: break-all; }
-  .key-box { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep);
-    color: var(--text-1); font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; outline: none; -webkit-text-security: disc; }
-  .key-box:focus { border-color: var(--coral); }
+  .site-presets { flex-wrap: wrap; gap: 6px; }
+  .header-line { gap: 6px; align-items: center; }
+  .header-line input { flex: 1; min-width: 0; padding-left: 10px; padding-right: 10px; }
+  .header-line input:first-child { flex: 1.8; font-size: 12px; }
+  .header-line .colon { flex: none; color: var(--text-3); }
+  .line-btn { flex: none; width: 32px; height: 32px; padding: 0; border-radius: 10px; border: 1px solid var(--panel-border); background: transparent;
+    color: var(--text-3); cursor: pointer; font-size: 16px; line-height: 1; }
+  .line-btn:hover { border-color: var(--coral); color: var(--text-1); }
+  /* Keys show as dots while typed, without being a password field the browser offers to save. */
+  input.secret { -webkit-text-security: disc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
   .steps code { padding: 1px 5px; border-radius: 6px; background: var(--bg-deep); font-size: 12px; word-break: break-all; }
   .prompt-box { width: 100%; height: 150px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--panel-border); background: var(--bg-deep);
@@ -422,12 +429,26 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   <button class="btn" type="button" :disabled="Boolean(siteBusy)" @click="removeSite(site)">拿掉</button>
                 </div>
               </template>
-              <div class="row"><input x-model="siteDraft.site" type="text" placeholder="网站，比如 example.com" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="网站"></div>
-              <textarea class="key-box" x-model="siteDraft.key" rows="2" placeholder="钥匙" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="钥匙"></textarea>
-              <p class="hint">一行一个「名字: 值」；只填一串就当 Bearer token。Cloudflare Access 挡着的网站填服务令牌的两行：CF-Access-Client-Id: … 和 CF-Access-Client-Secret: …。GitHub 私库的文件：网站填 raw.githubusercontent.com，钥匙填一个只读的 token。别在聊天里发。</p>
+              <div class="row"><input x-model="siteDraft.site" type="text" :placeholder="sitePlaceholder()" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="网站"></div>
+              <div class="row site-presets">
+                <span class="hint">常用的：</span>
+                <button type="button" class="choice small" @click="sitePreset('access')">Cloudflare 门禁</button>
+                <button type="button" class="choice small" @click="sitePreset('token')">一串 token</button>
+              </div>
+              <template x-for="(line, index) in siteDraft.lines" :key="index">
+                <div class="row header-line">
+                  <input x-model="line.name" type="text" placeholder="名字" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="名字">
+                  <span class="colon">：</span>
+                  <input class="secret" x-model="line.value" type="text" :placeholder="line.name.trim().toLowerCase() === 'authorization' ? '粘 token 就行' : '值'" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="值">
+                  <button class="line-btn" type="button" x-show="siteDraft.lines.length > 1" @click="siteDraft.lines.splice(index, 1)" aria-label="删掉这一行">×</button>
+                </div>
+              </template>
+              <div class="row"><button class="line-btn" type="button" x-show="siteDraft.lines.length < 6" @click="siteDraft.lines.push({ name: '', value: '' })" aria-label="加一行">＋</button></div>
+              <p class="hint">左边名字、右边值，不够就点 ＋ 加一行。Cloudflare 门禁：点上面那个按钮，服务令牌的 Client ID 和 Client Secret 各粘一格，还要在那个应用里加一条动作是 Service Auth 的策略。GitHub 私库：网站填 raw.githubusercontent.com，点「一串 token」，粘一个 Contents 只读的 fine-grained token。</p>
+              <p class="hint">别在聊天里发钥匙。</p>
               <div class="row">
                 <div class="spacer"></div>
-                <button class="btn primary" type="button" :disabled="Boolean(siteBusy) || !siteDraft.site.trim() || !siteDraft.key.trim()" @click="addSite()" x-text="siteBusy === 'add' ? '存…' : '存上'"></button>
+                <button class="btn primary" type="button" :disabled="Boolean(siteBusy) || !siteDraft.site.trim() || !siteKeyText()" @click="addSite()" x-text="siteBusy === 'add' ? '存…' : '存上'"></button>
               </div>
               <p class="error" x-show="siteError" x-text="siteError"></p>
             </div>
@@ -612,6 +633,10 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 </div>
 
 <script>
+function emptySiteDraft() {
+  return { site: '', lines: [{ name: '', value: '' }] };
+}
+
 function resident() {
   var POLL_MS = 5000;
   var PERSONA_MAX = 30000;
@@ -803,7 +828,7 @@ function resident() {
     mcpBusy: '',
     mcpError: '',
     sites: [],
-    siteDraft: { site: '', key: '' },
+    siteDraft: emptySiteDraft(),
     siteBusy: '',
     siteError: '',
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
@@ -1676,6 +1701,33 @@ function resident() {
     },
 
     // ---- keys for sites web_fetch reads ----
+    sitePlaceholder() {
+      return this.siteDraft.lines.some((line) => line.name.trim().toLowerCase() === 'authorization')
+        ? '网站，比如 raw.githubusercontent.com'
+        : '网站，比如 example.com';
+    },
+    /** Fills in the names a common kind of key needs; values already typed stay. */
+    sitePreset(kind) {
+      const names = kind === 'access' ? ['CF-Access-Client-Id', 'CF-Access-Client-Secret'] : ['Authorization'];
+      const typed = this.siteDraft.lines.filter((line) => line.value.trim()).map((line) => line.value);
+      this.siteDraft.lines = names.map((name, index) => ({ name, value: typed[index] || '' }));
+    },
+    /** The key as the resident reads it, one "Name: value" per line, or '' while a row is half filled. */
+    siteKeyText() {
+      const lines = this.siteDraft.lines
+        .map((line) => {
+          const name = String(line.name || '').trim().replace(/\s*[:：]+$/, '');
+          // A value may be pasted with its name in front, as Cloudflare's copy button gives it.
+          let value = String(line.value || '').trim();
+          if (name && value.toLowerCase().startsWith(name.toLowerCase())) value = value.slice(name.length).replace(/^\s*[:：]\s*/, '');
+          // A bare token for Authorization goes as a bearer token.
+          if (name.toLowerCase() === 'authorization' && value && !/\s/.test(value)) value = 'Bearer ' + value;
+          return { name, value };
+        })
+        .filter((line) => line.name || line.value);
+      if (!lines.length || lines.some((line) => !line.name || !line.value)) return '';
+      return lines.map((line) => line.name + ': ' + line.value).join('\n');
+    },
     async loadSites() {
       this.sites = (await this.api('/web/sites')).sites;
     },
@@ -1684,8 +1736,8 @@ function resident() {
       this.siteBusy = 'add';
       this.siteError = '';
       try {
-        this.sites = (await this.api('/web/sites', { method: 'POST', body: { site: this.siteDraft.site.trim(), key: this.siteDraft.key } })).sites;
-        this.siteDraft = { site: '', key: '' };
+        this.sites = (await this.api('/web/sites', { method: 'POST', body: { site: this.siteDraft.site.trim(), key: this.siteKeyText() } })).sites;
+        this.siteDraft = emptySiteDraft();
         this.notify('存上了，下一句开始读那个网站会带上');
       } catch (error) {
         this.siteError = error.message;
