@@ -119,6 +119,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   }
   if (said.includes("查记忆")) return { tool: "memory_recall", input: { query: "生日" } };
   if (said.includes("记一下")) return { tool: "memory_remember", input: { content: "她喜欢春天" } };
+  if (said.includes("看小本本")) return { tool: "memory_notebook", input: { action: "read", name: "经济师进度" } };
+  if (said.includes("记进小本本")) return { tool: "memory_notebook", input: { action: "append", name: "经济师进度", content: "第 29 章学完" } };
   if (said.includes("读本机")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   // Whether the boot packet is there (the diary, which fetch it came from), and that precious notes and the glossary stay out.
   if (said.includes("开机包")) {

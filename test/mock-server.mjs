@@ -267,7 +267,10 @@ const server = http.createServer(async (req, res) => {
   // Aelios' own stateless MCP server, answering tools/call with plain JSON.
   if (url.pathname === "/mcp") {
     log.push({ kind: "aelios.mcp", body: json, auth });
-    const text = JSON.stringify({ data: { id: "mem-new", created: true } });
+    // The notebook gives back a long page, longer than other tools' answers are kept.
+    const notebook = json.params?.name === "notebook" && json.params.arguments?.action === "read";
+    const page = { name: "经济师进度", content: `${"第 28 章学完，质量要求题要抓题干动作。".repeat(300)}下一步：第 29 章`, updated_at: "2026-10-23T00:00:00Z" };
+    const text = JSON.stringify(notebook ? { data: page } : { data: { id: "mem-new", created: true } });
     return reply({ jsonrpc: "2.0", id: json.id, result: { content: [{ type: "text", text }] } });
   }
   if (url.pathname === "/v1/memory/ingest") {

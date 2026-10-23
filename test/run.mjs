@@ -167,6 +167,21 @@ if (phase === "main") {
     assert.deepEqual(call.body.params.arguments, { content: "她喜欢春天", namespace: "test-space" });
   });
 
+  await step("the notebook is read and written through Aelios' MCP, and a long page comes back whole", async () => {
+    let before = (await sent()).length;
+    await post("看小本本");
+    let out = (await waitForSends(before, 1)).join("\n");
+    assert.ok(out.includes("下一步：第 29 章"), `the end of a long page: ${out.slice(-80)}`);
+    let call = (await log()).filter((e) => e.kind === "aelios.mcp").at(-1);
+    assert.equal(call.body.params.name, "notebook");
+    assert.deepEqual(call.body.params.arguments, { action: "read", name: "经济师进度", namespace: "test-space" });
+    before = (await sent()).length;
+    await post("记进小本本");
+    await waitForSends(before, 1);
+    call = (await log()).filter((e) => e.kind === "aelios.mcp").at(-1);
+    assert.deepEqual(call.body.params.arguments, { action: "append", name: "经济师进度", content: "第 29 章学完", namespace: "test-space" });
+  });
+
   // Reading real pages (redirects, the browser, compression, the cache) is covered by test/web.mjs.
   await step("web_fetch refuses local addresses", async () => {
     const before = (await sent()).length;

@@ -4,8 +4,8 @@
 //   POST /v1/memory/ingest   handoff letters and check-ins, which Aelios does not record as conversation
 //   GET  /v1/memory_boot     yesterday's diary, added to the system prompt (precious notes and the glossary are
 //                            left to Aelios' recall, which brings them in on the turns they matter to)
-//   POST /mcp                remember, keep a moment, forget, learn a word, read the diary: Aelios' own MCP
-//                            tools, wrapped here with short descriptions so they cost few tokens per turn
+//   POST /mcp                remember, keep a moment, forget, learn a word, read the diary, the notebook: Aelios'
+//                            own MCP tools, wrapped here with short descriptions so they cost few tokens per turn
 // Unset AELIOS_URL or AELIOS_API_KEY and all of it quietly does nothing.
 
 import { tool, type ToolSet } from "ai";
@@ -60,13 +60,16 @@ export async function recall(config: AeliosConfig, query: string, k: number, sig
 }
 
 const MCP_RESULT_MAX_CHARS = 4000;
+// A notebook page is up to 20000 characters in Aelios. It comes back whole: a page cut short and then rewritten
+// with `write` would lose its end.
+const NOTEBOOK_RESULT_MAX_CHARS = 24000;
 
 /** The memory tools the model gets: recall over REST, the rest through Aelios' MCP. */
 export function memoryTools(config: AeliosConfig): ToolSet {
-  const call = async (name: string, args: Record<string, unknown>): Promise<string> => {
+  const call = async (name: string, args: Record<string, unknown>, max = MCP_RESULT_MAX_CHARS): Promise<string> => {
     try {
       const text = await callMcpTool(`${config.url}/mcp`, config.key, name, { ...args, namespace: config.namespace });
-      return text.length > MCP_RESULT_MAX_CHARS ? `${text.slice(0, MCP_RESULT_MAX_CHARS)}…` : text;
+      return text.length > max ? `${text.slice(0, max)}…` : text;
     } catch (error) {
       return `memory unavailable: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -114,6 +117,23 @@ export function memoryTools(config: AeliosConfig): ToolSet {
       description: "Read the diary of a day (YYYY-MM-DD) or a week (like 2026-W42).",
       inputSchema: z.object({ date: z.string().optional(), week: z.string().optional() }),
       execute: ({ date, week }) => call("read_diary", { ...(date ? { date } : {}), ...(week ? { week } : {}) })
+    }),
+    memory_notebook: tool({
+      description:
+        "Your notebook in long-term memory: named pages you keep up to date yourself, such as progress on something " +
+        "long (what is done, weak spots, what is next). Pages are never recalled by themselves, so list them and read " +
+        "the one you need. Read a page before you rewrite it; append adds a line at the end.",
+      inputSchema: z.object({
+        action: z.enum(["list", "read", "write", "append", "delete"]),
+        name: z.string().optional().describe("The page, for every action but list."),
+        content: z.string().optional().describe("write: the whole page. append: the line to add.")
+      }),
+      execute: ({ action, name, content }) =>
+        call(
+          "notebook",
+          { action, ...(name ? { name } : {}), ...(content ? { content } : {}) },
+          action === "read" ? NOTEBOOK_RESULT_MAX_CHARS : MCP_RESULT_MAX_CHARS
+        )
     })
   };
 }
