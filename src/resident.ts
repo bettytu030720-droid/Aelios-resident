@@ -35,7 +35,7 @@ import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { cacheTtlMs, opensWindow } from "./cache-window";
 import { fakeModel } from "./fake-model";
-import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import { CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import {
   AlarmStore,
   CANCEL_ALARM_DESCRIPTION,
@@ -1518,26 +1518,57 @@ export class Resident extends Think<Env> {
     if (this.activeTurn) return;
     this.#short = false;
     const folded = await this.writeLetter("idle");
-    if (!folded && this.#short && !this.activeTurn) await this.heartbeat();
+    if (!folded && this.#short && !this.activeTurn) await this.heartbeat(1);
   }
 
   /**
-   * The heartbeat (HEARTBEAT, on unless turned off): when the letter's time comes and the conversation is still too
-   * short to fold, the resident is asked whether it would like to reach out. The cache is warm then, so it costs
-   * about one message. Only with the one-hour cache: after five minutes the cache is gone and it would cost more.
-   * One per quiet time: the letter's time comes again only after they write.
+   * The heartbeat (HEARTBEAT): when the letter's time comes and the conversation is still too short to fold, the
+   * resident is asked whether it would like to reach out, and again each LETTER_IDLE_MINUTES after, up to HEARTBEAT
+   * times (3 unless set) until they write. Each one reads the cache the one before kept warm, so each costs about
+   * one message. Only with the one-hour cache: with five minutes it would be gone by then.
    */
-  private heartbeatOn(): boolean {
-    return this.cfg.HEARTBEAT?.trim().toLowerCase() !== "off" && promptCache(this.cfg).anthropic.cacheControl.ttl === "1h" && idleMinutes(this.cfg) > 0;
+  private heartbeatTimes(): number {
+    const setting = this.cfg.HEARTBEAT?.trim().toLowerCase() ?? "";
+    if (!setting || setting === "on") return HEARTBEATS;
+    if (setting === "off") return 0;
+    const times = Number(setting);
+    return Number.isInteger(times) && times >= 0 ? Math.min(times, MAX_HEARTBEATS) : HEARTBEATS;
   }
 
-  private async heartbeat(): Promise<void> {
-    if (!this.heartbeatOn()) return;
+  private heartbeatOn(): boolean {
+    return this.heartbeatTimes() > 0 && promptCache(this.cfg).anthropic.cacheControl.ttl === "1h" && idleMinutes(this.cfg) > 0;
+  }
+
+  /** The n-th heartbeat of this quiet time, and the next one planned if there are more to come. */
+  private async heartbeat(n: number): Promise<void> {
+    const times = this.heartbeatTimes();
+    if (!this.heartbeatOn() || n > times) return;
     const at = Date.now();
-    const minutes = Math.max(1, Math.round(idleMinutes(this.cfg)));
-    const text = heartbeatPrompt(stamp(new Date(at), this.tz), minutes, this.alarmsOn());
+    const minutes = idleMinutes(this.cfg);
+    const lastFromThem = (await this.ctx.storage.get<number>("their_last_at")) ?? at - minutes * 60_000;
+    const quiet = Math.max(1, Math.round((at - lastFromThem) / 60_000));
+    const text = heartbeatPrompt(stamp(new Date(at), this.tz), quiet, n, times, this.alarmsOn());
     const message = { id: `heartbeat_${at}`, role: "user", parts: [{ type: "text", text }], metadata: { at } } as UIMessage;
     await this.submitMessages([message], { idempotencyKey: message.id }).catch((error) => console.error("heartbeat: not queued", { error: String(error) }));
+    if (n < times) {
+      const next = await this.schedule(minutes * 60, "heartbeatAgain", { n: n + 1 });
+      await this.ctx.storage.put("heartbeat", next.id);
+    }
+  }
+
+  async heartbeatAgain(payload: { n: number }): Promise<void> {
+    await this.ctx.storage.delete("heartbeat");
+    // A turn running now may be theirs, which ends this quiet time; any other turn keeps the cache warm anyway.
+    if (this.activeTurn) return;
+    await this.heartbeat(payload.n);
+  }
+
+  /** They wrote: this quiet time is over, and the next starts its count again. */
+  private async stopHeartbeats(): Promise<void> {
+    const planned = await this.ctx.storage.get<string>("heartbeat");
+    if (!planned) return;
+    await this.cancelSchedule(planned).catch(() => false);
+    await this.ctx.storage.delete("heartbeat");
   }
 
   private letters(): { at: number; text: string }[] {
@@ -1585,7 +1616,11 @@ export class Resident extends Think<Env> {
     const asked = before?.text ?? "";
     // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
     const fromThem = Boolean(asked) && !isNote(asked);
-    if (fromThem) await this.ctx.storage.put("wrote_since_letter", true);
+    if (fromThem) {
+      await this.ctx.storage.put("wrote_since_letter", true);
+      await this.ctx.storage.put("their_last_at", Date.now());
+      await this.stopHeartbeats();
+    }
     await this.planIdleLetter(fromThem);
     if (result.status !== "completed") {
       if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
@@ -1700,8 +1735,8 @@ export class Resident extends Think<Env> {
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
       `心跳：${
         this.heartbeatOn()
-          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、对话还短时问它要不要找你`
-          : this.cfg.HEARTBEAT?.trim().toLowerCase() === "off"
+          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、对话还短时问它要不要找你，一段沉默最多 ${this.heartbeatTimes()} 次`
+          : !this.heartbeatTimes()
             ? "关"
             : "不问（缓存 5 分钟或交接信关着时没有心跳）"
       }`,

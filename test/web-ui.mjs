@@ -182,10 +182,11 @@ const chatMeta = (key) => chatGroup.fields.find((meta) => meta.key === key);
 page.config = { fields: [
   { key: 'TG_ALLOWED', kind: 'text', value: '@her', fromWorker: '' },
   { key: 'CHECKIN_SCHEDULE', kind: 'text', value: '', fromWorker: '' },
-  { key: 'HEARTBEAT', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] },
+  { key: 'HEARTBEAT', kind: 'text', value: '', fromWorker: '' },
   { key: 'ALARMS', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] }
 ] };
-assert.equal(page.inEffect(chatMeta('HEARTBEAT')), 'on');
+assert.equal(page.textInEffect(chatMeta('HEARTBEAT')), '3', 'three times unless set');
+assert.deepEqual(Array.from(page.picksFor(chatMeta('HEARTBEAT'))), ['0', '1', '3', '5', '10']);
 assert.equal(page.inEffect(chatMeta('ALARMS')), 'off');
 page.alarms = { on: false, limit: 10, alarms: [{ id: 'a_1', note: '叫她起床', next: '10-25 周日 09:00', when: '每天 09:00' }] };
 assert.equal(page.sectionSummary('chat'), '@her · 不主动找');
@@ -198,4 +199,4 @@ await page.removeAlarm(page.alarms.alarms[0]);
 assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/web/alarms/remove', { id: 'a_1' }]]);
 assert.equal(page.alarms.alarms.length, 0);
 assert.ok(html.includes('x-if="group.id === \'chat\'"') && html.includes('removeAlarm(alarm)'));
-console.log('PASS heartbeat on and alarms off by default; alarms counted in the 聊天 row and deleted from the settings page');
+console.log('PASS heartbeat three times and alarms off by default; alarms counted in the 聊天 row and deleted from the settings page');

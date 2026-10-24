@@ -70,7 +70,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // The heartbeat: with alarms on it first asks for an alarm too soon for a turn of its own (refused), then one far
   // enough ahead, and passes; with them off it reaches out.
   if (said.startsWith("(Not from them: a heartbeat")) {
-    if (!said.includes("set_alarm")) return { text: "在忙吗？\n\n想你了。" };
+    // The first one reaches out, the second passes, the third tries again.
+    const n = Number(said.match(/heartbeat (\d+) of/)?.[1] ?? 1);
+    if (!said.includes("set_alarm")) return { text: n === 1 ? "在忙吗？\n\n想你了。" : n === 2 ? "SKIP" : "还在忙吗？" };
     const rounds = toolResultsSince(prompt);
     if (rounds < 2) return { tool: "set_alarm", input: { note: "晚点再问问她", in_minutes: rounds === 0 ? 30 : 61 } };
     return { text: "SKIP" };

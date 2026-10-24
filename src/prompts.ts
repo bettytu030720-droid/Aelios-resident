@@ -66,13 +66,19 @@ export function checkinPrompt(now: string): string {
   return `${CHECKIN_PREFIX}; it is now ${now}.) If you would like to reach out to them, write exactly what you want to send, as in any chat. If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
 }
 
+/** Heartbeats in one quiet time unless HEARTBEAT says otherwise, and the most it may say. */
+export const HEARTBEATS = 3;
+export const MAX_HEARTBEATS = 10;
+
 /**
- * The heartbeat (HEARTBEAT): nothing has been said for a while and the conversation is still short, so the letter
- * had nothing to fold. The cache is still warm, so asking costs about one message of theirs.
+ * The heartbeat (HEARTBEAT): they have not written for a while and the conversation is still short, so the letter
+ * had nothing to fold. The cache is still warm, so asking costs about one message of theirs. `n` of `times` in this
+ * quiet time.
  */
-export function heartbeatPrompt(now: string, minutes: number, alarms: boolean): string {
+export function heartbeatPrompt(now: string, minutes: number, n: number, times: number, alarms: boolean): string {
+  const count = times > 1 ? ` This is heartbeat ${n} of ${times} while they are quiet${n === times ? ", the last" : ""}.` : "";
   const later = alarms ? " If now is not a good time but you would like to come back later, set an alarm with set_alarm, then reply SKIP." : "";
-  return `${HEARTBEAT_PREFIX}; nothing has been said for ${minutes} minute${minutes === 1 ? "" : "s"}, and it is now ${now}.) Would you like to reach out to them? If so, write exactly what you want to send, as in any chat. If they are probably busy or asleep, or you have nothing to say, reply with just the four letters SKIP.${later}`;
+  return `${HEARTBEAT_PREFIX}; they have not written for ${minutes} minute${minutes === 1 ? "" : "s"}, and it is now ${now}.${count}) Would you like to reach out to them? If so, write exactly what you want to send, as in any chat. If they are probably busy or asleep, or you have nothing to say, reply with just the four letters SKIP.${later}`;
 }
 
 export const SKIP = "SKIP";

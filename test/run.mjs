@@ -1474,6 +1474,7 @@ async function alarmsUntil(ok, ms = 10000) {
 
 if (phase === "heartbeat") {
   const KEY = "test-web-key";
+  const letters = async () => (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
   await fetch(`${MOCK}/__reset`);
   await step("she goes quiet while the chat is still short: a heartbeat asks, and it reaches out", async () => {
     const mark = (await sent()).length;
@@ -1483,39 +1484,54 @@ if (phase === "heartbeat") {
     const ingest = await checkinsInAelios(1);
     assert.equal(ingest.length, 1);
     assert.deepEqual(ingest[0].body.messages, [{ role: "assistant", content: "在忙吗？\n\n想你了。" }]);
-    const letters = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
-    assert.equal(letters.length, 0, "nothing to fold, so no letter");
+    assert.equal((await letters()).length, 0, "nothing to fold, so no letter");
   });
-  await step("one heartbeat per quiet time: nothing more until she writes", async () => {
+  await step("she writes back: the quiet time is over, and the next one counts from 1 again", async () => {
+    const mark = (await sent()).length;
+    await post("刚洗完澡");
+    const out = await waitForSends(mark, 4);
+    assert.match(out[0], /刚洗完澡/);
+    assert.deepEqual(out.slice(2), ["在忙吗？", "想你了。"], "the first heartbeat again, not the third of the old count");
+  });
+  await step("up to three heartbeats in one quiet time (the second passed with SKIP), then nothing more", async () => {
+    const mark = (await sent()).length;
+    assert.deepEqual(await waitForSends(mark, 1), ["还在忙吗？"]);
     const before = (await sent()).length;
     await sleep(9000);
     assert.deepEqual((await sent()).slice(before), []);
+    assert.deepEqual((await checkinsInAelios(3)).map((e) => e.body.messages[0].content), ["在忙吗？\n\n想你了。", "在忙吗？\n\n想你了。", "还在忙吗？"]);
+    assert.equal((await letters()).length, 0);
   });
-  await step("the web page shows what it said, not the note that asked it", async () => {
+  await step("the web page shows what it said, not the notes that asked it", async () => {
     const { data } = await (await web("/web/messages", KEY)).json();
-    const said = data.find((line) => line.text === "在忙吗？\n\n想你了。");
+    const said = data.find((line) => line.text === "还在忙吗？");
     assert.equal(said?.via, "checkin", JSON.stringify(data));
-    assert.ok(!data.some((line) => /heartbeat|Not from them/.test(line.text)), JSON.stringify(data));
+    assert.ok(!data.some((line) => /heartbeat|Not from them|SKIP/.test(line.text)), JSON.stringify(data));
   });
-  await step("/status says the heartbeat is on", async () => {
+  await step("/status says how often it asks", async () => {
     const before = (await sent()).length;
     await post("/status");
     const [out] = await waitForSends(before, 1);
-    assert.match(out, /心跳：开，没动静 1 分钟、对话还短时问它要不要找你/);
+    assert.match(out, /心跳：开，没动静 1 分钟、对话还短时问它要不要找你，一段沉默最多 3 次/);
     assert.match(out, /闹钟：关/);
   });
-  await step("turned off on the settings page, going quiet sends nothing", async () => {
-    assert.equal((await web("/web/config", KEY, { key: "HEARTBEAT", text: "off" })).status, 200);
+  await step("the count is set on the settings page: 0 never asks, more than 10 is refused", async () => {
+    let response = await web("/web/config", KEY, { key: "HEARTBEAT", text: "11" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /0 到 10/);
+    response = await web("/web/config", KEY, { key: "HEARTBEAT", text: "0" });
+    assert.equal(response.status, 200);
     const mark = (await sent()).length;
-    await post("我去洗澡了");
+    await post("我去睡了");
     await waitForSends(mark, 2);
     const before = (await sent()).length;
     await sleep(9000);
     assert.deepEqual((await sent()).slice(before), []);
-    assert.equal((await checkinsInAelios(2, 0)).length, 1);
-    await web("/web/config", KEY, { key: "HEARTBEAT", text: "" });
+    assert.equal((await checkinsInAelios(4, 0)).length, 3);
   });
   await step("with alarms on, a heartbeat may come back later: too soon is refused, an hour ahead is set, and rings", async () => {
+    // One heartbeat, so the one alarm it sets is the only one.
+    assert.equal((await web("/web/config", KEY, { key: "HEARTBEAT", text: "1" })).status, 200);
     assert.equal((await web("/web/config", KEY, { key: "ALARMS", text: "on" })).status, 200);
     const mark = (await sent()).length;
     await post("我先忙会儿");

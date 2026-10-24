@@ -676,8 +676,8 @@ function resident() {
     { id: 'chat', title: '聊天', fields: [
       { key: 'TG_ALLOWED', label: '谁能在 Telegram 上跟它说话', help: '@用户名或 chat id，逗号隔开。空着谁都不回。', placeholder: '@your_name' },
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
-      { key: 'HEARTBEAT', label: '没动静时问它要不要找你', def: 'on', labels: ON_OFF,
-        help: '到了写交接信的时候（默认 55 分钟没人说话），对话还短、没东西可收，就问它一句要不要找你，它不想就不发。缓存还热着，花的跟你发一条差不多。缓存选 5 分钟时不问。' },
+      { key: 'HEARTBEAT', label: '没动静时问它几次要不要找你', def: '3', picks: ['0', '1', '3', '5', '10'],
+        help: '到了写交接信的时候（默认 55 分钟没人说话）对话还短、没东西可收，就问它一句要不要找你，它不想就不发；之后每 55 分钟再问一次，问满这么多次或者你说话为止。每次都读热着的缓存，花的跟你发一条差不多，还把缓存续一小时。0 不问，最多 10。缓存选 5 分钟时不问。' },
       { key: 'ALARMS', label: '让它自己定闹钟', def: 'off', labels: ON_OFF,
         help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
@@ -1440,6 +1440,7 @@ function resident() {
     },
     picksFor(meta) {
       if (!meta.picks) return [];
+      if (Array.isArray(meta.picks)) return meta.picks;
       var f = this.field('VOICE_PROVIDER');
       return (f && meta.picks[f.value || f.fromWorker.toLowerCase()]) || [];
     },

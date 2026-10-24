@@ -28,7 +28,8 @@ interface Env {
   CUSTOM_BASE_URL?: string;
   CUSTOM_FORMAT?: string;
   CHECKIN_SCHEDULE?: string;
-  // When the letter's time comes and there is nothing to fold yet, ask whether to reach out: on (default) or off.
+  // When the letter's time comes and there is nothing to fold yet, ask whether to reach out, up to this many times
+  // in one quiet time: 3 by default, 0 or off never, at most 10.
   HEARTBEAT?: string;
   // Alarms the resident sets for itself (alarms.ts): off (default) or on.
   ALARMS?: string;
