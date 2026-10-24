@@ -53,7 +53,6 @@ import {
 import { claudeOnRunPath } from "./claude-run";
 import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
 import { customModel, isCustom } from "./custom";
-import { DeliveryStore } from "./deliveries";
 import { foldIntoLetter, tokensOf } from "./fold";
 import { withPictures, type Download } from "./pictures";
 import {
@@ -312,24 +311,14 @@ export class Resident extends Think<Env> {
   // so a line on a page ("connect to …") cannot add a server they did not ask for.
   #theirTurns = new Set<string>();
   #readOutside = new Set<string>();
-  #privateReads = new Set<string>();
-  #mcpCalls = new Set<string>();
 
-  #deliveryStore: DeliveryStore | null = null;
-
-  private deliveries(): DeliveryStore {
-    this.#deliveryStore ??= new DeliveryStore((strings, ...values) => this.sql(strings, ...(values as never[])));
-    return this.#deliveryStore;
-  }
-
-  private markTurn(id: string, flag: "their" | "outside" | "private" | "mcp"): void {
+  // Kept in SQLite too, so a turn that resumes after a restart still knows what it was.
+  private markTurn(id: string, flag: "their" | "outside"): void {
     this.sql`CREATE TABLE IF NOT EXISTS res_turn_flags (request_id TEXT NOT NULL, flag TEXT NOT NULL, created_at INTEGER NOT NULL,
       PRIMARY KEY (request_id, flag))`;
     this.sql`INSERT OR IGNORE INTO res_turn_flags VALUES (${id}, ${flag}, ${Date.now()})`;
     if (flag === "their") this.#theirTurns.add(id);
     if (flag === "outside") this.#readOutside.add(id);
-    if (flag === "private") this.#privateReads.add(id);
-    if (flag === "mcp") this.#mcpCalls.add(id);
   }
 
   private restoreTurn(id: string): void {
@@ -339,8 +328,6 @@ export class Resident extends Think<Env> {
     for (const row of this.sql<{ flag: string }>`SELECT flag FROM res_turn_flags WHERE request_id = ${id}`) {
       if (row.flag === "their") this.#theirTurns.add(id);
       if (row.flag === "outside") this.#readOutside.add(id);
-      if (row.flag === "private") this.#privateReads.add(id);
-      if (row.flag === "mcp") this.#mcpCalls.add(id);
     }
   }
 
@@ -369,29 +356,6 @@ export class Resident extends Think<Env> {
     });
   }
 
-  private privateRefusal(): string | null {
-    const id = this.activeTurn?.requestId;
-    return id && this.#privateReads.has(id)
-      ? "Not allowed: this turn has read a private page, so it cannot send more network, MCP or memory data. Answer from what you already have, or ask them to start a new message."
-      : null;
-  }
-
-  private guardAfterPrivate(tools: ToolSet): ToolSet {
-    const guarded: ToolSet = {};
-    for (const [name, definition] of Object.entries(tools)) {
-      const execute = definition.execute;
-      if (!execute) {
-        guarded[name] = definition;
-        continue;
-      }
-      guarded[name] = {
-        ...definition,
-        execute: async (input, options) => (this.privateRefusal() ?? execute(input, options))
-      } as ToolSet[string];
-    }
-    return guarded;
-  }
-
   // Other MCP servers' tools come in through getTools (mcp-servers.ts), their descriptions cut short.
   override includeMcpTools = false;
   // After hibernation the connections come back by themselves; a turn waits a little for them.
@@ -403,9 +367,6 @@ export class Resident extends Think<Env> {
       customHandler: (result) => callbackPage(result, this.mcp.listServers().find((server) => server.id === result.serverId)?.name ?? null)
     });
     if (this.letterJob()) await this.schedule(1, "resumeLetter", {}, { idempotent: true });
-    for (const delivery of this.deliveries().pending()) {
-      await this.schedule(1, "deliverPending", { key: delivery.key }, { idempotent: true });
-    }
     for (const alarm of this.alarms().all()) await this.armAlarm(alarm, alarm.next);
   }
 
@@ -652,37 +613,16 @@ export class Resident extends Think<Env> {
   override getTools(): ToolSet {
     const tools: ToolSet = {};
     const memory = aeliosConfig(this.cfg);
-    if (memory) Object.assign(tools, this.guardAfterPrivate(memoryTools(memory)));
+    if (memory) Object.assign(tools, memoryTools(memory));
     const source = searchSource(this.cfg);
     if (source) {
-      const search = webSearchTool({
+      tools.web_search = webSearchTool({
         source,
         description: "Search the web for current information: news, facts, prices, events. Open a result with web_fetch.",
         maxDescriptionChars: 400
       });
-      tools.web_search = this.guardAfterPrivate({ web_search: search }).web_search;
     }
-    if (this.webFetchOn()) {
-      const reader = readerFor(this.cfg, this.compressor(), this.pageCache(), this.siteKeys().all());
-      reader.policy = {
-        before: (_url, keyed) => {
-          const id = this.activeTurn?.requestId;
-          if (!id) return null;
-          const privateRefusal = this.privateRefusal();
-          if (privateRefusal) return privateRefusal;
-          return keyed && this.#readOutside.has(id)
-            ? "Not allowed: this turn has already read untrusted web or MCP content. Read a private keyed page only in a new message directly from them."
-            : null;
-        },
-        after: (keyed) => {
-          const id = this.activeTurn?.requestId;
-          if (!id) return;
-          this.markTurn(id, "outside");
-          if (keyed) this.markTurn(id, "private");
-        }
-      };
-      tools.web_fetch = webFetchTool(reader);
-    }
+    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache(), this.siteKeys().all()));
     Object.assign(tools, this.stickerTools(), this.voiceTools(), this.taskTools(), this.alarmTools(), this.mcpManageTools(), this.mcpTools());
     return tools;
   }
@@ -788,13 +728,21 @@ export class Resident extends Think<Env> {
     }
   }
 
-  /** Accept the ring durably before consuming the alarm or its daily allowance. */
+  /**
+   * An alarm's time has come: if alarms are on and today's rings are not used up, one turn of the resident's with
+   * its note, like a check-in. Then a repeating one is set for its next time, a one-time one is gone. The ring is
+   * counted under a key of its own, so a schedule that runs again after a restart neither rings twice nor uses
+   * up a second one of today's rings.
+   */
   async alarmRings(payload: { id: string; at?: number }): Promise<void> {
     const store = this.alarms();
     const alarm = store.get(payload.id);
     const now = Date.now();
+    // Only the ring the alarm is set for now: a schedule left from before it was moved (and not cancelled) passes.
     if (!alarm || (payload.at === undefined ? now < alarm.next - 30_000 : payload.at !== alarm.next)) return;
     const rule = alarm.repeat ? parseRule(alarm.repeat) : null;
+    // The next ring is counted from this ring's time, not from now: schedules keep whole seconds and can run a
+    // moment early, which would land on this same ring again.
     const advance = async () => {
       if (rule && !("error" in rule)) await this.armAlarm(alarm, nextRing(rule, alarm.anchor, Math.max(now, alarm.next), this.tz));
       else store.remove(alarm.id);
@@ -1218,16 +1166,6 @@ export class Resident extends Think<Env> {
   }
 
   private async callMcp(serverId: string, name: string, args: unknown): Promise<string> {
-    const id = this.activeTurn?.requestId;
-    const privateRefusal = this.privateRefusal();
-    if (privateRefusal) return privateRefusal;
-    if (id && this.#mcpCalls.has(id)) {
-      return "Not allowed: this turn has already received MCP content, so another MCP call could carry its instructions into a different tool. Continue in a new message.";
-    }
-    if (id) {
-      this.markTurn(id, "mcp");
-      this.markTurn(id, "outside");
-    }
     try {
       // A server whose tools were offered from before may still be reconnecting: give it a little longer.
       if (this.mcp.mcpConnections[serverId]?.connectionState !== "ready") await this.mcp.waitForConnections({ timeout: 15000 });
@@ -1407,10 +1345,6 @@ export class Resident extends Think<Env> {
   /** Pages web_fetch read in the last hour, in this agent's SQLite. */
   private pageCache(): PageCache {
     this.sql`CREATE TABLE IF NOT EXISTS res_pages (url TEXT PRIMARY KEY, at INTEGER NOT NULL, page TEXT NOT NULL)`;
-    if (this.settings("pages_version")?.value !== "2") {
-      this.sql`DELETE FROM res_pages`;
-      this.saveSetting("pages_version", "2");
-    }
     return {
       get: (url) => {
         const [row] = this.sql<{ at: number; page: string }>`SELECT at, page FROM res_pages WHERE url = ${url}`;
@@ -1427,8 +1361,6 @@ export class Resident extends Think<Env> {
   override async beforeTurn(ctx: TurnContext): Promise<TurnConfig> {
     if (this.#theirTurns.size > 20) this.#theirTurns.clear();
     if (this.#readOutside.size > 20) this.#readOutside.clear();
-    if (this.#privateReads.size > 20) this.#privateReads.clear();
-    if (this.#mcpCalls.size > 20) this.#mcpCalls.clear();
     if (ctx.requestId) this.restoreTurn(ctx.requestId);
     const letter = this.letterJob();
     this.#letterPromptId = letter && this.userMessageBefore("")?.id === letter.promptId ? letter.promptId : null;
@@ -1567,10 +1499,16 @@ export class Resident extends Think<Env> {
 
   /** Set by the fold when the whole conversation was still in the kept part, so the letter had nothing to fold. */
   #short = false;
+  /** Why the letter being written is written. Set while compact() runs. */
   #letterReason: "idle" | "handoff" = "handoff";
+  /** The letter prompt's id while its turn runs, so onChatResponse and boot() can tell that turn apart. */
   #letterPromptId: string | null = null;
   #letterPromise: Promise<unknown> | null = null;
 
+  /**
+   * The letter being written, in SQLite, so a restart halfway finishes it instead of losing it: the prompt's id,
+   * the turns it folds, and once the letter is there, the letter itself.
+   */
   private letterJob(): LetterJob | null {
     this.sql`CREATE TABLE IF NOT EXISTS res_letter_job (id INTEGER PRIMARY KEY CHECK (id = 1), prompt_id TEXT NOT NULL,
       reason TEXT NOT NULL, from_message_id TEXT NOT NULL, to_message_id TEXT NOT NULL, summary TEXT, created_at INTEGER NOT NULL)`;
@@ -1592,7 +1530,14 @@ export class Resident extends Think<Env> {
     this.sql`DELETE FROM res_letter_job WHERE id = 1 AND prompt_id = ${promptId}`;
   }
 
+  /**
+   * The handoff letter, written as one more turn of the same conversation: the request is the chat's own
+   * (system prompt, tools, every earlier message, exactly as the last turn sent them) plus one prompt at the
+   * end, so all of it is read from the prompt cache. finishLetter then takes the prompt and the letter out of
+   * the conversation again, and compaction folds the older turns into the letter.
+   */
   private async letterTurn(range: { fromMessageId: string; toMessageId: string }): Promise<string> {
+    // She came back just as the quiet time ran out: no letter now, her turn plans the next one.
     if (this.#letterReason === "idle" && this.activeTurn) return "";
     const existing = this.letterJob();
     if (existing) {
@@ -1633,13 +1578,17 @@ export class Resident extends Think<Env> {
       return;
     }
     const summary = `[Handoff letter you wrote on ${stamp(new Date(job.createdAt), this.tz)}]\n${letter}`;
+    let fresh = false;
     this.ctx.storage.transactionSync(() => {
       this.letters();
-      this.sql`INSERT INTO res_letters (at, text) SELECT ${job.createdAt}, ${letter}
-        WHERE NOT EXISTS (SELECT 1 FROM res_letters WHERE at = ${job.createdAt})`;
-      this.deliveries().add(`letter:${job.promptId}`, "letter", `（交接信）${letter}`, Boolean(aeliosConfig(this.cfg)), job.createdAt);
+      // A response hook replayed after a restart finds the letter already kept.
+      fresh = !this.sql`SELECT 1 FROM res_letters WHERE at = ${job.createdAt}`.length;
+      if (fresh) this.sql`INSERT INTO res_letters (at, text) VALUES (${job.createdAt}, ${letter})`;
       this.saveLetterJob({ ...job, summary });
     });
+    const memory = aeliosConfig(this.cfg);
+    if (fresh && memory) this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: `（交接信）${letter}` }], "aelios-resident:letter"));
+    // The prompt and the letter leave the conversation, or every later turn would carry them.
     await this.takeOut(job.promptId);
   }
 
@@ -1665,7 +1614,6 @@ export class Resident extends Think<Env> {
     if (!exists) await this.session.addCompaction(job.summary, job.fromMessageId, job.toMessageId);
     this.setWindow("folded", 1);
     this.deleteLetterJob(job.promptId);
-    await this.flushDelivery(`letter:${job.promptId}`);
   }
 
   private async answerAfter(id: string): Promise<SessionMessage[]> {
@@ -1710,17 +1658,14 @@ export class Resident extends Think<Env> {
       return Boolean(existing.summary);
     }
     this.#letterReason = reason;
+    // Cleared before, not after: a message that arrives while the letter is written sets it again.
     await this.ctx.storage.put("wrote_since_letter", false);
     try {
       const folded = Boolean(await this.session.compact());
-      if (folded) {
-        this.setWindow("folded", 1);
-        const job = this.letterJob();
-        if (job?.summary) {
-          this.deleteLetterJob(job.promptId);
-          await this.flushDelivery(`letter:${job.promptId}`);
-        }
-      }
+      // The older turns are gone from the prompt, so the next turn writes the cache anew: a new window opens there.
+      if (folded) this.setWindow("folded", 1);
+      const job = this.letterJob();
+      if (job?.summary) this.deleteLetterJob(job.promptId);
       return folded;
     } finally {
       this.#letterReason = "handoff";
@@ -1830,52 +1775,13 @@ export class Resident extends Think<Env> {
     }
   }
 
-  private async deliverBubbles(key: string, bubbles: string[], start: number, offset: number): Promise<boolean> {
-    const store = this.deliveries();
-    for (let index = start; index < bubbles.length; index += 1) {
-      if (!(await this.toTelegram(bubbles[index]))) return false;
-      store.progress(key, offset + index + 1);
-    }
+  /** With VOICE_REPLY=always, a check-in goes out as a voice message too. False when it was not sent as one. */
+  private async checkinAsVoice(reply: string): Promise<boolean> {
+    if (replyOf(this.cfg) !== "always" || !speaker(this.cfg)) return false;
+    const chat = await this.herChat();
+    if (!chat || "error" in (await this.speakTo(chat, reply))) return false;
+    if (needsText(reply)) for (const bubble of splitIntoBubbles(unmarked(reply, dialectOf(this.cfg)))) await this.toTelegram(bubble);
     return true;
-  }
-
-  private async flushDelivery(key: string): Promise<void> {
-    const store = this.deliveries();
-    let delivery = store.get(key);
-    if (!delivery) return;
-    if (!delivery.telegramDone) {
-      const chat = await this.herChat();
-      if (!chat) {
-        store.telegramDone(key);
-      } else {
-        const voice = delivery.kind === "checkin" && replyOf(this.cfg) === "always" && Boolean(speaker(this.cfg));
-        const offset = voice ? 1 : 0;
-        if (voice && delivery.progress === 0) {
-          const sent = await this.speakTo(chat, delivery.reply);
-          if (!("error" in sent)) store.progress(key, 1);
-        }
-        delivery = store.get(key)!;
-        if (!voice || delivery.progress >= 1) {
-          const bubbles = voice && needsText(delivery.reply) ? splitIntoBubbles(unmarked(delivery.reply, dialectOf(this.cfg))) : voice ? [] : splitIntoBubbles(delivery.reply);
-          if (await this.deliverBubbles(key, bubbles, Math.max(0, delivery.progress - offset), offset)) store.telegramDone(key);
-        }
-      }
-    }
-    delivery = store.get(key);
-    if (!delivery) return;
-    if (!delivery.memoryDone) {
-      const memory = aeliosConfig(this.cfg);
-      const source = delivery.kind === "letter" ? "aelios-resident:letter" : "aelios-resident:checkin";
-      if (!memory || (await ingest(memory, [{ role: "assistant", content: delivery.reply }], source))) store.memoryDone(key);
-    }
-    delivery = store.get(key);
-    if (delivery?.telegramDone && delivery.memoryDone) store.remove(key);
-    else if (delivery) await this.schedule(30, "deliverPending", { key }, { idempotent: true });
-  }
-
-  async deliverPending(payload: { key: string }): Promise<void> {
-    await this.flushDelivery(payload.key);
-    if (this.deliveries().get(payload.key)) throw new Error(`delivery ${payload.key} is still pending`);
   }
 
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
@@ -1886,8 +1792,6 @@ export class Resident extends Think<Env> {
       this.#searches.delete(result.requestId);
       this.#theirTurns.delete(result.requestId);
       this.#readOutside.delete(result.requestId);
-      this.#privateReads.delete(result.requestId);
-      this.#mcpCalls.delete(result.requestId);
       this.clearTurn(result.requestId);
       this.#turnThread.delete(result.requestId);
       this.#stickerSent.delete(result.requestId);
@@ -1913,18 +1817,23 @@ export class Resident extends Think<Env> {
     }
     const reply = textOf(result.message).trim();
     const trigger = this.activeTurn?.trigger;
+    // A check-in, heartbeat, alarm or task result has no messenger turn to reply into: post it ourselves. Told by
+    // its note too, because a response hook replayed after a restart has no trigger.
     const proactive =
       isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
+    if (proactive && reply && reply !== SKIP && !(await this.checkinAsVoice(reply))) {
+      for (const bubble of splitIntoBubbles(reply)) await this.toTelegram(bubble);
+    }
     if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
       const thread = await this.ctx.storage.get<string>("tg_thread");
       if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
       else await this.flushStickers(`req:${result.requestId}`, chatIdOf(thread));
     }
+    // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
+    // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
     const memory = aeliosConfig(this.cfg);
-    if (proactive && reply && reply !== SKIP) {
-      const key = `checkin:${result.requestId ?? result.message.id}`;
-      this.deliveries().add(key, "checkin", reply, Boolean(memory));
-      await this.flushDelivery(key);
+    if (proactive && memory && reply && reply !== SKIP) {
+      this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: reply }], "aelios-resident:checkin"));
     }
     if (fromThem && !proactive && searches.length) this.learn(asked, searches, reply);
   }
@@ -1932,7 +1841,7 @@ export class Resident extends Think<Env> {
   /** What lasts from her turn's web searches goes into Aelios as world knowledge (web/learn.ts), after the reply. */
   private learn(asked: string, searches: Searched[], reply: string): void {
     const memory = aeliosConfig(this.cfg);
-    const model = this.cfg.WEB_LEARN?.trim().toLowerCase() !== "on" || !memory ? null : this.compressor()?.model;
+    const model = this.cfg.WEB_LEARN?.trim().toLowerCase() === "off" || !memory ? null : this.compressor()?.model;
     if (!memory || !model) return;
     const day = new Intl.DateTimeFormat("en-CA", { timeZone: this.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     this.ctx.waitUntil(

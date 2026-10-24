@@ -37,15 +37,13 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-export type Page = { url: string; title?: string; content: string; browser?: boolean; keyed?: boolean; note?: string };
+export type Page = { url: string; title?: string; content: string; browser?: boolean; note?: string };
 
 /** Pages read in the last hour, by the URL that was asked for. */
 export type PageCache = { get(url: string): Page | null; put(url: string, page: Page): void };
 
-export type ReaderPolicy = { before(url: string, keyed: boolean): string | null; after(keyed: boolean): void };
-
 /** What web_fetch reads with. Missing parts are skipped: no browser, no compression, no cache, no keys. */
-export type Reader = { browser?: BrowserRun; compressor: Compressor | null; cache?: PageCache; keys?: readonly SiteKey[]; policy?: ReaderPolicy };
+export type Reader = { browser?: BrowserRun; compressor: Compressor | null; cache?: PageCache; keys?: readonly SiteKey[] };
 
 /** A refusal the browser must not retry: the address is not allowed, or the page is not there or not text. */
 class Final extends Error {}
@@ -75,8 +73,6 @@ export function webFetchTool(reader: Reader) {
       query: z.string().optional().describe("What you want from the page, in a few words. Optional.")
     }),
     async execute({ url, query }, { abortSignal }) {
-      const refused = reader.policy?.before(url, Boolean(headersFor(reader.keys ?? [], url)));
-      if (refused) return refused;
       const check = await validateUrlWithDns(url);
       if (!check.valid) return `Cannot read this URL: ${check.error}`;
       const timeout = AbortSignal.timeout(TOOL_TIMEOUT_MS);
@@ -87,9 +83,6 @@ export function webFetchTool(reader: Reader) {
           page = await readPage(reader, url, signal);
           remember(reader, url, page);
         }
-        const refusedCached = reader.policy?.before(url, Boolean(page.keyed));
-        if (refusedCached) return refusedCached;
-        reader.policy?.after(Boolean(page.keyed));
         // What the model made of this page for this question is kept too, so asking it again costs nothing.
         const asked = `${url}\n${query?.trim() ?? ""}`;
         const done = cached(reader, asked);
@@ -130,12 +123,12 @@ function render(page: Page, content: string, note?: string): string {
 }
 
 /** Read a page: plainly first, in the browser when that comes back empty or refused. */
-export async function readPage(reader: Pick<Reader, "browser" | "keys" | "policy">, url: string, signal: AbortSignal): Promise<Page> {
+export async function readPage(reader: Pick<Reader, "browser" | "keys">, url: string, signal: AbortSignal): Promise<Page> {
   const keys = reader.keys ?? [];
   let plain: (Page & { thin: boolean }) | null = null;
   let failure = "";
   try {
-    plain = await plainFetch(url, signal, keys, reader.policy);
+    plain = await plainFetch(url, signal, keys);
     if (!plain.thin) return stripThin(plain);
   } catch (error) {
     if (error instanceof Final || signal.aborted) throw error;
@@ -169,18 +162,14 @@ function withKey(base: Record<string, string>, key: Record<string, string> | nul
   return headers;
 }
 
-async function plainFetch(url: string, signal: AbortSignal, keys: readonly SiteKey[] = [], policy?: ReaderPolicy): Promise<Page & { thin: boolean }> {
+async function plainFetch(url: string, signal: AbortSignal, keys: readonly SiteKey[] = []): Promise<Page & { thin: boolean }> {
   const fetchSignal = AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]);
   const dns = new Map<string, Promise<string[]>>();
   let current = url;
   let response: Response;
-  let keyed = false;
   // The key is looked up again at every hop: it goes to its own site only, never along a redirect elsewhere.
   let key = headersFor(keys, current);
   for (let hop = 0; ; hop++) {
-    const refused = policy?.before(current, Boolean(key));
-    if (refused) throw new Final(refused);
-    if (key) keyed = true;
     response = await fetch(current, {
       headers: withKey(
         {
@@ -225,14 +214,14 @@ async function plainFetch(url: string, signal: AbortSignal, keys: readonly SiteK
   }
   const type = (response.headers.get("content-type") ?? "").toLowerCase();
   if (type.includes("json") || type.includes("text/plain") || type.includes("text/markdown")) {
-    return { url: current, content: await readText(response, type), keyed, thin: false };
+    return { url: current, content: await readText(response, type), thin: false };
   }
   if (type && !type.includes("html") && !type.includes("xml")) {
     await response.body?.cancel();
     throw new Final(`it is ${type.split(";")[0]}, not a text page`);
   }
   const { markdown, title, textLength } = htmlToMarkdown(await readText(response, type), current);
-  return { url: current, ...(title ? { title } : {}), content: markdown, keyed, thin: textLength < THIN_CHARS };
+  return { url: current, ...(title ? { title } : {}), content: markdown, thin: textLength < THIN_CHARS };
 }
 
 /** The body as text, at most MAX_BYTES of it, in the charset the page declares (many Chinese sites still use GBK). */

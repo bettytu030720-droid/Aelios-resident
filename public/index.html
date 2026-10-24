@@ -707,7 +707,7 @@ function resident() {
       { key: 'WEB_SEARCH', label: '搜网', def: 'on', help: '先用你自己的搜索 key（在「更多设置」里填），都没有就用 Cloudflare 的，按次扣 Gateway 额度。',
         labels: { on: '开', off: '关', ceramic: 'Ceramic', exa: 'Exa', linkup: 'Linkup' } },
       { key: 'WEB_FETCH', label: '读网页', def: 'on', labels: ON_OFF },
-      { key: 'WEB_LEARN', label: '搜到的知识存进 Aelios', help: '默认关。打开会挑几条长期知识自动存起来，也可能把恶意搜索结果写进长期记忆。要接着 Aelios。', def: 'off', labels: ON_OFF },
+      { key: 'WEB_LEARN', label: '搜到的知识存进 Aelios', help: '挑几条长期都对的存起来，下次聊到不用再搜。要接着 Aelios。', def: 'on', labels: ON_OFF },
       { key: 'TAVILY_API_KEY', label: 'Tavily key', help: '自己的搜索 key，有几个填几个，按 Tavily、Brave、Perplexity 的顺序用。', more: true },
       { key: 'BRAVE_API_KEY', label: 'Brave key', more: true },
       { key: 'PERPLEXITY_API_KEY', label: 'Perplexity key', more: true },

@@ -313,7 +313,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 
 - 问用户有没有 Tavily、Brave、Perplexity 的 key，有几个填几个：`TAVILY_API_KEY`、`BRAVE_API_KEY`、`PERPLEXITY_API_KEY`，按这个顺序用，一家不行换下一家。
 - 不想让它搜：`WEB_SEARCH` 填 `off`。
-- 搜到的长期知识默认不自动存进 Aelios（`WEB_LEARN=off`）。只有用户明确接受恶意搜索结果污染长期记忆的风险时才填 `on`。
+- 接了 Aelios 的，搜到的长期知识默认会存进 Aelios（`WEB_LEARN`）；用户不想要就填 `off`。
 
 ### 读网页
 

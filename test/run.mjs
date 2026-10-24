@@ -730,14 +730,6 @@ if (phase === "mcp") {
     assert.deepEqual(call.args, { text: "hi", title: "t" });
   });
 
-  await step("an MCP result cannot drive a second MCP call in the same turn", async () => {
-    const before = (await log()).filter((e) => e.kind === "ext.ext" && e.method === "tools/call").length;
-    const out = await say("连用MCP");
-    assert.match(out, /another MCP call/);
-    const after = (await log()).filter((e) => e.kind === "ext.ext" && e.method === "tools/call").length;
-    assert.equal(after, before + 1, "only the first call reaches the server");
-  });
-
   await step("a server that wants a key fails without one and is not kept, and works with it", async () => {
     let body = await (await web("/web/mcp", KEY, { name: "keyed", url: `${MOCK}/keyed/mcp` })).json();
     assert.ok(body.error, JSON.stringify(body));

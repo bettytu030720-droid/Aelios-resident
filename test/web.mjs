@@ -29,7 +29,6 @@ const pages = {
   "https://example.com/b": () => html(article("第二页", "跳过来了。".repeat(120))),
   "https://example.com/to-local": () => new Response(null, { status: 301, headers: { location: "http://127.0.0.1/admin" } }),
   "https://example.com/to-evil": () => new Response(null, { status: 302, headers: { location: "https://evil.test/" } }),
-  "https://example.com/to-gated": () => new Response(null, { status: 302, headers: { location: "https://gated.example/a/page" } }),
   "https://example.com/loop": () => new Response(null, { status: 302, headers: { location: "https://example.com/loop" } }),
   "https://example.com/shell": () => html('<html><head><title>壳</title></head><body><div id="app"></div></body></html>'),
   "https://example.com/missing": () => new Response("nope", { status: 404 }),
@@ -332,42 +331,6 @@ await step("a keyed page is never opened in the browser, which would not carry t
   const plain404 = await read({ compressor: null }, { url: "https://example.com/missing" });
   assert.doesNotMatch(plain404, /key/);
   assert.equal(b.calls.length, 0);
-});
-
-await step("one turn cannot chain public content into a keyed read, or a keyed read into another URL", async () => {
-  let publicRead = false;
-  let privateRead = false;
-  const policy = {
-    before(_url, keyed) {
-      if (privateRead) return "private content cannot leave";
-      if (keyed && publicRead) return "untrusted content cannot open a keyed page";
-      return null;
-    },
-    after(keyed) {
-      if (keyed) privateRead = true;
-      else publicRead = true;
-    }
-  };
-  const reader = { compressor: null, keys: KEYS, policy, cache: cache() };
-  assert.match(await read(reader, { url: "https://example.com/b" }), /^# 第二页/);
-  assert.equal(await read(reader, { url: "https://gated.example/a/page" }), "untrusted content cannot open a keyed page");
-  assert.ok(!requests.some((r) => r.url.startsWith("https://gated.example/")), "the keyed request is never made");
-
-  publicRead = false;
-  privateRead = false;
-  assert.match(await read(reader, { url: "https://gated.example/a/page" }), /^# 教材/);
-  const before = requests.length;
-  assert.equal(await read(reader, { url: "https://example.com/to-evil" }), "private content cannot leave");
-  assert.equal(requests.length, before, "no attacker-controlled URL is requested after the private read");
-
-  publicRead = false;
-  privateRead = false;
-  assert.match(await read(reader, { url: "https://example.com/to-gated" }), /^# 教材/);
-  publicRead = true;
-  privateRead = false;
-  const cachedRequests = requests.length;
-  assert.equal(await read(reader, { url: "https://example.com/to-gated" }), "untrusted content cannot open a keyed page");
-  assert.equal(requests.length, cachedRequests, "a cached redirect cannot bypass the keyed-page check");
 });
 
 await step("DNS validation fails closed on empty answers and CNAME-only answers", async () => {
