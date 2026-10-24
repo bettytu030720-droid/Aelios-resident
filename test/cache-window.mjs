@@ -49,6 +49,25 @@ await test("a new window opens only when the cache has run out, a letter has fol
   assert.equal(w.opensWindow({ ...warm, openedAt: null }, now, hour), true);
 });
 
+await test("the letter's turn: the marker on the last message before the prompt that was not a tool's, or none when the cache ran out", () => {
+  const cache = { type: "ephemeral", ttl: "1h" };
+  const chat = [
+    { role: "user", content: "早" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "t", toolName: "web_search", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "t", toolName: "web_search", output: { type: "text", value: "x" } }] },
+    { role: "user", content: [{ type: "text", text: "再来一句" }], providerOptions: { other: { kept: true } } },
+    { role: "assistant", content: "好" },
+    { role: "user", content: "(Not from them: time to write a handoff letter" }
+  ];
+  const marked = w.markedForLetter(chat, cache);
+  assert.deepEqual(marked[3].providerOptions, { other: { kept: true }, anthropic: { cacheControl: cache } });
+  assert.deepEqual(marked.filter((m, i) => i !== 3), chat.filter((m, i) => i !== 3), "nothing else changes");
+  assert.equal(chat[3].providerOptions.anthropic, undefined, "the turn's own messages are left as they were");
+  assert.equal(w.markedForLetter(chat, null), chat);
+  assert.equal(w.markedForLetter([chat[5]], cache).length, 1);
+  assert.deepEqual(w.markedForLetter([chat[5]], cache), [chat[5]], "nothing before the prompt: no marker");
+});
+
 await test("the boot packet is the latest diary under its date, without precious notes or the glossary", () => {
   const data = {
     daily_log: { date: "2026-10-21", title: "闲聊日", summary: "聊了周末去哪儿玩。" },

@@ -171,7 +171,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.startsWith("(Not from them: time to write a handoff letter")) {
     const all = prompt.map((m) => textOf(m.content)).join("\n");
     const merged = all.includes("[Handoff letter") ? "（并了上一封信）" : "";
-    return { text: `亲爱的下一个我：她刚才在测试交接信。${merged}${repeatsPrevious(options) ? "（前文和上一轮一字不差）" : "（前文变了）"}` };
+    return { text: `亲爱的下一个我：她刚才在测试交接信。${merged}${repeatsPrevious(options) ? "（前文和上一轮一字不差）" : "（前文变了）"}${letterMark(options)}` };
   }
   // How many pictures came with her message, and whether Think's line of attachment text is still there.
   if (said.includes("看图")) {
@@ -186,11 +186,39 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   return { text: `收到：${user}\n\n这是第二个气泡。` };
 }
 
+type Marked = { providerOptions?: { anthropic?: { cacheControl?: unknown } } };
+const cacheMark = (on: Marked | undefined) => on?.providerOptions?.anthropic?.cacheControl;
+
+/** Where the letter's request puts the cache marker: at the end, on the message before the prompt, or nowhere. */
+function letterMark(options: LanguageModelV4CallOptions): string {
+  if (cacheMark(options)) return "（缓存标记在最后）";
+  const messages = options.prompt.filter((m) => m.role !== "system");
+  const marked = messages.flatMap((m, i) => (cacheMark(m as Marked) ? [i] : []));
+  const before = messages.findLastIndex((m, i) => i < messages.length - 1 && m.role === "user");
+  if (!marked.length) return "（没有缓存标记）";
+  return marked.length === 1 && marked[0] === before ? "（缓存标记在上一轮那句）" : "（缓存标记在别处）";
+}
+
+// Without the cache markers: where the marker sits is not part of what is sent.
+function withoutMarks(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutMarks);
+  if (!value || typeof value !== "object") return value;
+  const kept: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (key === "cacheControl") continue;
+    const rest = withoutMarks(inner);
+    if ((key === "anthropic" || key === "providerOptions") && rest && typeof rest === "object" && !Object.keys(rest).length) continue;
+    kept[key] = rest;
+  }
+  return kept;
+}
+const unmarked = (value: unknown) => JSON.stringify(withoutMarks(value));
+
 function shape(options: LanguageModelV4CallOptions) {
   return {
     system: JSON.stringify(options.prompt.filter((m) => m.role === "system")),
-    tools: JSON.stringify(options.tools ?? []) + JSON.stringify(options.providerOptions ?? {}),
-    messages: options.prompt.filter((m) => m.role !== "system").map((m) => JSON.stringify(m))
+    tools: JSON.stringify(options.tools ?? []) + unmarked(options.providerOptions ?? {}),
+    messages: options.prompt.filter((m) => m.role !== "system").map((m) => unmarked(m))
   };
 }
 

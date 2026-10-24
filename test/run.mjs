@@ -229,6 +229,7 @@ if (phase === "main") {
     const [out] = await waitForSends(before, 1, 30000);
     assert.match(out, /^交接信写好了，旧的聊天收起来了：\n\n亲爱的下一个我/);
     assert.ok(out.includes("（前文和上一轮一字不差）"), `the letter turn must repeat the chat's request, to be read from cache: ${out}`);
+    assert.ok(out.includes("（缓存标记在上一轮那句）"), `the letter turn reads the cache and writes none: the marker stays where the turn before put it: ${out}`);
     before = (await sent()).length;
     await post("交接信在吗");
     assert.deepEqual(await waitForSends(before, 1), ["交接信在。"]);
@@ -391,6 +392,15 @@ if (phase === "main") {
     const letter = (await log()).filter((e) => e.kind === "aelios.messages").at(-1);
     assert.equal(letter.purpose, "auxiliary");
     assert.match(JSON.stringify(letter.body.messages.at(-1)), /time to write a handoff letter/);
+    // Nothing reads what the letter's turn would write, so the marker is on her last message, as on her turn.
+    assert.equal(letter.body.cache_control, undefined, "no marker at the end");
+    const marked = letter.body.messages.flatMap((m, i) => (Array.isArray(m.content) ? m.content : []).map((b, j) => (b.cache_control ? [i, j, b] : null)).filter(Boolean));
+    const her = letter.body.messages.length - 3;
+    assert.equal(marked.length, 1, JSON.stringify(marked));
+    assert.equal(marked[0][0], her);
+    assert.equal(marked[0][1], letter.body.messages[her].content.length - 1, "on its last block");
+    assert.match(JSON.stringify(letter.body.messages[her]), /再来一句/);
+    assert.deepEqual(marked[0][2].cache_control, { type: "ephemeral", ttl: "1h" });
   });
 
   await step("a model Aelios keeps no memory for is not picked; a Workers AI id goes under workers-ai/", async () => {
@@ -591,7 +601,7 @@ if (phase === "idle") {
       await sleep(300);
       ingest = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
     }
-    assert.match(ingest[0].body.messages[0].content, /^（交接信）亲爱的下一个我.*（前文和上一轮一字不差）/);
+    assert.match(ingest[0].body.messages[0].content, /^（交接信）亲爱的下一个我.*（前文和上一轮一字不差）（缓存标记在上一轮那句）/);
     assert.deepEqual((await sent()).slice(before), [], "the idle letter sends her nothing");
     const { data: lines } = await (await fetch(`${WORKER}/web/messages`, { headers: { "x-web-key": "test-web-key" } })).json();
     assert.ok(lines.some((l) => l.kind === "letter"), JSON.stringify(lines));
