@@ -210,6 +210,10 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     }
     case "POST /web/stickers/delete":
       return Response.json(await agent.webRemoveSticker(String(body.key ?? "")));
+    case "GET /web/alarms":
+      return Response.json(await agent.webAlarms());
+    case "POST /web/alarms/remove":
+      return Response.json(await agent.webRemoveAlarm(String(body.id ?? "")));
     case "GET /web/tasks":
       return Response.json(await agent.webTasks(url.origin));
     case "POST /web/tasks/test": {

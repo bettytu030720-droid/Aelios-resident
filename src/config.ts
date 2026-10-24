@@ -3,6 +3,7 @@
 // Only what is needed before the door opens stays in Cloudflare: TG_BOT_TOKEN, TG_WEBHOOK_SECRET, WEB_KEY.
 
 import { fireUrlProblem } from "./cloud-tasks";
+import { MAX_HEARTBEATS } from "./prompts";
 import { VOICE_PROVIDERS, VOICE_REPLIES } from "./voice";
 
 type Kind = "text" | "secret" | "choice";
@@ -34,6 +35,8 @@ const timeZone = (value: string) => {
 };
 
 const count = (value: string) => (Number(value) > 0 ? null : "要填一个大于 0 的数");
+const times = (value: string) =>
+  /^(on|off)$/i.test(value) || (/^\d+$/.test(value) && Number(value) <= MAX_HEARTBEATS) ? null : `填 0 到 ${MAX_HEARTBEATS} 次，0 是不问`;
 const minutes = (value: string) => (value.toLowerCase() === "off" || Number(value) >= 0 ? null : "填分钟数，或者 off");
 
 export const FIELDS: readonly Field[] = [
@@ -49,6 +52,8 @@ export const FIELDS: readonly Field[] = [
   { key: "TIME_ZONE", kind: "text", check: timeZone },
   // Checked by arming it (Resident.webSetConfig).
   { key: "CHECKIN_SCHEDULE", kind: "text" },
+  { key: "HEARTBEAT", kind: "text", check: times },
+  { key: "ALARMS", kind: "choice", choices: ["on", "off"] },
   { key: "LETTER_IDLE_MINUTES", kind: "text", check: minutes },
   { key: "KEEP_RECENT_TOKENS", kind: "text", check: count },
   { key: "THINKING_EFFORT", kind: "choice", choices: ["auto", "low", "medium", "high", "xhigh", "max"] },

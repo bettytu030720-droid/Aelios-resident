@@ -67,6 +67,22 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // Cloud tasks: one sent after a web page was read (refused), three in one reply (the third refused).
   if (said.includes("读完再派活") && last?.role === "tool" && toolOf(last.content) === "web_fetch") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
   if (said.includes("派三单") && last?.role === "tool" && toolResultsSince(prompt) < 3) return { tool: "cloud_task", input: cloudJob(`第 ${toolResultsSince(prompt) + 1} 单`) };
+  // The heartbeat: with alarms on it first asks for an alarm too soon for a turn of its own (refused), then one far
+  // enough ahead, and passes; with them off it reaches out.
+  if (said.startsWith("(Not from them: a heartbeat")) {
+    // The first one reaches out, the second passes, the third tries again.
+    const n = Number(said.match(/heartbeat (\d+) of/)?.[1] ?? 1);
+    if (!said.includes("set_alarm")) return { text: n === 1 ? "在忙吗？\n\n想你了。" : n === 2 ? "SKIP" : "还在忙吗？" };
+    const rounds = toolResultsSince(prompt);
+    if (rounds < 2) return { tool: "set_alarm", input: { note: "晚点再问问她", in_minutes: rounds === 0 ? 30 : 61 } };
+    return { text: "SKIP" };
+  }
+  if (said.startsWith("(Not from them: an alarm you set")) return { text: `闹钟响了：${said.match(/<<<\n([\s\S]*?)\n>>>/)?.[1] ?? ""}` };
+  // Six alarms in one reply, each every day at its own hour.
+  if (said.includes("定六个闹钟") && (last?.role !== "tool" || toolResultsSince(prompt) < 6)) {
+    const n = last?.role === "tool" ? toolResultsSince(prompt) : 0;
+    return { tool: "set_alarm", input: { note: `第 ${n + 1} 个`, repeat: `every day at ${String(n + 10).padStart(2, "0")}:00` } };
+  }
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
   if (said.includes("读完再派活")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   if (said.includes("派三单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
@@ -79,6 +95,17 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("读网页怎么说")) {
     const fetch = (options.tools ?? []).find((t) => t.type === "function" && t.name === "web_fetch") as { description?: string } | undefined;
     return { text: fetch?.description ?? "没有 web_fetch。" };
+  }
+  if (said.includes("闹钟工具有哪些")) {
+    const names = (options.tools ?? []).filter((t) => t.type === "function" && /alarm/.test(t.name)).map((t) => t.name);
+    return { text: names.join("|") || "没有闹钟工具。" };
+  }
+  if (said.includes("等会儿提醒我喝水")) return { tool: "set_alarm", input: { note: "提醒她喝水", in_minutes: 40 } };
+  if (said.includes("每天早上叫我")) return { tool: "set_alarm", input: { note: "叫她起床", repeat: "every day at 09:00" } };
+  if (said.includes("看看闹钟")) return { tool: "list_alarms", input: {} };
+  if (said.includes("取消那个闹钟")) {
+    const id = [...prompt.map((m) => textOf(m.content)).join("\n").matchAll(/\ba_[0-9a-f]{8}\b/g)].at(-1)?.[0];
+    return { tool: "cancel_alarm", input: { id } };
   }
   if (said.includes("云端工具有哪些")) {
     const names = (options.tools ?? []).filter((t) => t.type === "function").map((t) => t.name);

@@ -454,6 +454,25 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             </div>
           </div>
         </template>
+        <template x-if="group.id === 'chat'">
+          <div class="tasks-extra" x-show="alarms.alarms.length">
+            <div class="field">
+              <div class="name"><span>它定的闹钟</span><span class="tag" x-text="alarms.alarms.length + ' / ' + alarms.limit"></span></div>
+              <p class="hint" x-show="!alarms.on">闹钟关着，这些到点不响；一次的过了时间就没了。</p>
+              <template x-for="alarm in alarms.alarms" :key="alarm.id">
+                <div class="task-row">
+                  <div class="task-top"><span class="task-title" x-text="alarm.note"></span><span class="task-status" x-text="alarm.when"></span></div>
+                  <div class="row">
+                    <span class="hint" x-text="'下次 ' + alarm.next"></span>
+                    <div class="spacer"></div>
+                    <button class="btn" type="button" :disabled="Boolean(alarmBusy)" @click="removeAlarm(alarm)">删掉</button>
+                  </div>
+                </div>
+              </template>
+              <p class="error" x-show="alarmError" x-text="alarmError"></p>
+            </div>
+          </div>
+        </template>
         <template x-if="group.id === 'tasks'">
           <div class="tasks-extra" x-show="shown(metaOf('CLOUD_TASK_URL'))">
             <div class="field">
@@ -657,6 +676,10 @@ function resident() {
     { id: 'chat', title: '聊天', fields: [
       { key: 'TG_ALLOWED', label: '谁能在 Telegram 上跟它说话', help: '@用户名或 chat id，逗号隔开。空着谁都不回。', placeholder: '@your_name' },
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
+      { key: 'HEARTBEAT', label: '没动静时问它几次要不要找你', def: '3', picks: ['0', '1', '3', '5', '10'],
+        help: '到了写交接信的时候（默认 55 分钟没人说话）对话还短、没东西可收，就问它一句要不要找你，它不想就不发；之后每 55 分钟再问一次，问满这么多次或者你说话为止。每次都读热着的缓存，花的跟你发一条差不多，还把缓存续一小时。0 不问，最多 10。缓存选 5 分钟时不问。' },
+      { key: 'ALARMS', label: '让它自己定闹钟', def: 'off', labels: ON_OFF,
+        help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
     ] },
     { id: 'voice', title: '语音', fields: [
@@ -834,6 +857,9 @@ function resident() {
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
     stickers: { on: true, packs: [], left: 0 },
     cloud: { on: false, configured: false, origin: '', prompt: '', today: 0, limit: 10, tasks: [] },
+    alarms: { on: false, limit: 10, alarms: [] },
+    alarmBusy: '',
+    alarmError: '',
     cloudBusy: false,
     cloudError: '',
     stickerBusy: '',
@@ -1414,6 +1440,7 @@ function resident() {
     },
     picksFor(meta) {
       if (!meta.picks) return [];
+      if (Array.isArray(meta.picks)) return meta.picks;
       var f = this.field('VOICE_PROVIDER');
       return (f && meta.picks[f.value || f.fromWorker.toLowerCase()]) || [];
     },
@@ -1526,7 +1553,8 @@ function resident() {
           if (!text('AELIOS_URL')) return '没接';
           return (this.aelios ? '接着 ' : '填了，还没连上 ') + host(text('AELIOS_URL'));
         case 'chat':
-          return (text('TG_ALLOWED') || '谁都不回') + ' · ' + (text('CHECKIN_SCHEDULE') || '不主动找');
+          return (text('TG_ALLOWED') || '谁都不回') + ' · ' + (text('CHECKIN_SCHEDULE') || '不主动找')
+            + (this.inEffect(this.metaOf('ALARMS')) === 'on' ? ' · 闹钟 ' + this.alarms.alarms.length + ' 个' : '');
         case 'voice': {
           var voice = this.config.voice || {};
           if (voice.gap === 'off') return '只听，不发语音';
@@ -1576,6 +1604,7 @@ function resident() {
       this.loadSites().catch(function () {});
       this.loadStickers().catch(function () {});
       this.loadTasks().catch(function () {});
+      this.loadAlarms().catch(function () {});
     },
     closeConfig() {
       var self = this;
@@ -1597,10 +1626,29 @@ function resident() {
         this.notify(value ? '存好了，下一句开始用' : '清掉了，用回 Cloudflare 里的或默认的');
         if (key.indexOf('AELIOS_') === 0) this.aelios = Boolean((await this.api('/web/check')).aelios);
         if (key.indexOf('CLOUD_TASK') === 0) await this.loadTasks();
+        if (key === 'ALARMS' || key === 'TIME_ZONE') await this.loadAlarms();
       } catch (error) {
         this.configError[key] = error.message;
       } finally {
         this.configBusy = '';
+      }
+    },
+
+    // ---- alarms it set itself ----
+    async loadAlarms() {
+      this.alarms = await this.api('/web/alarms');
+    },
+    async removeAlarm(alarm) {
+      if (this.alarmBusy) return;
+      this.alarmBusy = alarm.id;
+      this.alarmError = '';
+      try {
+        this.alarms = await this.api('/web/alarms/remove', { method: 'POST', body: { id: alarm.id } });
+        this.notify('删掉了');
+      } catch (error) {
+        this.alarmError = error.message;
+      } finally {
+        this.alarmBusy = '';
       }
     },
 

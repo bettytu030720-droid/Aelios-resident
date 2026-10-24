@@ -176,3 +176,27 @@ assert.equal(page.siteKeyText(), 'Authorization: Bearer github_pat_1');
 page.siteDraft.lines[0].value = 'token abc';
 assert.equal(page.siteKeyText(), 'Authorization: token abc', 'a value with its own scheme is left alone');
 console.log('PASS keys for sites: name : value rows become the key, presets fill the names, pasted names are dropped');
+// The heartbeat is on unless turned off, alarms off unless turned on; the 聊天 row counts the alarms while they are on.
+const chatGroup = page.CONFIG_GROUPS.find((group) => group.id === 'chat');
+const chatMeta = (key) => chatGroup.fields.find((meta) => meta.key === key);
+page.config = { fields: [
+  { key: 'TG_ALLOWED', kind: 'text', value: '@her', fromWorker: '' },
+  { key: 'CHECKIN_SCHEDULE', kind: 'text', value: '', fromWorker: '' },
+  { key: 'HEARTBEAT', kind: 'text', value: '', fromWorker: '' },
+  { key: 'ALARMS', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] }
+] };
+assert.equal(page.textInEffect(chatMeta('HEARTBEAT')), '3', 'three times unless set');
+assert.deepEqual(Array.from(page.picksFor(chatMeta('HEARTBEAT'))), ['0', '1', '3', '5', '10']);
+assert.equal(page.inEffect(chatMeta('ALARMS')), 'off');
+page.alarms = { on: false, limit: 10, alarms: [{ id: 'a_1', note: '叫她起床', next: '10-25 周日 09:00', when: '每天 09:00' }] };
+assert.equal(page.sectionSummary('chat'), '@her · 不主动找');
+page.config.fields[3].value = 'on';
+assert.equal(page.sectionSummary('chat'), '@her · 不主动找 · 闹钟 1 个');
+const calls = [];
+page.api = async (path, options) => { calls.push([path, options && options.body]); return { on: true, limit: 10, alarms: [] }; };
+page.notify = () => {};
+await page.removeAlarm(page.alarms.alarms[0]);
+assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/web/alarms/remove', { id: 'a_1' }]]);
+assert.equal(page.alarms.alarms.length, 0);
+assert.ok(html.includes('x-if="group.id === \'chat\'"') && html.includes('removeAlarm(alarm)'));
+console.log('PASS heartbeat three times and alarms off by default; alarms counted in the 聊天 row and deleted from the settings page');
