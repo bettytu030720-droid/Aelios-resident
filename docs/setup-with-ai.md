@@ -22,6 +22,7 @@
 
 - 用用户的语言跟用户说话。每一步先用一句话说你要做什么。
 - **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Cloudflare 的令牌、GitHub 的令牌都不行。bot token 由用户自己存进 Cloudflare（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
+- **你手上已经有用户的 key 的**（在环境变量里，或者在你自己的配置里，比如搜索、语音那几家的），用户同意用在住户上，就照第 10 步的写法从那里直接填，别把值打印出来、别写进文件。没有的就请用户自己在网页设置页填。
 - **你生成的 `TG_WEBHOOK_SECRET` 别打印、别写进文件**，用管道直接存进 Worker（第 4 步的命令就是这么写的）。
 - **没经用户同意，别删、别换已有的东西**：已经在跑的住户 Worker 和它的 Secret（聊天记录、人设、表情包都存在 Worker 里）、Aelios 里已配好的身份、AI Gateway、存好的厂商 key 都不行。换 `WEB_KEY` 也要先问，换了以后旧钥匙就进不去了。
 - 部署只用 `npm run deploy`。**别改 `wrangler.jsonc` 的 `name`，别往里加 `vars`**：写在文件里的值每次部署都会冲掉网页上的设置。设置一律用第 5 步的接口填。
@@ -58,6 +59,8 @@
 7. **要它主动找你吗？** 要的话问什么时候，比如每天早上 9 点就是 `every day at 09:00`，工作日晚上就是 `every weekday at 21:30`。不要就不填。
 8. **接了 Aelios 的：住户跟你在别处用 Aelios 聊的，是同一个 AI 吗？** 是：第 6 步用那个助手的身份。不是：第 6 步给住户新建一个身份，问这个 AI 叫什么名字、用户希望被怎么称呼。
 9. **有没有现成的人设？** 有的话请用户给你（存成一个文件最方便），第 8 步你帮着填；不想给你就装完自己在网页上贴。
+
+搜网、读网页、语音条、表情包、叫云端 Claude Code 干活这些，先不用问，装好能聊以后在第 10 步一项一项问。
 
 ## 1. 准备工具，登录 Cloudflare
 
@@ -262,15 +265,138 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 
 填完把 `persona.txt` 删掉，或者交还给用户，别提交进仓库。用户不想给你的话，告诉用户：打开网页门，点右上角的铅笔，贴上、保存。没有人设也能聊，用的是一段很短的默认人设。
 
-## 9. 试一句
+## 9. 试一句，再打开 Mini App
 
-请用户在 Telegram 里给 bot 发一句话，有回复就全通了。也可以发 `/status`，看模型、Aelios、白名单是不是都对。
+**Telegram**：请用户在 Telegram 里给 bot 发一句话，有回复就通了。再发 `/status`，看模型和 Aelios 那两行对不对。
 
 - **bot 不回**：多半是白名单不对。跑 `npx wrangler tail aelios-resident`，请用户再发一句，日志里出现 `dropped message from a chat not in TG_ALLOWED` 的话，后面带着这个人的 `chatId` 和 `username`：把 `@username` 或数字 `chatId` 照第 5 步填进 `TG_ALLOWED`（没有用户名的就填数字）。什么日志都没有的话，看第 4 步的返回是不是都是 `"ok":true`。
 - **回了但说调不了模型**：回第 7 步。
-- 想看它在干什么：`npx wrangler tail aelios-resident`，再让用户发一句。
 
-## 10. 交给用户
+**Mini App**：第 4 步已经把 bot 左下角的菜单按钮设成了「打开网页」，点它网页门就在 Telegram 里打开，凭 Telegram 签过名的身份进门，不用填网页钥匙。请用户：
+
+1. 回到跟 bot 的私聊，点输入框左边的「打开网页」按钮（没看到的话，退出这个聊天再进来，或者重开一次 Telegram）。
+2. 看能不能打开、能不能看到刚才在 Telegram 上说的那几句。在网页里说一句，它在网页上回。
+
+打不开或者一片空白：
+
+- 跑 `npx wrangler tail aelios-resident`，请用户再点一次按钮。日志里有 `web: Mini App user not in TG_ALLOWED` 的话，后面是这个人的 `id` 和 `username`，照第 5 步把它加进 `TG_ALLOWED`。
+- 按钮还是旧的，或者没有按钮：再跑一次第 4 步第 4 小步那条命令，看 `setChatMenuButton` 是不是 `"ok":true`。Mini App 只认 https 的地址。
+- 用户以后给住户绑了自己的域名：从新域名再跑一次第 4 步第 4 小步（把命令里的 `<住户地址>` 换成新域名），按钮就指到新域名。
+
+## 10. 别的功能：一项一项问
+
+能聊了以后，下面这些一项一项问用户要不要、怎么配。用户说不要的就跳过，默认值都能直接用。每项都照第 5 步的命令填，要填 key 的照下面的写法。
+
+**要填 key 时**：
+
+- 你手上有这把 key（比如环境变量 `TAVILY_API_KEY`），用户同意用在这里：从环境变量直接填，值不打印。先看有没有：
+
+  ```bash
+  test -n "$TAVILY_API_KEY" && echo 有 || echo 没有
+  ```
+
+  有就这样填（第一个参数是设置名，第二个是环境变量名）：
+
+  ```bash
+  node -e 'process.stdout.write(JSON.stringify({key:process.argv[1],text:process.env[process.argv[2]]??""}))' TAVILY_API_KEY TAVILY_API_KEY \
+    | curl -sS -X POST <住户地址>/web/config -H "x-web-key: <网页钥匙>" -H "content-type: application/json" --data-binary @- \
+    | grep -o '"error":"[^"]*"' || echo 已存
+  ```
+
+- 你手上没有：请用户打开网页门 → 齿轮，在对应那一栏自己填。别让用户把 key 发给你。
+
+填完的 key 设置页上只显示「已填」，看不到值。
+
+### 搜网
+
+默认开着：一个自己的 key 都没有时，用 Cloudflare 的 Web Search，按次从 AI Gateway 的额度里扣一点（README「花钱吗」有价钱）。
+
+- 问用户有没有 Tavily、Brave、Perplexity 的 key，有几个填几个：`TAVILY_API_KEY`、`BRAVE_API_KEY`、`PERPLEXITY_API_KEY`，按这个顺序用，一家不行换下一家。
+- 不想让它搜：`WEB_SEARCH` 填 `off`。
+- 接了 Aelios 的，搜到的长期知识默认会存进 Aelios（`WEB_LEARN`）；用户不想要就填 `off`。
+
+### 读网页
+
+默认开着，不用 key。长网页先用一个便宜的模型压短再给它看，默认是 Workers AI 的 `@cf/qwen/qwen3-30b-a3b-fp8`，免费档的每日额度里就能用。
+
+- 一般不用改。用户想换成别的模型压（比如自己有 key 的某个便宜模型），`WEB_FETCH_MODEL` 填那个模型名，第 7 步能填的名字这里都能填；填 `off` 就不压、只截断。
+- 要它读 Cloudflare Access 挡着的网站、GitHub 私库的文件：设置页「搜网和读网页」→「带钥匙的网站」，请用户自己填，README「搜网和读网页」有步骤。
+- 不想让它读网页：`WEB_FETCH` 填 `off`。
+
+### 语音条
+
+听语音一直开着，不用配。发语音要选一家，默认不发。问用户要不要它发语音条，要的话用哪家：
+
+| `VOICE_PROVIDER` | 还要填 |
+|---|---|
+| `elevenlabs` | `VOICE_ID`（声音的 id，在 ElevenLabs 的声音库里复制） |
+| `cartesia` | `VOICE_ID`（在 Cartesia 的声音库里复制） |
+| `openrouter` | `VOICE_MODEL`（比如 `minimax/speech-2.8-hd`），`VOICE_ID` 填声音名字，不填用模型自己的 |
+
+- key：最省事的是请用户把那家的 key 存进住户用的 AI Gateway（设置里「AI Gateway 的名字」，留空就是 `default`）→ **Provider Keys**，别名 `default`，跟第 7 步一样，这样设置页不用填。或者 `VOICE_API_KEY` 照上面「要填 key 时」的办法填。
+- 什么时候发（`VOICE_REPLY`）：`mirror` 用户发语音才回语音（默认），`always` 每条都发，`tool` 它想发才发。
+- 填完请用户在 Telegram 上发一条语音试试。发不出去时 `/status` 的语音那一行写着为什么；报 401、说没收到 key 的，多半是 key 存在了别的 Gateway 里（README「遇到问题」）。
+
+### 表情包
+
+默认开着，但一个包都没有，它也会自己画像素小表情。问用户有没有想导入的 Telegram 贴纸包：
+
+```bash
+curl -sS -X POST <住户地址>/web/stickers/import -H "x-web-key: <网页钥匙>" -H "content-type: application/json" \
+  -d '{"url":"https://t.me/addstickers/<包名>"}' | grep -o '"error":"[^"]*"' || echo 导入了
+```
+
+zip 包贴网址也行（同一个接口，`url` 填 zip 的 https 网址）；本地的 zip 请用户在设置页「表情包」里传。
+
+Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导完给常用的几张写上「什么时候用」：
+
+1. 列出来：`curl -s <住户地址>/web/stickers -H "x-web-key: <网页钥匙>"`，每张有 `key`、`emoji`、`when`。
+2. 看图：`curl -s <住户地址>/stickers/<key> -o <key>.img`，你看得了图就自己看着写；看不了就问用户。视频贴纸（`"video":true`）看不了就跳过。
+3. 写上（一句话，中英文都行，最多 160 字）：
+
+   ```bash
+   curl -sS -X POST <住户地址>/web/stickers/edit -H "x-web-key: <网页钥匙>" -H "content-type: application/json" \
+     -d '{"key":"<key>","when":"被夸了，有点得意"}' | grep -o '"error":"[^"]*"' || echo 已存
+   ```
+
+下载的图看完就删掉。用户不想要表情：`STICKERS` 填 `off`。
+
+### 叫云端 Claude Code 干活
+
+要有 Claude 的付费订阅（Pro、Max 这些），默认关着。开了以后，用户叫它改代码、做文件、查一大堆资料时，它把活交给用户 claude.ai 上的一个定时任务，开一个云端 Claude Code 会话去干，用订阅的额度。问用户要不要；要的话：
+
+1. 你拿到要贴进定时任务的提示词，存成文件交给用户：
+
+   ```bash
+   curl -s <住户地址>/web/tasks -H "x-web-key: <网页钥匙>" \
+     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).prompt))' > routine-prompt.txt
+   ```
+
+2. 请用户打开 <https://claude.ai/code/routines> 新建一个定时任务：把 `routine-prompt.txt` 的内容贴进去，选好模型、要它改的仓库和云端环境。
+3. 请用户在「触发」里加一个 API，复制网址，点「生成 token」。网址不是秘密，用户可以告诉你；**token 请用户自己填**：网页门 → 齿轮 → 「云端 Claude Code」，或者在用户自己的终端里 `npx wrangler secret put CLOUD_TASK_TOKEN`。
+4. 请用户在这个定时任务用的云端环境里，把网络访问选「自定义」，把住户的域名（`<住户地址>` 去掉 `https://`）加进允许的网站，不然结果交不回来。
+5. 你填上开关和网址：`CLOUD_TASKS` 填 `on`，`CLOUD_TASK_URL` 填用户给的网址（形如 `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`）。
+6. 试一下：
+
+   ```bash
+   curl -sS -X POST <住户地址>/web/tasks/test -H "x-web-key: <网页钥匙>" -H "content-type: application/json" -d '{}' \
+     | grep -o '"error":"[^"]*"' || echo 派出去了
+   ```
+
+   过几分钟看 `curl -s <住户地址>/web/tasks -H "x-web-key: <网页钥匙>"`，最新那单「接通测试」的 `status` 变成 `done` 就接通了。一直是 `sent` 或 `working`：请用户点那一单的 `sessionUrl`，看会话卡在哪；多半是第 4 小步的网络没放开。
+
+`routine-prompt.txt` 交给用户以后删掉。
+
+### 接别的 MCP
+
+不用现在配。告诉用户：设置页「别的 MCP」填服务地址就能接；也可以在聊天里说「接上 https://…」，它自己接。带 key 的地址别在聊天里发，只在设置页接。
+
+### 别的
+
+- 想让它主动找你（第 0 步问过的）没填的，现在照第 5 步填 `CHECKIN_SCHEDULE`。
+- 别的设置（交接信多久写一次、Claude 想多久、缓存多久这些）都有默认值，一般不用动，README「设置一览」有全部的。
+
+## 11. 交给用户
 
 最后用一小块话交给用户，照这个样子：
 
@@ -282,12 +408,12 @@ Telegram：@<bot 的用户名>，私聊它就行
 
 再补几句：
 
-- 网页门和 Telegram 是同一段对话。在 Telegram 里点 bot 左下角的菜单按钮，就能当 Mini App 打开网页门，不用再填钥匙。
+- 网页门和 Telegram 是同一段对话。在 Telegram 里点 bot 左下角的「打开网页」，就是 Mini App，不用再填钥匙。
 - 换模型点网页门左上角的模型名，改人设点右上角的铅笔，别的设置点齿轮。改完下一句就生效。
-- 语音条、表情包、自己的搜索 key、接别的 MCP、叫云端 Claude Code 干活，都在设置页里开，README 有说明。要填 key 的那几项，请用户自己在设置页填。
+- 第 10 步配了什么、没配什么，一句话说清楚；没配的以后在设置页里开，README 有说明。
 - 网页钥匙怀疑漏了：照第 3 步再生成一把，旧的就作废了。
 
-## 11. 以后点一下就更新（推荐）
+## 12. 以后点一下就更新（推荐）
 
 第 2 步是从这台机器部署的。让 Cloudflare 改从用户的 fork 构建，以后在 GitHub 上点 **Sync fork** 就自动更新。这一步只能用户在后台点：
 
