@@ -33,7 +33,7 @@ import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, tool, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
-import { cacheTtlMs, opensWindow } from "./cache-window";
+import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import {
@@ -167,8 +167,8 @@ const PAGE_KEEP_MS = 60 * 60 * 1000;
 // default (CACHE_TTL=5m for five minutes; an hour costs 2x the input price to write, five minutes 1.25x).
 // Other providers ignore options under "anthropic".
 function promptCache(env: Env) {
-  const ttl = env.CACHE_TTL?.trim() === "5m" ? "5m" : "1h";
-  return { anthropic: { cacheControl: { type: "ephemeral", ttl } } };
+  const ttl: "5m" | "1h" = env.CACHE_TTL?.trim() === "5m" ? "5m" : "1h";
+  return { anthropic: { cacheControl: { type: "ephemeral" as const, ttl } } };
 }
 
 /** Minutes of quiet after which the letter is written, while the conversation is still in the cache. 0 = never. */
@@ -1345,7 +1345,8 @@ export class Resident extends Think<Env> {
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
-      providerOptions: promptCache(this.cfg)
+      // The letter's turn reads the cache and writes nothing to it (markedForLetter): the marker stays where it was.
+      ...(this.#letterPromptId ? { messages: markedForLetter(ctx.messages, this.letterCache()) } : { providerOptions: promptCache(this.cfg) })
     };
   }
 
@@ -1390,6 +1391,13 @@ export class Resident extends Think<Env> {
   private setWindow(key: "used_at" | "opened_at" | "folded", value: number): void {
     this.sql`CREATE TABLE IF NOT EXISTS res_cache_window (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`;
     this.sql`INSERT OR REPLACE INTO res_cache_window (k, v) VALUES (${key}, ${value})`;
+  }
+
+  /** The cache marker for the letter's turn, or null when the cache has run out since a model call last used it. */
+  private letterCache() {
+    const saved = this.windowState();
+    const state = { usedAt: saved.get("used_at") ?? null, openedAt: saved.get("opened_at") ?? null, folded: saved.get("folded") === 1 };
+    return opensWindow(state, Date.now(), cacheTtlMs(this.cfg.CACHE_TTL)) ? null : promptCache(this.cfg).anthropic.cacheControl;
   }
 
   /**
