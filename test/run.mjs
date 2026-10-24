@@ -473,6 +473,9 @@ if (phase === "main") {
     for (const [key, text, problem] of [
       ["TIME_ZONE", "Mars/Olympus", /时区/],
       ["KEEP_RECENT_TOKENS", "abc", /大于 0/],
+      ["KEEP_RECENT_TOKENS", "Infinity", /大于 0/],
+      ["KEEP_RECENT_TOKENS", "1e309", /大于 0/],
+      ["LETTER_IDLE_MINUTES", "Infinity", /分钟数/],
       ["CACHE_TTL", "2h", /只能填/],
       ["AELIOS_URL", "ftp://x", /https/],
       ["NOT_A_SETTING", "x", /没有这个设置/],
@@ -725,6 +728,14 @@ if (phase === "mcp") {
     assert.match(out, /ext echo: hi/);
     const call = (await log()).find((e) => e.kind === "ext.ext" && e.method === "tools/call");
     assert.deepEqual(call.args, { text: "hi", title: "t" });
+  });
+
+  await step("an MCP result cannot drive a second MCP call in the same turn", async () => {
+    const before = (await log()).filter((e) => e.kind === "ext.ext" && e.method === "tools/call").length;
+    const out = await say("连用MCP");
+    assert.match(out, /another MCP call/);
+    const after = (await log()).filter((e) => e.kind === "ext.ext" && e.method === "tools/call").length;
+    assert.equal(after, before + 1, "only the first call reaches the server");
   });
 
   await step("a server that wants a key fails without one and is not kept, and works with it", async () => {

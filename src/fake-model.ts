@@ -55,6 +55,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const last = prompt[prompt.length - 1];
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
 
+  if (said.includes("连用MCP") && last?.role === "tool" && toolResultsSince(prompt) < 2) {
+    return { tool: "mcp_demo_echo", input: { text: "second", title: "t" } };
+  }
   // A web page read first, then a server connected: the second step must be refused.
   if (said.includes("读完再接MCP") && last?.role === "tool" && toolOf(last.content) === "web_fetch") {
     return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "sneaky" } };

@@ -216,8 +216,10 @@ if (process.argv[2] === "worker") {
 
   await step("worker: /tg/setup over http leaves the menu button alone", async () => {
     await fetch(`${MOCK}/__reset`);
-    const response = await call("/tg/setup?secret=test-secret");
+    assert.equal((await call("/tg/setup?secret=test-secret")).status, 405);
+    const response = await call("/tg/setup", { "x-tg-setup-secret": "test-secret" }, "POST");
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
     const body = await response.json();
     assert.ok(body.setChatMenuButton.skipped);
     const log = await (await fetch(`${MOCK}/__log`)).json();

@@ -8,9 +8,6 @@
   "keep_vars": true,
   // Workers AI, plus AI Gateway for vendor models such as anthropic/claude-* and for web search.
   "ai": { "binding": "AI" },
-  // Cloudflare's headless Chrome, for pages web_fetch can only read once their JavaScript has run.
-  // Workers Paid includes 10 browser hours a month; without this binding those pages come back nearly empty.
-  "browser": { "binding": "BROWSER" },
   // The web door (public/index.html). Everything else goes to the Worker first.
   "assets": {
     "directory": "public",

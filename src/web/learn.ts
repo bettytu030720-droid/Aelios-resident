@@ -5,7 +5,7 @@
 // news, prices, scores, schedules and anything about the two of them are left out, the last because Aelios
 // already records the conversation. Each fact is one sentence with the date and the source, saved with Aelios'
 // remember under a stable key (world:…), so searching the same thing again replaces it and keeps the old one as
-// history. WEB_LEARN=off turns it off. Nothing here holds up the reply: it runs after the turn has finished.
+// history. WEB_LEARN=on turns it on. Nothing here holds up the reply: it runs after the turn has finished.
 
 import { generateText, type LanguageModel } from "ai";
 import { renderWebSearchResults } from "agents/websearch";

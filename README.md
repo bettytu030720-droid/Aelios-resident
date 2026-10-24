@@ -44,10 +44,13 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
    - `TG_BOT_TOKEN`：第 1 步的 token。
    - `TG_WEBHOOK_SECRET`：自己编一串长的，字母、数字、`_`、`-` 都行。
    - `WEB_KEY`：网页门的钥匙，也自己编一串长的。拿到它就能看全部对话、改所有设置，别截图别外发；怀疑漏了就在这里换一个。不填的话普通浏览器进不去，只能从 Telegram 的 Mini App 进。
-4. **接上 Telegram**：浏览器打开一次下面这个网址，几项都返回 `"ok":true` 就接好了。它会顺便登记三个命令，并把 bot 左下角的菜单按钮设成「打开网页」。
+4. **接上 Telegram**：在终端运行下面的命令，输入 `TG_WEBHOOK_SECRET` 时不会显示出来。几项都返回 `"ok":true` 就接好了。它会顺便登记三个命令，并把 bot 左下角的菜单按钮设成「打开网页」。secret 放在请求头里，不会留在网址、浏览器历史或访问日志里。
 
-   ```
-   https://aelios-resident.<你的子域>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>
+   ```bash
+   read -rsp "TG_WEBHOOK_SECRET: " S; echo
+   curl -X POST -H "x-tg-setup-secret: $S" \
+     "https://aelios-resident.<你的子域>.workers.dev/tg/setup"
+   unset S
    ```
 
 5. **在网页上填设置**：打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进门，点右上角的齿轮：
@@ -76,7 +79,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - 每条消息前面带着你那边的时间，它知道现在几点。
 - 发图它看得到（照片或者当文件发的图，5 MB 以内）。
 
-**Mini App**：点 bot 左下角的菜单按钮，网页门直接在 Telegram 里打开，不用填 `WEB_KEY`。它凭 Telegram 签过名的身份进门，每次都按「谁能在 Telegram 上跟它说话」再查一遍，把人从名单里拿掉就进不来了。换了自定义域名的话，从新域名再打开一次 `/tg/setup`（Telegram 只开 https 的 Mini App）。细节见 `src/mini-app.ts`。
+**Mini App**：点 bot 左下角的菜单按钮，网页门直接在 Telegram 里打开，不用填 `WEB_KEY`。它凭 Telegram 签过名的身份进门，每次都按「谁能在 Telegram 上跟它说话」再查一遍，把人从名单里拿掉就进不来了。换了自定义域名的话，从新域名再按上线第 4 步调一次 `/tg/setup`（Telegram 只开 https 的 Mini App）。细节见 `src/mini-app.ts`。
 
 **命令**：
 - `/status`：现在用的模型、人设、对话多长、写过几封交接信、上一轮缓存读了多少、表情包和语音的状态。
@@ -121,7 +124,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - Aelios 的开机包只放最近一天的日记，放进系统提示。珍贵原话和黑话不放：Aelios 每轮会把跟你这句沾边的贴进来。
 - 开机包只在缓存本来就要重写的时候重新取：超过缓存时长（`CACHE_TTL`）没说话，或者刚写完交接信。连着聊的时候系统提示一个字不变，每轮都从缓存读。
 - 交接信、定时找你、换模型时的试调都不是你说的话，会标出来，Aelios 不当成你说的记。
-- 搜过网的那一轮回完以后，它挑出最多 3 条过几个月还对的知识，存成 Aelios 的世界知识，下次不用再搜。不想要就把「搜到的知识存进 Aelios」关掉（`WEB_LEARN`）。
+- 「搜到的知识存进 Aelios」（`WEB_LEARN`）默认关着。打开后，搜过网的那一轮回完会挑出最多 3 条过几个月还对的知识，存成 Aelios 的世界知识，下次不用再搜。搜索结果可能藏着恶意指令，自动学习也可能把污染内容写进长期记忆，所以只在你接受这个风险时打开。
 
 不接 Aelios 也能用，只是它只记得当前对话和交接信。
 
@@ -144,7 +147,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 - 每次问的时候 1 小时的缓存都还热着（上一次刚续上），读缓存是输入价的 1/10，问一次跟你发一条消息差不多钱，还顺手把缓存再续一小时。
 - 对话长到要写交接信时照旧写信，不问：信写完对话变了，缓存要整段重写，那时候问就贵了。
-- 次数在设置页「聊天」里改，0 不问，最多 10。缓存选了 5 分钟、或者交接信设成 `off` 时没有心跳。
+- 次数在设置页「聊天」里改，0 不问，最多 10。只有走 Anthropic Messages 缓存路径的模型才有心跳；缓存选了 5 分钟、或者交接信设成 `off` 时也没有。
 
 **闹钟**（`ALARMS`，默认关）：打开后它多三个工具，自己定闹钟、看定了哪些、取消。可以是几分钟后、某个时间一次，或者 `every day at 21:30`、`every weekday at 08:00`、`every week on sat,sun at 10:00`、`every 3 hours` 这样重复。响的时候它收到自己当时写的备注，可以找你，也可以不发。
 
@@ -156,8 +159,8 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 - **搜网**（`web_search`）：设置页填了自己的搜索 key（Tavily、Brave、Perplexity，有几个填几个）就按这个顺序用，一家报错或额度用完就换下一家；一个都没填时用 Cloudflare 的 Web Search，按次扣一点 AI Gateway 额度。
 - **读网页**（`web_fetch`）：把网页读成 Markdown，搜到的结果和你发的链接都能打开。照 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的做法做进了住户里，不用另外部署。
-  - 本机和内网地址一律不读，每一次跳转都先查再跟。
-  - 靠 JavaScript 才显示的页面交给 Cloudflare 的浏览器读。
+  - 本机和内网地址不读，每一次跳转都先查再跟；DNS 空答案也拒绝。Workers 的普通 `fetch()` 不能把实际连接绑定到已校验的 DNS 结果，因此仍有检查与连接之间的 rebinding 窗口，不能把这条当成网络层隔离。
+  - 默认不启用浏览器渲染，靠 JavaScript 才显示的页面会拿回普通抓取到的薄内容。需要时可以自行在 `wrangler.jsonc` 加回 `browser: { "binding": "BROWSER" }`，但浏览器 Quick Action 无法对每个实际连接做同等校验，开启前要知道这会重新打开 SSRF 风险。
   - 读过的页面留 1 小时，再问不用重抓。
   - 长页面先用一个便宜的模型压一遍（`WEB_FETCH_MODEL`，默认 Workers AI 的 Qwen3 30B），带了问题就只摘相关的段落。
   - GBK 之类的老编码也认。
@@ -165,6 +168,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
   - **Cloudflare Access 挡着的网站**：在 Zero Trust → Access controls → Service credentials → Service Tokens 里建一个服务令牌（Client Secret 只显示一次，当场抄下），给那个应用加一条动作是「Service Auth」、包含这个令牌的策略；设置页点「Cloudflare 门禁」，Client ID 和 Client Secret 各粘一格（连着前面的名字一起粘也行）。见 [Cloudflare 的说明](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)。没钥匙或钥匙不对时，它会说是门禁拦的，不会把登录页当正文。
   - **GitHub 私库的文件**：建一个 fine-grained token，只选要读的仓库、Contents 只读；网站填 `raw.githubusercontent.com`，点「一串 token」粘进去（会以 `Authorization: Bearer` 发出去）。之后叫它读 `https://raw.githubusercontent.com/<owner>/<repo>/<分支>/<路径>`。token 没勾上的私库，GitHub 回 404 而不是 403，它会提醒可能是钥匙看不到。
   - 带钥匙的页面不交给浏览器读（浏览器带不上钥匙）。存、换、拿掉钥匙时，读过的页面全部清掉（跳转过去的也算），下一句生效，那一句会重写一次缓存（工具说明里写着哪些网站有钥匙）。
+  - 同一轮里读过公网网页、搜索或 MCP 后，不能再读带钥匙的私页；读过私页后，不能再发新的网页、搜索、MCP 或记忆请求。一次 MCP 调用后也不能在同轮接着调另一个。这些限制挡住常见的跨工具注入链，但不能清除已经留在对话历史里的恶意内容，不等于通用提示注入隔离。
 
 ### 语音条
 
@@ -292,7 +296,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | `TAVILY_API_KEY` / `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | 空 | 自己的搜索 key，按这个顺序用 |
 | `WEB_FETCH` | `on` | `off` 关掉读网页 |
 | `WEB_FETCH_MODEL` | `@cf/qwen/qwen3-30b-a3b-fp8` | 压长网页用的模型，主模型能填的 id 这里都能填；`off` 不压，只截断 |
-| `WEB_LEARN` | `on` | 搜到的长期知识存进 Aelios；要接着 Aelios |
+| `WEB_LEARN` | `off` | `on` 自动把搜到的长期知识存进 Aelios（有记忆污染风险）；要接着 Aelios |
 | `STICKERS` | `on` | `off` 不发表情也不画；包还留着 |
 | `VOICE_PROVIDER` | `off` | 用哪家发语音：`elevenlabs`、`cartesia`、`openrouter` |
 | `VOICE_ID` | 空 | 用哪个声音：ElevenLabs、Cartesia 必填；OpenRouter 填声音名字，不填用模型自己的 |
@@ -314,7 +318,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 - **默认模型** `glm-4.7-flash`：免费档能用。一万 neurons 大约够每天 80 到 200 轮，看对话多长（估算）。定时找你每次也算一轮。
 - **Claude**：接了 Aelios 时花 Aelios 那边配的 key。没接时走 AI Gateway，花 Gateway 的预付额度，存了自己的 Anthropic key 就用那把。命中缓存的部分按缓存价算（读是输入价的 1/10）；1 小时缓存写入是输入价的 2 倍，换来停一会儿再聊、写交接信都还能读缓存。会整段重写缓存的只有：超过缓存时长没说话、写完交接信后的第一句、部署了新版本或在设置页改了东西（人设、模型、开关工具这些）后的第一句。
 - **搜网**：自己的 key 按那几家的价格算。没填时用 Cloudflare 的 Web Search，默认的 Ceramic.ai 每 1000 次 0.25 美元（10-14 查的官方价）。
-- **读网页**：普通抓不收钱。靠浏览器的页面，Workers Paid 每月含 10 小时，超出每小时 0.09 美元（免费档每天 10 分钟）。长页压缩默认的 Qwen3 30B 一页大约千分之一美元。
+- **读网页**：普通抓不收钱。自行开启浏览器渲染后，Workers Paid 每月含 10 小时，超出每小时 0.09 美元（免费档每天 10 分钟）。长页压缩默认的 Qwen3 30B 一页大约千分之一美元。
 - **语音条**：听用 Whisper，每分钟约 46.63 neurons，免费档每天大约够听 200 多分钟（10-22 查的官方价）。说按那一家自己的价格，从你的 key 扣。
 - **表情包、别的 MCP**：每轮多带一些说明，设置页上每个包、每个服务旁边写着约多少 token。
 - **心跳、闹钟**：每次是它的一轮。心跳趁缓存还热的时候问，跟你发一条差不多。闹钟要是在你一小时以上没说话之后响，缓存已经凉了，整段对话要重写一遍（1 小时缓存的写入是输入价的 2 倍，读是 1/10），这一下大约顶平时 20 多条消息的输入。所以闹钟默认关，开了也有上限。
@@ -334,7 +338,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 AI Gateway 后台建的「自定义供应商」（`custom-xxx/…`）Cloudflare 的模型目录不认。直接在「供应商」里填那家的中转地址，模型填 `custom/模型名`。
 
 **Telegram 上它不回**
-看「聊天」→「谁能在 Telegram 上跟它说话」里有没有你；群聊它不回。再打开一次 `/tg/setup?secret=…`，确认几项都是 `"ok":true`。
+看「聊天」→「谁能在 Telegram 上跟它说话」里有没有你；群聊它不回。再按上线第 4 步调一次 `/tg/setup`，确认几项都是 `"ok":true`。
 
 **云端的活一直「没回音」**
 多半是那个定时任务的云端环境不让会话连住户：网络访问选「自定义」，把住户的域名加进允许的网站。点卡片上的「打开会话」能看到它卡在哪。住户换了域名（比如绑了自己的域名）的话，设置页上的提示词会跟着变，要重新贴进定时任务。
