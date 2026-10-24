@@ -102,7 +102,10 @@ function localOf(at: number, timeZone: string): Local {
   };
 }
 
-/** The instant a wall-clock time in the time zone falls on (twice tried, for a change of daylight saving time). */
+/**
+ * The instant a wall-clock time in the time zone falls on. Around a change of daylight saving time the offset is
+ * tried at both guesses; a time the clocks skip (spring forward) becomes the moment just after the gap.
+ */
 export function instantOf(local: Omit<Local, "weekday">, timeZone: string): number {
   const naive = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute);
   const offset = (at: number) => {
@@ -110,7 +113,12 @@ export function instantOf(local: Omit<Local, "weekday">, timeZone: string): numb
     return Date.UTC(seen.year, seen.month - 1, seen.day, seen.hour, seen.minute) - Math.floor(at / 60000) * 60000;
   };
   const first = naive - offset(naive);
-  return naive - offset(first);
+  const second = naive - offset(first);
+  const shows = (at: number) => {
+    const seen = localOf(at, timeZone);
+    return seen.year === local.year && seen.month === local.month && seen.day === local.day && seen.hour === local.hour && seen.minute === local.minute;
+  };
+  return [second, first].find(shows) ?? Math.max(first, second);
 }
 
 /** When a repeating alarm rings next, after `after`. */
@@ -138,7 +146,10 @@ export function parseAt(raw: string, now: number, timeZone: string): number | { 
   const match = /^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}:\d{2})$/.exec(text);
   const at = match ? clock(match[4]) : null;
   if (!match || !at) return { error: 'at is their local time, "2026-10-24 21:30", or just "21:30".' };
-  return instantOf({ year: Number(match[1]), month: Number(match[2]), day: Number(match[3]), ...at }, timeZone);
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return { error: `There is no ${match[1]}-${match[2]}-${match[3]}.` };
+  return instantOf({ year, month, day, ...at }, timeZone);
 }
 
 /** A repeat in their words, for the settings page. */

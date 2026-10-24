@@ -655,14 +655,20 @@ export class Resident extends Think<Env> {
     if ("error" in plan) return plan;
     const added = this.alarms().add(input.note ?? "", plan.next, plan.repeat, now);
     if ("error" in added) return added;
-    await this.armAlarm(added, plan.next);
+    try {
+      await this.armAlarm(added, plan.next);
+    } catch (error) {
+      // Not left behind unarmed, taking a place and never ringing.
+      this.alarms().remove(added.id);
+      return { error: `Not set: ${error instanceof Error ? error.message : String(error)}` };
+    }
     return { ...this.alarmForModel(this.alarms().get(added.id) ?? added), status: "Set. When it rings you get your note back." };
   }
 
   /** Point the alarm's one schedule at its next ring. */
   private async armAlarm(alarm: Alarm, next: number): Promise<void> {
     if (alarm.scheduleId) await this.cancelSchedule(alarm.scheduleId).catch(() => false);
-    const schedule = await this.schedule(new Date(next), "alarmRings", { id: alarm.id });
+    const schedule = await this.schedule(new Date(next), "alarmRings", { id: alarm.id, at: next });
     this.alarms().armed(alarm.id, next, schedule.id);
   }
 
@@ -686,15 +692,16 @@ export class Resident extends Think<Env> {
    * An alarm's time has come: a repeating one is set for its next time, a one-time one is gone. Then, if alarms are
    * on and today's rings are not used up, one turn of the resident's with its note, like a check-in.
    */
-  async alarmRings(payload: { id: string }): Promise<void> {
+  async alarmRings(payload: { id: string; at?: number }): Promise<void> {
     const store = this.alarms();
     const alarm = store.get(payload.id);
     const now = Date.now();
-    // A schedule left from before the alarm was moved (a new time zone) and not cancelled: not its time yet.
-    if (!alarm || now < alarm.next - 30_000) return;
+    // Only the ring the alarm is set for now: a schedule left from before it was moved (and not cancelled) passes.
+    if (!alarm || (payload.at === undefined ? now < alarm.next - 30_000 : payload.at !== alarm.next)) return;
     const rule = alarm.repeat ? parseRule(alarm.repeat) : null;
-    // This schedule has run: the next ring gets a schedule of its own.
-    if (rule && !("error" in rule)) await this.armAlarm({ ...alarm, scheduleId: "" }, nextRing(rule, alarm.anchor, now, this.tz));
+    // This schedule has run: the next ring gets a schedule of its own. Counted from this ring's time, not from now:
+    // schedules keep whole seconds and can run a moment early, which would land on this same ring again.
+    if (rule && !("error" in rule)) await this.armAlarm({ ...alarm, scheduleId: "" }, nextRing(rule, alarm.anchor, Math.max(now, alarm.next), this.tz));
     else store.remove(alarm.id);
     if (!this.alarmsOn()) return;
     if (!store.ring(now)) {
@@ -1325,7 +1332,12 @@ export class Resident extends Think<Env> {
       if (this.#readOutside.size > 20) this.#readOutside.clear();
       // Cleared as a turn starts, never during one: a turn's count of tasks cannot be reset under it.
       if (this.#turnTasks.size > 20) this.#turnTasks.clear();
-      if (!proactive && !this.#letterPromptId && asked && !isNote(asked)) this.#theirTurns.add(ctx.requestId);
+      if (!proactive && !this.#letterPromptId && asked && !isNote(asked)) {
+        this.#theirTurns.add(ctx.requestId);
+        // When they last wrote, from the start of their turn: a heartbeat due while it runs sees it and passes.
+        await this.ctx.storage.put("their_last_at", Date.now());
+        await this.stopHeartbeats();
+      }
     }
     const boot = await this.boot();
     // Only our own tools: Think's workspace file tools would cost tokens every turn and do nothing here.
@@ -1546,6 +1558,9 @@ export class Resident extends Think<Env> {
     const at = Date.now();
     const minutes = idleMinutes(this.cfg);
     const lastFromThem = (await this.ctx.storage.get<number>("their_last_at")) ?? at - minutes * 60_000;
+    // They wrote since: a turn of theirs may be running now, which activeTurn cannot see from a scheduled call.
+    // Half the quiet time leaves room for a schedule that runs a moment early.
+    if (at - lastFromThem < (minutes * 60_000) / 2) return;
     const quiet = Math.max(1, Math.round((at - lastFromThem) / 60_000));
     const text = heartbeatPrompt(stamp(new Date(at), this.tz), quiet, n, times, this.alarmsOn());
     const message = { id: `heartbeat_${at}`, role: "user", parts: [{ type: "text", text }], metadata: { at } } as UIMessage;
@@ -1558,8 +1573,6 @@ export class Resident extends Think<Env> {
 
   async heartbeatAgain(payload: { n: number }): Promise<void> {
     await this.ctx.storage.delete("heartbeat");
-    // A turn running now may be theirs, which ends this quiet time; any other turn keeps the cache warm anyway.
-    if (this.activeTurn) return;
     await this.heartbeat(payload.n);
   }
 
@@ -1618,7 +1631,6 @@ export class Resident extends Think<Env> {
     const fromThem = Boolean(asked) && !isNote(asked);
     if (fromThem) {
       await this.ctx.storage.put("wrote_since_letter", true);
-      await this.ctx.storage.put("their_last_at", Date.now());
       await this.stopHeartbeats();
     }
     await this.planIdleLetter(fromThem);

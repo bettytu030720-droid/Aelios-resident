@@ -71,6 +71,12 @@ step("a time once: a date and time, or just a time (the next one), in their time
   assert.equal(parseAt("2026-10-30 09:00", SAT_9PM, "America/New_York"), utc("2026-10-30T13:00:00"));
   assert.equal(parseAt("2026-11-02 09:00", SAT_9PM, "America/New_York"), utc("2026-11-02T14:00:00"));
   assert.ok("error" in parseAt("tomorrow evening", SAT_9PM, SH));
+  assert.match(parseAt("2027-02-30 09:00", SAT_9PM, SH).error, /no 2027-02-30/, "a date that does not exist");
+  // 02:30 does not happen in New York on 2027-03-14: the clocks go from 02:00 to 03:00, so it rings at 03:00 + 30.
+  assert.equal(parseAt("2027-03-14 02:30", SAT_9PM, "America/New_York"), utc("2027-03-14T07:30:00"));
+  assert.equal(nextRing(parseRule("every day at 02:30"), 0, utc("2027-03-13T12:00:00"), "America/New_York"), utc("2027-03-14T07:30:00"));
+  // 01:30 happens twice on 2026-11-01: the first one.
+  assert.equal(parseAt("2026-11-01 01:30", SAT_9PM, "America/New_York"), utc("2026-11-01T05:30:00"));
 });
 
 step("a new alarm: exactly one of the three, not in the past, far enough ahead outside their own messages", () => {
