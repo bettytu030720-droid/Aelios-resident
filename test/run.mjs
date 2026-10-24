@@ -15,6 +15,9 @@
 //   tasks    cloud Claude Code: a job sent through a scheduled task's trigger, its reports, the cards, the limits
 //   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
 //   sites    keys for sites web_fetch reads, set on the settings page
+//   heartbeat  going quiet while the chat is short (start wrangler with --var LETTER_IDLE_MINUTES:0.05
+//              --var KEEP_RECENT_TOKENS:100000 --var ALARM_MINUTE_SECONDS:0.05)
+//   alarms   alarms the resident sets itself (start wrangler with --var ALARM_MINUTE_SECONDS:0.05)
 import assert from "node:assert/strict";
 import http from "node:http";
 import { GIF, PNG, WEBM, WEBP, zip } from "./zip.mjs";
@@ -24,7 +27,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -1446,6 +1449,158 @@ if (phase === "sites") {
     const removed = await web("/web/sites/remove", KEY, { host: "gated.example" });
     assert.deepEqual((await removed.json()).sites, [{ host: "raw.githubusercontent.com", names: ["Authorization"] }]);
     assert.match(await ask("读网页怎么说"), /key for raw\.githubusercontent\.com,/);
+  });
+}
+
+/** Aelios' records of the resident's own turns (check-ins, heartbeats, alarms), waiting up to `ms` for `count`. */
+async function checkinsInAelios(count, ms = 5000) {
+  const start = Date.now();
+  for (;;) {
+    const found = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:checkin");
+    if (found.length >= count || Date.now() - start > ms) return found;
+    await sleep(100);
+  }
+}
+
+/** The alarms on the settings page, polled until `ok` says yes or `ms` passes. */
+async function alarmsUntil(ok, ms = 10000) {
+  const start = Date.now();
+  for (;;) {
+    const list = await (await web("/web/alarms", "test-web-key")).json();
+    if (ok(list) || Date.now() - start > ms) return list;
+    await sleep(150);
+  }
+}
+
+if (phase === "heartbeat") {
+  const KEY = "test-web-key";
+  await fetch(`${MOCK}/__reset`);
+  await step("she goes quiet while the chat is still short: a heartbeat asks, and it reaches out", async () => {
+    const mark = (await sent()).length;
+    await post("今天好累。");
+    await waitForSends(mark, 2);
+    assert.deepEqual(await waitForSends(mark + 2, 2), ["在忙吗？", "想你了。"]);
+    const ingest = await checkinsInAelios(1);
+    assert.equal(ingest.length, 1);
+    assert.deepEqual(ingest[0].body.messages, [{ role: "assistant", content: "在忙吗？\n\n想你了。" }]);
+    const letters = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
+    assert.equal(letters.length, 0, "nothing to fold, so no letter");
+  });
+  await step("one heartbeat per quiet time: nothing more until she writes", async () => {
+    const before = (await sent()).length;
+    await sleep(9000);
+    assert.deepEqual((await sent()).slice(before), []);
+  });
+  await step("the web page shows what it said, not the note that asked it", async () => {
+    const { data } = await (await web("/web/messages", KEY)).json();
+    const said = data.find((line) => line.text === "在忙吗？\n\n想你了。");
+    assert.equal(said?.via, "checkin", JSON.stringify(data));
+    assert.ok(!data.some((line) => /heartbeat|Not from them/.test(line.text)), JSON.stringify(data));
+  });
+  await step("/status says the heartbeat is on", async () => {
+    const before = (await sent()).length;
+    await post("/status");
+    const [out] = await waitForSends(before, 1);
+    assert.match(out, /心跳：开，没动静 1 分钟、对话还短时问它要不要找你/);
+    assert.match(out, /闹钟：关/);
+  });
+  await step("turned off on the settings page, going quiet sends nothing", async () => {
+    assert.equal((await web("/web/config", KEY, { key: "HEARTBEAT", text: "off" })).status, 200);
+    const mark = (await sent()).length;
+    await post("我去洗澡了");
+    await waitForSends(mark, 2);
+    const before = (await sent()).length;
+    await sleep(9000);
+    assert.deepEqual((await sent()).slice(before), []);
+    assert.equal((await checkinsInAelios(2, 0)).length, 1);
+    await web("/web/config", KEY, { key: "HEARTBEAT", text: "" });
+  });
+  await step("with alarms on, a heartbeat may come back later: too soon is refused, an hour ahead is set, and rings", async () => {
+    assert.equal((await web("/web/config", KEY, { key: "ALARMS", text: "on" })).status, 200);
+    const mark = (await sent()).length;
+    await post("我先忙会儿");
+    await waitForSends(mark, 2);
+    const list = await alarmsUntil((l) => l.alarms.length > 0);
+    assert.deepEqual(list.alarms.map((a) => [a.note, a.when]), [["晚点再问问她", "一次"]], "only the one an hour ahead");
+    // The heartbeat itself answered SKIP: the next thing she gets is the alarm.
+    assert.deepEqual(await waitForSends(mark + 2, 1), ["闹钟响了：晚点再问问她"]);
+    assert.equal((await alarmsUntil((l) => l.alarms.length === 0)).alarms.length, 0, "a one-time alarm is gone after it rings");
+  });
+}
+
+if (phase === "alarms") {
+  const KEY = "test-web-key";
+  await fetch(`${MOCK}/__reset`);
+  const say = async (text, count = 1) => {
+    const before = (await sent()).length;
+    await post(text);
+    return waitForSends(before, count);
+  };
+  await step("off by default: no alarm tools", async () => {
+    assert.deepEqual(await say("闹钟工具有哪些"), ["没有闹钟工具。"]);
+    const list = await (await web("/web/alarms", KEY)).json();
+    assert.deepEqual(list, { on: false, limit: 10, alarms: [] });
+  });
+  await step("turned on on the settings page, it gets set_alarm, list_alarms and cancel_alarm", async () => {
+    assert.equal((await web("/web/config", KEY, { key: "ALARMS", text: "on" })).status, 200);
+    assert.deepEqual(await say("闹钟工具有哪些"), ["set_alarm|list_alarms|cancel_alarm"]);
+  });
+  await step("an alarm she asks for rings once, as its own turn, and is gone", async () => {
+    const before = (await sent()).length;
+    const [set] = await say("等会儿提醒我喝水");
+    assert.match(set, /^我查到了：.*"note":"提醒她喝水".*"status":"Set\./);
+    assert.deepEqual(await waitForSends(before + 1, 1), ["闹钟响了：提醒她喝水"]);
+    const ingest = await checkinsInAelios(1);
+    assert.deepEqual(ingest.map((e) => e.body.messages[0].content), ["闹钟响了：提醒她喝水"]);
+    assert.equal((await alarmsUntil((l) => l.alarms.length === 0)).alarms.length, 0);
+    const { data } = await (await web("/web/messages", KEY)).json();
+    assert.ok(!data.some((line) => /an alarm you set/.test(line.text)), "the ring's note is not shown as hers");
+  });
+  await step("a repeating one is listed in words, and keeps its wall-clock time when the time zone changes", async () => {
+    await say("每天早上叫我");
+    let list = await (await web("/web/alarms", KEY)).json();
+    assert.equal(list.alarms.length, 1);
+    assert.equal(list.alarms[0].note, "叫她起床");
+    assert.equal(list.alarms[0].when, "每天 09:00");
+    assert.match(list.alarms[0].next, / 09:00$/);
+    assert.equal((await web("/web/config", KEY, { key: "TIME_ZONE", text: "America/New_York" })).status, 200);
+    list = await (await web("/web/alarms", KEY)).json();
+    assert.match(list.alarms[0].next, / 09:00$/, "moved to 09:00 in the new time zone");
+    await web("/web/config", KEY, { key: "TIME_ZONE", text: "" });
+  });
+  await step("at most 10 alarms", async () => {
+    await say("定六个闹钟");
+    const [out] = await say("定六个闹钟");
+    assert.match(out, /already have 10 alarms/);
+    assert.equal((await (await web("/web/alarms", KEY)).json()).alarms.length, 10);
+  });
+  await step("listed and cancelled from the chat", async () => {
+    const [list] = await say("看看闹钟");
+    assert.match(list, /叫她起床/);
+    assert.equal((list.match(/"id":"a_[0-9a-f]{8}"/g) ?? []).length, 10);
+    const [out] = await say("取消那个闹钟");
+    assert.match(out, /"cancelled":"a_[0-9a-f]{8}"/);
+    assert.equal((await (await web("/web/alarms", KEY)).json()).alarms.length, 9);
+  });
+  await step("/status counts them; the settings page takes them away", async () => {
+    let [status] = await say("/status");
+    assert.match(status, /闹钟：开，它定了 9 个/);
+    for (const alarm of (await (await web("/web/alarms", KEY)).json()).alarms) {
+      const after = await (await web("/web/alarms/remove", KEY, { id: alarm.id })).json();
+      assert.ok(!after.alarms.some((a) => a.id === alarm.id));
+    }
+    [status] = await say("/status");
+    assert.match(status, /闹钟：开，它定了 0 个/);
+  });
+  await step("turned off, the tools go and a ring passes without a word", async () => {
+    await say("等会儿提醒我喝水");
+    assert.equal((await (await web("/web/alarms", KEY)).json()).alarms.length, 1);
+    await web("/web/config", KEY, { key: "ALARMS", text: "off" });
+    const before = (await sent()).length;
+    assert.equal((await alarmsUntil((l) => l.alarms.length === 0)).alarms.length, 0);
+    await sleep(1500);
+    assert.deepEqual((await sent()).slice(before), []);
+    assert.deepEqual(await say("闹钟工具有哪些"), ["没有闹钟工具。"]);
   });
 }
 

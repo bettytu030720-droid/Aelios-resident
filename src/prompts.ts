@@ -22,14 +22,17 @@ const OLD_NOTE_PREFIX = "（这条不是她发的";
 export const LETTER_PREFIX = `${NOTE_PREFIX}: time to write a handoff letter`;
 const CHECKIN_PREFIX = `${NOTE_PREFIX}: a scheduled check-in`;
 const OLD_CHECKIN_PREFIX = `${OLD_NOTE_PREFIX}，是定时提醒`;
+const HEARTBEAT_PREFIX = `${NOTE_PREFIX}: a heartbeat`;
+export const ALARM_PREFIX = `${NOTE_PREFIX}: an alarm you set has gone off`;
 
 /** Whether a user message is one of the system's notes rather than something they wrote. */
 export function isNote(text: string): boolean {
   return text.startsWith(NOTE_PREFIX) || text.startsWith(OLD_NOTE_PREFIX);
 }
 
+/** A turn of the resident's own that may reach out to them or pass (SKIP): a check-in, a heartbeat, an alarm. */
 export function isCheckin(text: string): boolean {
-  return text.startsWith(CHECKIN_PREFIX) || text.startsWith(OLD_CHECKIN_PREFIX);
+  return [CHECKIN_PREFIX, HEARTBEAT_PREFIX, ALARM_PREFIX, OLD_CHECKIN_PREFIX].some((prefix) => text.startsWith(prefix));
 }
 
 /**
@@ -61,6 +64,15 @@ Rules:
 
 export function checkinPrompt(now: string): string {
   return `${CHECKIN_PREFIX}; it is now ${now}.) If you would like to reach out to them, write exactly what you want to send, as in any chat. If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
+}
+
+/**
+ * The heartbeat (HEARTBEAT): nothing has been said for a while and the conversation is still short, so the letter
+ * had nothing to fold. The cache is still warm, so asking costs about one message of theirs.
+ */
+export function heartbeatPrompt(now: string, minutes: number, alarms: boolean): string {
+  const later = alarms ? " If now is not a good time but you would like to come back later, set an alarm with set_alarm, then reply SKIP." : "";
+  return `${HEARTBEAT_PREFIX}; nothing has been said for ${minutes} minute${minutes === 1 ? "" : "s"}, and it is now ${now}.) Would you like to reach out to them? If so, write exactly what you want to send, as in any chat. If they are probably busy or asleep, or you have nothing to say, reply with just the four letters SKIP.${later}`;
 }
 
 export const SKIP = "SKIP";

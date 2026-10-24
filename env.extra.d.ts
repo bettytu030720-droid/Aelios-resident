@@ -28,6 +28,12 @@ interface Env {
   CUSTOM_BASE_URL?: string;
   CUSTOM_FORMAT?: string;
   CHECKIN_SCHEDULE?: string;
+  // When the letter's time comes and there is nothing to fold yet, ask whether to reach out: on (default) or off.
+  HEARTBEAT?: string;
+  // Alarms the resident sets for itself (alarms.ts): off (default) or on.
+  ALARMS?: string;
+  // Local tests only: how many seconds a minute of set_alarm's in_minutes lasts.
+  ALARM_MINUTE_SECONDS?: string;
   // Voice messages (voice.ts): off (default), openrouter, elevenlabs or cartesia; the model and the voice it speaks in;
   // mirror (a voice message is answered with one, default), always, or tool (only when the resident chooses to).
   VOICE_PROVIDER?: string;

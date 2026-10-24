@@ -35,7 +35,21 @@ import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { cacheTtlMs, opensWindow } from "./cache-window";
 import { fakeModel } from "./fake-model";
-import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import { CHAT_RULES, DEFAULT_PERSONA, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import {
+  AlarmStore,
+  CANCEL_ALARM_DESCRIPTION,
+  LIST_ALARMS_DESCRIPTION,
+  MAX_ALARMS,
+  SET_ALARM_DESCRIPTION,
+  alarmNote,
+  nextRing,
+  parseRule,
+  planAlarm,
+  ruleInWords,
+  type Alarm,
+  type AlarmInput
+} from "./alarms";
 import { claudeOnRunPath } from "./claude-run";
 import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
 import { customModel, isCustom } from "./custom";
@@ -575,8 +589,137 @@ export class Resident extends Think<Env> {
       });
     }
     if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache(), this.siteKeys().all()));
-    Object.assign(tools, this.stickerTools(), this.voiceTools(), this.taskTools(), this.mcpManageTools(), this.mcpTools());
+    Object.assign(tools, this.stickerTools(), this.voiceTools(), this.taskTools(), this.alarmTools(), this.mcpManageTools(), this.mcpTools());
     return tools;
+  }
+
+  // ---- alarms it sets itself (alarms.ts) ----
+
+  #alarmStore: AlarmStore | null = null;
+
+  private alarms(): AlarmStore {
+    this.#alarmStore ??= new AlarmStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#alarmStore;
+  }
+
+  // Off unless they turn it on: a ring after an hour of quiet pays for the whole conversation again.
+  private alarmsOn(): boolean {
+    return this.cfg.ALARMS?.trim().toLowerCase() === "on";
+  }
+
+  /** A minute, shorter in the local tests (ALARM_MINUTE_SECONDS). */
+  private minuteMs(): number {
+    const seconds = Number(this.env.ALARM_MINUTE_SECONDS);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 60_000;
+  }
+
+  /** set_alarm, list_alarms and cancel_alarm, when ALARMS is on. The descriptions never change, for the cache. */
+  private alarmTools(): ToolSet {
+    if (!this.alarmsOn()) return {};
+    return {
+      set_alarm: tool({
+        description: SET_ALARM_DESCRIPTION,
+        inputSchema: z.object({
+          note: z.string().describe("What it is for, written to yourself: you read it when it rings."),
+          in_minutes: z.number().optional().describe("Ring once, this many minutes from now."),
+          at: z.string().optional().describe('Ring once at their local time: "2026-10-24 21:30", or "21:30" for the next time the clock shows it.'),
+          repeat: z
+            .string()
+            .optional()
+            .describe('Ring again and again: "every day at 21:30", "every weekday at 08:00", "every week on sat,sun at 10:00" or "every 3 hours".')
+        }),
+        execute: async (input) => this.setAlarm(input)
+      }),
+      list_alarms: tool({
+        description: LIST_ALARMS_DESCRIPTION,
+        inputSchema: z.object({}),
+        execute: async () => ({ alarms: this.alarms().all().map((alarm) => this.alarmForModel(alarm)) })
+      }),
+      cancel_alarm: tool({
+        description: CANCEL_ALARM_DESCRIPTION,
+        inputSchema: z.object({ id: z.string().describe("The alarm's id, a_…") }),
+        execute: async ({ id }) => ((await this.removeAlarm(id.trim())) ? { cancelled: id.trim() } : { error: `No alarm ${id}. list_alarms shows them.` })
+      })
+    };
+  }
+
+  private alarmForModel(alarm: Alarm): Record<string, string> {
+    return { id: alarm.id, note: alarm.note, rings: stamp(new Date(alarm.next), this.tz), ...(alarm.repeat ? { repeat: alarm.repeat } : {}) };
+  }
+
+  private async setAlarm(input: AlarmInput): Promise<Record<string, unknown>> {
+    const id = this.activeTurn?.requestId;
+    if (!id || this.#letterPromptId) return { error: "Not set: no alarms from this turn." };
+    const now = Date.now();
+    const plan = planAlarm(input, now, this.tz, this.#theirTurns.has(id), this.minuteMs());
+    if ("error" in plan) return plan;
+    const added = this.alarms().add(input.note ?? "", plan.next, plan.repeat, now);
+    if ("error" in added) return added;
+    await this.armAlarm(added, plan.next);
+    return { ...this.alarmForModel(this.alarms().get(added.id) ?? added), status: "Set. When it rings you get your note back." };
+  }
+
+  /** Point the alarm's one schedule at its next ring. */
+  private async armAlarm(alarm: Alarm, next: number): Promise<void> {
+    if (alarm.scheduleId) await this.cancelSchedule(alarm.scheduleId).catch(() => false);
+    const schedule = await this.schedule(new Date(next), "alarmRings", { id: alarm.id });
+    this.alarms().armed(alarm.id, next, schedule.id);
+  }
+
+  private async removeAlarm(id: string): Promise<boolean> {
+    const alarm = this.alarms().get(id);
+    if (!alarm) return false;
+    if (alarm.scheduleId) await this.cancelSchedule(alarm.scheduleId).catch(() => false);
+    return this.alarms().remove(id);
+  }
+
+  /** A new time zone moves the repeating alarms' wall-clock times with it. */
+  private async rearmAlarms(): Promise<void> {
+    const now = Date.now();
+    for (const alarm of this.alarms().all()) {
+      const rule = alarm.repeat ? parseRule(alarm.repeat) : null;
+      if (rule && !("error" in rule) && rule.kind === "days") await this.armAlarm(alarm, nextRing(rule, alarm.anchor, now, this.tz));
+    }
+  }
+
+  /**
+   * An alarm's time has come: a repeating one is set for its next time, a one-time one is gone. Then, if alarms are
+   * on and today's rings are not used up, one turn of the resident's with its note, like a check-in.
+   */
+  async alarmRings(payload: { id: string }): Promise<void> {
+    const store = this.alarms();
+    const alarm = store.get(payload.id);
+    const now = Date.now();
+    // A schedule left from before the alarm was moved (a new time zone) and not cancelled: not its time yet.
+    if (!alarm || now < alarm.next - 30_000) return;
+    const rule = alarm.repeat ? parseRule(alarm.repeat) : null;
+    // This schedule has run: the next ring gets a schedule of its own.
+    if (rule && !("error" in rule)) await this.armAlarm({ ...alarm, scheduleId: "" }, nextRing(rule, alarm.anchor, now, this.tz));
+    else store.remove(alarm.id);
+    if (!this.alarmsOn()) return;
+    if (!store.ring(now)) {
+      console.log("alarm: today's rings are used up, this one passes", { id: alarm.id });
+      return;
+    }
+    const text = alarmNote(alarm, stamp(new Date(now), this.tz), stamp(new Date(alarm.setAt), this.tz));
+    const message = { id: `alarm_${alarm.id}_${now}`, role: "user", parts: [{ type: "text", text }], metadata: { at: now } } as UIMessage;
+    await this.submitMessages([message], { idempotencyKey: message.id }).catch((error) => console.error("alarm: note not queued", { error: String(error) }));
+  }
+
+  /** The settings page's list of the alarms it set. */
+  webAlarms(): { on: boolean; limit: number; alarms: { id: string; note: string; next: string; when: string }[] } {
+    return {
+      on: this.alarmsOn(),
+      limit: MAX_ALARMS,
+      alarms: this.alarms()
+        .all()
+        .map((alarm) => ({ id: alarm.id, note: alarm.note, next: stamp(new Date(alarm.next), this.tz), when: ruleInWords(alarm.repeat) }))
+    };
+  }
+
+  async webRemoveAlarm(id: string): Promise<ReturnType<Resident["webAlarms"]>> {
+    await this.removeAlarm(id);
+    return this.webAlarms();
   }
 
   // ---- cloud Claude Code, the resident's hands (cloud-tasks.ts) ----
@@ -1257,7 +1400,15 @@ export class Resident extends Think<Env> {
   override configureSession(session: ThinkSession) {
     // No token limit: a letter is written when she has been quiet for a while (idleLetter) or on /handoff.
     return session
-      .onCompaction(foldIntoLetter(() => this.keepRecentTokens(), () => this.letterTurn()))
+      .onCompaction(
+        foldIntoLetter(
+          () => this.keepRecentTokens(),
+          () => this.letterTurn(),
+          () => {
+            this.#short = true;
+          }
+        )
+      )
       .onCompactionError((error) => console.error("letter: compaction failed", { error: String(error) }));
   }
 
@@ -1265,6 +1416,8 @@ export class Resident extends Think<Env> {
     return num(this.cfg.KEEP_RECENT_TOKENS, 8000);
   }
 
+  /** Set by the fold when the whole conversation was still in the kept part, so the letter had nothing to fold. */
+  #short = false;
   /** Why the letter being written is written. Set while compact() runs. */
   #letterReason: "idle" | "handoff" = "handoff";
   /** The letter prompt's id while its turn runs, so onChatResponse and boot() can tell that turn apart. */
@@ -1363,7 +1516,28 @@ export class Resident extends Think<Env> {
     if (!(await this.ctx.storage.get<boolean>("wrote_since_letter"))) return;
     // Checked last: a turn that is running now plans its own letter when it ends.
     if (this.activeTurn) return;
-    await this.writeLetter("idle");
+    this.#short = false;
+    const folded = await this.writeLetter("idle");
+    if (!folded && this.#short && !this.activeTurn) await this.heartbeat();
+  }
+
+  /**
+   * The heartbeat (HEARTBEAT, on unless turned off): when the letter's time comes and the conversation is still too
+   * short to fold, the resident is asked whether it would like to reach out. The cache is warm then, so it costs
+   * about one message. Only with the one-hour cache: after five minutes the cache is gone and it would cost more.
+   * One per quiet time: the letter's time comes again only after they write.
+   */
+  private heartbeatOn(): boolean {
+    return this.cfg.HEARTBEAT?.trim().toLowerCase() !== "off" && promptCache(this.cfg).anthropic.cacheControl.ttl === "1h" && idleMinutes(this.cfg) > 0;
+  }
+
+  private async heartbeat(): Promise<void> {
+    if (!this.heartbeatOn()) return;
+    const at = Date.now();
+    const minutes = Math.max(1, Math.round(idleMinutes(this.cfg)));
+    const text = heartbeatPrompt(stamp(new Date(at), this.tz), minutes, this.alarmsOn());
+    const message = { id: `heartbeat_${at}`, role: "user", parts: [{ type: "text", text }], metadata: { at } } as UIMessage;
+    await this.submitMessages([message], { idempotencyKey: message.id }).catch((error) => console.error("heartbeat: not queued", { error: String(error) }));
   }
 
   private letters(): { at: number; text: string }[] {
@@ -1524,6 +1698,14 @@ export class Resident extends Think<Env> {
         this.siteKeys().all().length ? `；带钥匙的网站：${this.siteKeys().all().map((key) => key.host).join("、")}` : ""
       }`,
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
+      `心跳：${
+        this.heartbeatOn()
+          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、对话还短时问它要不要找你`
+          : this.cfg.HEARTBEAT?.trim().toLowerCase() === "off"
+            ? "关"
+            : "不问（缓存 5 分钟或交接信关着时没有心跳）"
+      }`,
+      `闹钟：${this.alarmsOn() ? `开，它定了 ${this.alarms().all().length} 个` : this.alarms().all().length ? `关，留着 ${this.alarms().all().length} 个不响` : "关"}`,
       `表情包：${this.stickersOn() ? `开，${this.stickerSummary()}` : "关"}`,
       await this.voiceLine(),
       `云端 Claude Code：${
@@ -1756,6 +1938,7 @@ export class Resident extends Think<Env> {
         return { error: `排不上：${error instanceof Error ? error.message : String(error)}` };
       }
     }
+    if (key === "TIME_ZONE") await this.rearmAlarms();
     // A different Aelios has a different boot packet.
     if (key.startsWith("AELIOS_")) await this.ctx.storage.delete("aelios_boot");
     return this.webConfig();

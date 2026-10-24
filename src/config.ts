@@ -49,6 +49,8 @@ export const FIELDS: readonly Field[] = [
   { key: "TIME_ZONE", kind: "text", check: timeZone },
   // Checked by arming it (Resident.webSetConfig).
   { key: "CHECKIN_SCHEDULE", kind: "text" },
+  { key: "HEARTBEAT", kind: "choice", choices: ["on", "off"] },
+  { key: "ALARMS", kind: "choice", choices: ["on", "off"] },
   { key: "LETTER_IDLE_MINUTES", kind: "text", check: minutes },
   { key: "KEEP_RECENT_TOKENS", kind: "text", check: count },
   { key: "THINKING_EFFORT", kind: "choice", choices: ["auto", "low", "medium", "high", "xhigh", "max"] },

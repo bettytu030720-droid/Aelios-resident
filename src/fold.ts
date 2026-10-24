@@ -63,9 +63,10 @@ export function keptFrom(messages: SessionMessage[], keepRecentTokens: number): 
 
 /**
  * The compaction the resident runs: everything between the first messages and the kept part goes into the letter.
- * The budget is asked for each time, so a change on the settings page applies to the next letter.
+ * The budget is asked for each time, so a change on the settings page applies to the next letter. `short` is told
+ * when the whole conversation still fits in the kept part, so there was nothing to fold (the heartbeat's moment).
  */
-export function foldIntoLetter(budget: number | (() => number), write: () => Promise<string>): CompactionFunction {
+export function foldIntoLetter(budget: number | (() => number), write: () => Promise<string>, short?: () => void): CompactionFunction {
   return async (messages) => {
     const keepRecentTokens = typeof budget === "function" ? budget() : budget;
     const older = messages.slice(KEEP_HEAD, keptFrom(messages, keepRecentTokens)).filter((message) => !isLetter(message));
@@ -74,6 +75,7 @@ export function foldIntoLetter(budget: number | (() => number), write: () => Pro
         carried: messages.reduce((sum, message) => sum + tokensOf(message), 0),
         keepRecentTokens
       });
+      short?.();
       return null;
     }
     const letter = await write();
