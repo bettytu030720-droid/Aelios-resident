@@ -28,6 +28,14 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 ## 上线
 
+**让 AI 帮你装**：用 Claude Code、Codex 这类能跑命令的 AI 的话，把下面这段话发给它，部署、接 Telegram、接 Aelios、选模型都交给它，你只要建个 bot、在浏览器里点几下：
+
+```text
+帮我装好、配好 Aelios-resident（住在我 Cloudflare 账号里的 AI 伴侣）。先读 https://raw.githubusercontent.com/wusaki0723/Aelios-resident/main/docs/setup-with-ai.md ，照着做。需要我在浏览器里点、或者需要我自己填 key 的时候，停下来告诉我去哪儿填。
+```
+
+想自己在后台点着装，照下面做。
+
 要准备的：一个 Cloudflare 账号（免费档就能跑），一个 Telegram bot。想要长期记忆的话，再准备一个已经部署好的 Aelios。
 
 1. **建 bot**：Telegram 里找 @BotFather，发 `/newbot`，起好名字，记下 token。
