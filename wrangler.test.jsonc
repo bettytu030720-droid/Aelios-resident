@@ -16,7 +16,6 @@
     "TG_ALLOWED": "@her_test",
     "TIME_ZONE": "Asia/Shanghai",
     "DEBOUNCE_SECONDS": "1",
-    "KEEP_RECENT_TOKENS": "10",
     "LETTER_IDLE_MINUTES": "off",
     "AELIOS_URL": "http://127.0.0.1:9999",
     "AELIOS_NAMESPACE": "test-space",

@@ -181,6 +181,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     return { text: `看到 ${pictures} 张图${user.includes("Attachments:") ? "，还有一行附件说明" : ""}。` };
   }
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
+  // Fill real-sized chat windows in letter tests without echoing thousands of characters back to Telegram.
+  if (said.startsWith("交接信测试材料")) return { text: "材料收到了。" };
   // The first check-in says something; later ones pass, to exercise SKIP.
   if (said.includes("a scheduled check-in")) return { text: checkins++ === 0 ? "主动来找你啦。\n\n记得喝水。" : "SKIP" };
   return { text: `收到：${user}\n\n这是第二个气泡。` };

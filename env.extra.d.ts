@@ -8,7 +8,8 @@ interface Env {
   TG_ALLOWED?: string;
   TIME_ZONE?: string;
   DEBOUNCE_SECONDS?: string;
-  KEEP_RECENT_TOKENS?: string;
+  // Automatic letters need both this carried-chat threshold (default 30000) and the quiet time.
+  LETTER_TOKEN_THRESHOLD?: string;
   LETTER_IDLE_MINUTES?: string;
   CACHE_TTL?: string;
   // How much Claude thinks (thinking.ts): auto (its own default), low, medium, high, xhigh or max.
@@ -28,7 +29,7 @@ interface Env {
   CUSTOM_BASE_URL?: string;
   CUSTOM_FORMAT?: string;
   CHECKIN_SCHEDULE?: string;
-  // When the letter's time comes and there is nothing to fold yet, ask whether to reach out, up to this many times
+  // When the quiet time ends but an automatic letter is not due yet, ask whether to reach out, up to this many times
   // in one quiet time: 3 by default, 0 or off never, at most 10.
   HEARTBEAT?: string;
   // Alarms the resident sets for itself (alarms.ts): off (default) or on.
