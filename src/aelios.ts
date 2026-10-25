@@ -37,6 +37,8 @@ export function aeliosConfig(env: Env): AeliosConfig | null {
 async function aelios(config: AeliosConfig, path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`${config.url}${path}`, {
     ...init,
+    // Never carry the Bearer key to a redirect target; a 3xx comes back as a failed answer.
+    redirect: "manual",
     headers: {
       authorization: `Bearer ${config.key}`,
       "content-type": "application/json",

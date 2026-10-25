@@ -7,12 +7,6 @@ const KEEP_RECENT = 8;
 const TOOL_CHARS = 500;
 const MEDIA_NOTE = "[Earlier media omitted from this cache window; the original remains in chat history.]";
 
-/** Metadata-only admission check, before compact() loads history. Reserve room for the auxiliary prompt. */
-export function letterHistoryFits(rows: readonly { bytes: number }[], budget: number, reserve = 64 * 1024): boolean {
-  if (!Number.isFinite(budget) || budget <= 0) return true; // Matches Think's explicit unlimited-budget setting.
-  return rows.reduce((sum, row) => sum + row.bytes, 0) + reserve <= budget;
-}
-
 /** Keep the recent messages in full, and keep EVERY new message in full until the window closes. */
 export function historyCutoff(messages: readonly ModelMessage[]): number {
   let cutoff = Math.max(0, messages.length - KEEP_RECENT);

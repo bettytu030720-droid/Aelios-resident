@@ -114,13 +114,14 @@ step("a ring's note and the heartbeat are notes, not from them, and may pass wit
   assert.match(once, /SKIP/);
   const again = alarmNote({ id: "a_12345678", note: "早安", repeat: "every day at 08:00", anchor: 0, next: 0, scheduleId: "", setAt: 0 }, "x", "y");
   assert.match(again, /repeats \(every day at 08:00\) until you cancel it \(id a_12345678\)/);
-  const beat = heartbeatPrompt("10-24 周六 21:30", 55, 1, 3, false);
+  const beat = heartbeatPrompt("10-24 周六 21:30", 55, 1, 3);
   assert.ok(isNote(beat) && isCheckin(beat));
   assert.match(beat, /they have not written for 55 minutes, and it is now 10-24 周六 21:30\. This is heartbeat 1 of 3 while they are quiet\.\)/);
   assert.doesNotMatch(beat, /set_alarm/);
-  assert.match(heartbeatPrompt("x", 165, 3, 3, false), /heartbeat 3 of 3 while they are quiet, the last\.\)/);
-  assert.doesNotMatch(heartbeatPrompt("x", 55, 1, 1, false), /of 1/, "no count when there is only one");
-  assert.match(heartbeatPrompt("x", 1, 1, 1, true), /1 minute,.*set_alarm/s);
+  assert.match(heartbeatPrompt("x", 165, 3, 3), /heartbeat 3 of 3 while they are quiet, the last\.\)/);
+  assert.doesNotMatch(heartbeatPrompt("x", 55, 1, 1), /of 1/, "no count when there is only one");
+  assert.match(heartbeatPrompt("x", 1, 1, 1), /1 minute,/);
+  assert.doesNotMatch(heartbeatPrompt("x", 55, 1, 3), /alarm/i, "the heartbeat does not nudge towards setting an alarm");
   assert.ok(!isCheckin("[10-24 周六 21:30] 你好"));
 });
 

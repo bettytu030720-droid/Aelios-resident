@@ -49,10 +49,12 @@ function residentField(name) {
   return match[0].replace("override ", ""); // the harness has no Think superclass
 }
 
-const { historyCutoff, historyAnchor, historyForWindow, letterHistoryFits, ResidentWindowHarness, truncationKeepRecent, SDK_STEP } = await compile(`
-  import { historyCutoff, historyAnchor, historyForWindow, letterHistoryFits } from "./src/cache-history.ts";
+const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, truncationKeepRecent, SDK_STEP, LETTER_PREFIX } = await compile(`
+  import { historyCutoff, historyAnchor, historyForWindow } from "./src/cache-history.ts";
   import { opensWindow, cacheTtlMs } from "./src/cache-window.ts";
-  export { historyCutoff, historyAnchor, historyForWindow, letterHistoryFits };
+  import { LETTER_PREFIX } from "./src/prompts.ts";
+  export { historyCutoff, historyAnchor, historyForWindow, LETTER_PREFIX };
+  ${residentSource.match(/^function promptCache\([^\n]*[\s\S]*?^\}/m)[0]}
   ${sdkConstant("MODEL_RECENT_WINDOW")}
   ${sdkConstant("MODEL_TRUNCATION_STEP")}
   ${sdkFunction("truncationStepSize")}
@@ -75,6 +77,9 @@ const { historyCutoff, historyAnchor, historyForWindow, letterHistoryFits, Resid
     ctx = { storage: { put: async () => {} } };
     failed = null;
     failLetter(error) { this.failed = error; }
+    // The shared effective planner is tested with real Sessions in effective-history.mjs.
+    // Here isolate the actual Resident admission boundaries, not a copy of that planner.
+    historyControl() { return { admission: async (reserve) => this.admit ? this.admit(reserve) : "fits" }; }
     constructor(public sql: any, public cfg: { CACHE_TTL?: string } = {}) {}
     setLetter(active: boolean) { this.#letterPromptId = active ? "synthetic-letter-prompt" : null; }
     ${residentField("truncationStep")}
@@ -590,20 +595,21 @@ test("provider-executed tool results retain their native output schema", () => {
   assert.equal(view[3].content[0].output.value.length, 500, "a reused ID does not make the next own call native");
 });
 
-test("hydration admission reserves prompt space and rejects oversized metadata without loading payloads", () => {
-  const budget = 32 * 1024 * 1024;
-  assert.equal(letterHistoryFits([{ bytes: budget - 65536 }], budget), true);
-  assert.equal(letterHistoryFits([{ bytes: budget - 65535 }], budget), false);
-  assert.equal(letterHistoryFits([{ bytes: budget + 1 }], budget, 0), false);
-  assert.equal(letterHistoryFits([{ bytes: budget }], budget, 0), true);
+test("actual letter admission requests a 64 KiB auxiliary-prompt reserve", async (t) => {
+  const f = sqliteFixture(t);
+  let requested;
+  f.resident.admit = async (reserve) => { requested = reserve; return "budget"; };
+  const result = await f.resident.performWriteLetter("handoff");
+  assert.equal(result.status, "failed");
+  assert.equal(requested, 64 * 1024);
 });
 
 test("actual letter admission refuses an incomplete-hydration risk before reading or compacting full history", async (t) => {
   const f = sqliteFixture(t);
   f.resident.hydrationByteBudget = 32 * 1024 * 1024;
   let metadataReads = 0;
+  f.resident.admit = async () => { metadataReads++; return "budget"; };
   f.resident.session = {
-    getHistoryRowStats: async () => { metadataReads++; return [{ bytes: 33 * 1024 * 1024 }]; },
     getHistory: async () => { throw new Error("must not load oversized payloads"); },
     compact: async () => { throw new Error("must not fold unseen messages"); },
   };
@@ -613,18 +619,39 @@ test("actual letter admission refuses an incomplete-hydration risk before readin
   assert.equal(f.resident.failed, result.error);
   assert.equal(metadataReads, 1);
   assert.equal(f.resident.letterJob(), null);
+  // A branch the SDK cannot walk to its root gets its own reason, not a size complaint.
+  f.resident.admit = async () => "incomplete";
+  const deep = await f.resident.performWriteLetter("handoff");
+  assert.equal(deep.status, "failed");
+  assert.match(deep.error, /1 万条/);
+  assert.doesNotMatch(deep.error, /安全装载范围/);
 });
 
 test("actual beforeTurn rechecks after admission, even when a pending letter is not the latest live user message", async (t) => {
   const f = sqliteFixture(t);
-  const budget = f.resident.hydrationByteBudget = 32 * 1024 * 1024;
-  assert.equal(letterHistoryFits([{ bytes: budget - 65536 }], budget), true, "initial admission can pass");
+  f.resident.hydrationByteBudget = 32 * 1024 * 1024;
+  assert.equal(await f.resident.historyControl().admission(64 * 1024), "fits", "initial admission can pass");
   const job = { promptId: "synthetic-over-budget", reason: "handoff", fromMessageId: "start", toMessageId: "end", summary: null, createdAt: f.now };
   f.resident.saveLetterJob(job);
   f.resident.userMessageBefore = () => null;
-  f.resident.session = { getHistoryRowStats: async () => [{ bytes: budget + 1 }] };
-  await assert.rejects(f.resident.beforeTurn({ messages: [], tools: {}, system: "synthetic" }), /safe hydration budget/);
+  f.resident.admit = async (reserve) => { assert.equal(reserve, 0); return "budget"; };
+  await assert.rejects(f.resident.beforeTurn({ messages: [{ role: "user", content: LETTER_PREFIX }], tools: {}, system: "synthetic" }), /safe hydration budget/);
   assert.deepEqual(f.resident.letterJob(), job, "the admission hook does not discard original history or a recovery job");
+});
+
+test("pending over-budget letter does not block an ordinary bounded model turn", async (t) => {
+  const f = sqliteFixture(t);
+  const job = { promptId: "pending", reason: "handoff", fromMessageId: "a", toMessageId: "b", summary: null, createdAt: f.now };
+  f.resident.saveLetterJob(job);
+  f.resident.userMessageBefore = () => ({ id: job.promptId, text: LETTER_PREFIX });
+  f.resident.admit = async () => { throw new Error("ordinary turns must not run letter admission"); };
+  f.resident.boot = async () => "";
+  f.resident.getTools = () => ({});
+  const messages = [{ role: "user", content: "ordinary question" }];
+  const config = await f.resident.beforeTurn({ messages, tools: {}, system: "synthetic" });
+  assert.deepEqual(config.messages, messages);
+  assert.ok(config.providerOptions);
+  assert.deepEqual(f.resident.letterJob(), job);
 });
 
 test("a letter without any preceding saved view can initialize a window", (t) => {

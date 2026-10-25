@@ -80,7 +80,8 @@ export function modelsOf(body: unknown): AeliosModel[] {
  * Throws when Aelios cannot be reached or refuses the key.
  */
 export async function listModels(memory: AeliosConfig, signal?: AbortSignal): Promise<AeliosModels> {
-  const response = await fetch(`${aeliosBase(memory)}/models`, { headers: { authorization: `Bearer ${memory.key}` }, signal });
+  // Do not forward the key to a redirect target, even another path on the same origin.
+  const response = await fetch(`${aeliosBase(memory)}/models`, { headers: { authorization: `Bearer ${memory.key}` }, signal, redirect: "manual" });
   if (!response.ok) throw new Error(`Aelios answered ${response.status}`);
   return { models: modelsOf(await response.json()), curated: response.headers.get("x-aelios-models") === "list" };
 }
@@ -117,7 +118,8 @@ export type Thinking = { effort: Effort | null };
 
 function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, thinking?: Thinking): typeof fetch {
   return async (input, init) => {
-    if (typeof init?.body !== "string") return fetch(input, init);
+    // Like every request to Aelios: the key is not carried to a redirect target.
+    if (typeof init?.body !== "string") return fetch(input, { ...init, redirect: "manual" });
     let body = JSON.parse(init.body) as Record<string, unknown>;
     const headers = new Headers(init.headers);
     const hers = !auxiliary && !isAuxiliary(body);
@@ -125,7 +127,7 @@ function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, th
     // Claude's earlier thinking goes back without its blocks, for the reason in claude-run.ts.
     if (messages) body = withoutOldThinkingIn(body);
     if (messages && thinking) body = withThinking(body, thinking.effort);
-    const response = await fetch(input, { ...init, headers, body: JSON.stringify(body) });
+    const response = await fetch(input, { ...init, headers, body: JSON.stringify(body), redirect: "manual" });
     const status = response.headers.get(MEMORY_HEADER);
     if (hers && status && report) report(status);
     return response;

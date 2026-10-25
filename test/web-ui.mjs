@@ -290,7 +290,8 @@ assert.equal(statePage.letter.delivery.latest.at, null);
 assert.equal(statePage.letterCanRetry(), false);
 console.log('PASS letter write states distinguish failure, no content, and recovery; missing or invalid fields are safe');
 const unsafeError = '发送失败：<img src=x onerror=unsafe()> & "请重试"';
-const snapshot = (status, failed = 0, blocked = 0) => ({
+const snapshot = (status, failed = 0, blocked = 0, canRetry = failed > 0 || blocked > 0) => ({
+  canRetry,
   write: { state: 'written', at, error: unsafeError },
   delivery: { pending: 2, failed, blocked, latest: { id: 'letter_1', at, status, attempts: 6, lastError: unsafeError, sentAt: status === 'sent' ? at + 1000 : null } }
 });
@@ -308,6 +309,11 @@ statePage.setLetter(snapshot('sent', 3, 4));
 assert.equal(statePage.letterCanRetry(), true);
 assert.equal(statePage.letterDeliveryCounts(), '待发送 2 · 待重试 3 · 已暂停 4');
 assert.match(statePage.sectionSummary('thinking'), /信已写好.*待重试 3.*已暂停 4/);
+// Failures left only for an earlier Aelios address or namespace: retrying cannot resend them, so no button.
+statePage.setLetter(snapshot('failed', 2, 1, false));
+assert.equal(statePage.letterCanRetry(), false);
+assert.equal(statePage.letterDeliveryCounts(), '待发送 2 · 待重试 2 · 已暂停 1');
+statePage.setLetter(snapshot('sent', 3, 4));
 const letterPanel = html.slice(html.indexOf('<template x-if="group.id === \'thinking\'">'), html.indexOf('<template x-for="meta in group.fields"'));
 assert.ok(letterPanel.length > 0 && !letterPanel.includes('x-html'));
 for (const binding of ['letterWriteStatus()', "'最近写信时间：' + letterTime(letter.write && letter.write.at)", 'letter.write && letter.write.error', 'letterDeliveryStatus()', 'letterDeliveryCounts()', 'letterDeliveryDetail()', 'letter.delivery.latest && letter.delivery.latest.lastError', 'letterError']) {
@@ -319,13 +325,13 @@ assert.ok(letterPanel.includes('x-show="letterCanRetry()"'));
 assert.match(letterPanel, /只重发已写好的信，不调用模型、不重写信/);
 assert.match(letterPanel, /最多自动尝试 6 次/);
 assert.match(letterPanel, /确认送达不等同于 Aelios 后台记忆处理已完成/);
-console.log('PASS delivery states and queue counts stay separate; retry visibility uses all failures; error bindings use x-text, never x-html');
+console.log('PASS delivery states and queue counts stay separate; retry visibility follows what retry can resend, including older failures; error bindings use x-text, never x-html');
 const retryCalls = [];
 statePage.api = async (path, options) => {
   retryCalls.push([path, options]);
   assert.equal(statePage.letterBusy, 'retry');
   await statePage.retryLetter(); // A second click while in flight sends nothing.
-  return snapshot('blocked', 0, 4); // A target mismatch remains paused, not reported as delivered.
+  return snapshot('blocked', 0, 4); // Still paused after the retry, not reported as delivered.
 };
 await statePage.retryLetter();
 assert.deepEqual(JSON.parse(JSON.stringify(retryCalls)), [['/web/letter/retry', { method: 'POST' }]]);
