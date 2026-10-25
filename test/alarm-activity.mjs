@@ -67,7 +67,7 @@ const built = await build({
         defaultModel = "fake";
         hydrationByteBudget = 32 * 1024 * 1024;
         // Admission/compaction are boundaries here; effective-history.mjs tests the real planner.
-        historyControl() { return { fits: async () => true }; }
+        historyControl() { return { admission: async () => "fits" }; }
         job = null;
         finished = [];
         learned = [];
@@ -245,7 +245,7 @@ for (const status of ["error", "aborted"]) test(`failed alarm (${status}) preser
   unchangedUserTime(exhausted);
 });
 
-for (const [name, note] of [["check-in", checkinPrompt("now")], ["heartbeat", heartbeatPrompt("now", 55, 2, 3, true)]]) {
+for (const [name, note] of [["check-in", checkinPrompt("now")], ["heartbeat", heartbeatPrompt("now", 55, 2, 3)]]) {
   test(`${name} completion does not reset the deadline, heartbeat ordinal or activity flag`, async () => {
     const h = fixture();
     const { idle, beat } = await priorCycle(h);

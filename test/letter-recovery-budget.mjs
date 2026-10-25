@@ -98,7 +98,7 @@ function method(name) {
 const compiled = await build({
   stdin: { contents: `
     import { AsyncLocalStorage } from 'node:async_hooks';
-    import { installEffectiveHistory } from './src/effective-history.ts';
+    import { EffectiveHistoryError, installEffectiveHistory } from './src/effective-history.ts';
     import { historyPathComplete } from './src/history-path.ts';
     import { readAuxiliaryAnswer, removeAuxiliaryTurn } from './src/letter-auxiliary.ts';
     import { resumeLetterCompaction } from './src/letter-recovery.ts';
@@ -139,11 +139,11 @@ test("65536 reserve admits, persisted expired job cleans up after oversized appe
   const { session: s, resident: r } = f;
   await seed(s);
   const control = r.historyControl();
-  assert.equal(await control.fits(65536), true);
+  assert.equal(await control.admission(65536), "fits");
   r.saveLetterJob(job()); // actual SQLite-backed Resident job persistence
   await auxiliary(s);
   await oversizedTail(s);
-  assert.equal(await control.fits(), false);
+  assert.equal(await control.admission(), "budget");
   f.forbid();
   await assert.rejects(s.getHistory(), errorCode("budget"));
   await r.performResumeLetter();
@@ -166,7 +166,7 @@ test("actual letterTurn failure cleanup escapes guarded answerAfter trap and pre
   const f = await fixture(t);
   const { session: s, resident: r } = f;
   await seed(s);
-  assert.equal(await r.historyControl().fits(65536), true);
+  assert.equal(await r.historyControl().admission(65536), "fits");
   r.saveMessages = async ([prompt]) => {
     assert.equal(r.letterJob().promptId, prompt.id, "job persisted BEFORE prompt/model boundary");
     await s.appendMessage(prompt);
@@ -209,13 +209,13 @@ test("saved summary recovery folds metadata-only while concurrent tail remains o
   await seed(s);
   await s.addCompaction("old letter", "m0", "m1");
   const control = r.historyControl();
-  assert.equal(await control.fits(65536), true);
+  assert.equal(await control.admission(65536), "fits");
   const saved = { ...job("saved dated new letter"), fromMessageId: "m2", toMessageId: "m3" };
   r.saveLetterJob(saved);
   await auxiliary(s);
   await oversizedTail(s);
   f.forbid();
-  assert.equal(await control.fits(), false);
+  assert.equal(await control.admission(), "budget");
   await r.performResumeLetter();
   assert.equal(r.letterJob(), null);
   assert.equal(r.letterState().readWrite().state, "written");
@@ -224,7 +224,7 @@ test("saved summary recovery folds metadata-only while concurrent tail remains o
   assert.equal(records[1].fromMessageId, "m0", "existing letter folded into replacement prefix");
   assert.equal(records[1].toMessageId, "m3");
   assert.equal(records[1].summary, saved.summary);
-  assert.equal(await control.fits(), false, "recovery did not enlarge the finite budget");
+  assert.equal(await control.admission(), "budget", "recovery did not enlarge the finite budget");
   assert.deepEqual(f.state.messageReads, []);
   assert.deepEqual(f.state.payloads, []);
   assert.deepEqual(f.rawIds(), ["m0", "m1", "m2", "m3", "new_user", "new_reply"]);
@@ -343,6 +343,29 @@ test("cleanup works for a recent prompt on a depth-capped path without pretendin
   assert.deepEqual(f.state.payloads, []);
 });
 
+test("a saved letter on a branch past the SDK depth is retired with its own reason, not retried forever", async (t) => {
+  const f = await fixture(t);
+  const insert = f.db.prepare(`INSERT INTO cf_agents_session_messages
+    (session_id, id, seq, parent_id, role, content, content_chunks, token_estimate, created_at)
+    VALUES (?, ?, ?, ?, 'user', ?, 0, 1, 0)`);
+  f.db.exec("BEGIN");
+  for (let i = 0; i < 10002; i++) insert.run("deep", `d${i}`, i + 1, i ? `d${i - 1}` : null, JSON.stringify(msg(`d${i}`)));
+  f.db.exec("COMMIT");
+  const s = await f.open("deep");
+  const r = new ResidentHarness(s, f.sql, B, f.storage);
+  await auxiliary(s);
+  r.saveLetterJob({ ...job("[Handoff letter]\nsaved"), fromMessageId: "d9000", toMessageId: "d9990" });
+  f.forbid();
+  await r.performResumeLetter(); // does not throw: a retry could never verify this branch either
+  assert.equal(r.letterJob(), null, "the job no longer blocks later letters");
+  const write = r.letterState().readWrite();
+  assert.equal(write.state, "failed");
+  assert.match(write.error, /1 万条/);
+  assert.deepEqual(await s.getCompactions(), [], "nothing is folded on an unverified branch");
+  assert.deepEqual(f.state.deletions, [["letter_prompt", "letter_answer"]]);
+  assert.deepEqual(f.state.payloads, []);
+});
+
 test("recovery snapshot exposes IDs only, raw ordered membership, and no fit prerequisite", async (t) => {
   const f = await fixture(t);
   const s = f.session;
@@ -351,7 +374,7 @@ test("recovery snapshot exposes IDs only, raw ordered membership, and no fit pre
   await oversizedTail(s);
   const c = f.resident.historyControl();
   f.forbid();
-  assert.equal(await c.fits(), false);
+  assert.equal(await c.admission(), "budget");
   const view = await c.recovery();
   assert.deepEqual(view.messages, [{ id: `compaction_${record.id}` }, { id: "m2" }, { id: "m3" }, { id: "new_user" }, { id: "new_reply" }]);
   assert.deepEqual(view.compactions, [record]);

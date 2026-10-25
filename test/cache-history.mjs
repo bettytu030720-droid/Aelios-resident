@@ -79,7 +79,7 @@ const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, t
     failLetter(error) { this.failed = error; }
     // The shared effective planner is tested with real Sessions in effective-history.mjs.
     // Here isolate the actual Resident admission boundaries, not a copy of that planner.
-    historyControl() { return { fits: async (reserve) => this.admit ? this.admit(reserve) : true }; }
+    historyControl() { return { admission: async (reserve) => this.admit ? this.admit(reserve) : "fits" }; }
     constructor(public sql: any, public cfg: { CACHE_TTL?: string } = {}) {}
     setLetter(active: boolean) { this.#letterPromptId = active ? "synthetic-letter-prompt" : null; }
     ${residentField("truncationStep")}
@@ -598,7 +598,7 @@ test("provider-executed tool results retain their native output schema", () => {
 test("actual letter admission requests a 64 KiB auxiliary-prompt reserve", async (t) => {
   const f = sqliteFixture(t);
   let requested;
-  f.resident.admit = async (reserve) => { requested = reserve; return false; };
+  f.resident.admit = async (reserve) => { requested = reserve; return "budget"; };
   const result = await f.resident.performWriteLetter("handoff");
   assert.equal(result.status, "failed");
   assert.equal(requested, 64 * 1024);
@@ -608,7 +608,7 @@ test("actual letter admission refuses an incomplete-hydration risk before readin
   const f = sqliteFixture(t);
   f.resident.hydrationByteBudget = 32 * 1024 * 1024;
   let metadataReads = 0;
-  f.resident.admit = async () => { metadataReads++; return false; };
+  f.resident.admit = async () => { metadataReads++; return "budget"; };
   f.resident.session = {
     getHistory: async () => { throw new Error("must not load oversized payloads"); },
     compact: async () => { throw new Error("must not fold unseen messages"); },
@@ -619,16 +619,22 @@ test("actual letter admission refuses an incomplete-hydration risk before readin
   assert.equal(f.resident.failed, result.error);
   assert.equal(metadataReads, 1);
   assert.equal(f.resident.letterJob(), null);
+  // A branch the SDK cannot walk to its root gets its own reason, not a size complaint.
+  f.resident.admit = async () => "incomplete";
+  const deep = await f.resident.performWriteLetter("handoff");
+  assert.equal(deep.status, "failed");
+  assert.match(deep.error, /1 万条/);
+  assert.doesNotMatch(deep.error, /安全装载范围/);
 });
 
 test("actual beforeTurn rechecks after admission, even when a pending letter is not the latest live user message", async (t) => {
   const f = sqliteFixture(t);
   f.resident.hydrationByteBudget = 32 * 1024 * 1024;
-  assert.equal(await f.resident.historyControl().fits(64 * 1024), true, "initial admission can pass");
+  assert.equal(await f.resident.historyControl().admission(64 * 1024), "fits", "initial admission can pass");
   const job = { promptId: "synthetic-over-budget", reason: "handoff", fromMessageId: "start", toMessageId: "end", summary: null, createdAt: f.now };
   f.resident.saveLetterJob(job);
   f.resident.userMessageBefore = () => null;
-  f.resident.admit = async (reserve) => { assert.equal(reserve, 0); return false; };
+  f.resident.admit = async (reserve) => { assert.equal(reserve, 0); return "budget"; };
   await assert.rejects(f.resident.beforeTurn({ messages: [{ role: "user", content: LETTER_PREFIX }], tools: {}, system: "synthetic" }), /safe hydration budget/);
   assert.deepEqual(f.resident.letterJob(), job, "the admission hook does not discard original history or a recovery job");
 });

@@ -35,7 +35,7 @@ import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
 import { historyAnchor, historyCutoff, historyForWindow } from "./cache-history";
-import { installEffectiveHistory } from "./effective-history";
+import { EffectiveHistoryError, installEffectiveHistory } from "./effective-history";
 import { historyPathComplete } from "./history-path";
 import { readAuxiliaryAnswer, removeAuxiliaryTurn } from "./letter-auxiliary";
 import { fakeModel } from "./fake-model";
@@ -1469,8 +1469,10 @@ export class Resident extends Think<Env> {
       }
     }
     // Recheck after the auxiliary prompt has actually been persisted, including concurrent appends.
-    if (this.#letterPromptId && !(await this.historyControl().fits(0))) {
-      throw new Error("Letter history exceeds the safe hydration budget; original chat was not folded.");
+    if (this.#letterPromptId) {
+      const admission = await this.historyControl().admission(0);
+      if (admission === "incomplete") throw new Error("Letter history branch is not verified to its root; original chat was not folded.");
+      if (admission === "budget") throw new Error("Letter history exceeds the safe hydration budget; original chat was not folded.");
     }
     const messages = this.windowHistory(ctx.messages);
     const boot = await this.boot();
@@ -1830,7 +1832,17 @@ export class Resident extends Think<Env> {
     const session = this.session;
     // A saved letter already read its range. Reconstruct only IDs/overlays to commit it,
     // even if later user messages now exceed the full-body hydration budget.
-    const view = await this.historyControl(session).recovery();
+    const view = await this.historyControl(session).recovery().catch((error: unknown) => {
+      if (error instanceof EffectiveHistoryError && error.code === "incomplete") return null;
+      throw error;
+    });
+    if (!view) {
+      // The branch can no longer be verified to its root, so this range can never be folded. The letter itself
+      // is kept (and queued for Aelios): drop the job rather than block every later letter behind it.
+      this.failLetter("聊天分支超过 1 万条或分支不完整：这封信已保存（接了 Aelios 也照常同步），但没能用它收起旧聊天。");
+      this.deleteLetterJob(job.promptId);
+      return;
+    }
     if (!view.containsRange(job.fromMessageId, job.toMessageId)) {
       throw new Error("Saved letter range is not on the selected branch");
     }
@@ -1888,8 +1900,11 @@ export class Resident extends Think<Env> {
     try {
       // compact() selects a range from complete history, but Think hydrates model input under a byte budget.
       // Never summarize/fold messages the writer might not receive. Inspect sizes, not the payloads.
-      if (!(await this.historyControl().fits(64 * 1024))) {
-        const error = "原始聊天超过安全装载范围，无法确认写信模型能读到全部内容；本次没有收起聊天。";
+      const admission = await this.historyControl().admission(64 * 1024);
+      if (admission !== "fits") {
+        const error = admission === "incomplete"
+          ? "聊天分支超过 1 万条（SDK 往回最多读这么多）或分支不完整，写信模型读不到最早的聊天和旧交接信；本次没有收起聊天。"
+          : "要交给写信模型的聊天超过安全装载范围（约 32 MiB），无法确认它能读到全部内容；本次没有收起聊天。";
         this.failLetter(error);
         return { status: "failed", error };
       }
@@ -1992,7 +2007,7 @@ export class Resident extends Think<Env> {
     // Half the quiet time leaves room for a schedule that runs a moment early.
     if (at - lastFromThem < (minutes * 60_000) / 2) return;
     const quiet = Math.max(1, Math.round((at - lastFromThem) / 60_000));
-    const text = heartbeatPrompt(stamp(new Date(at), this.tz), quiet, n, times, this.alarmsOn());
+    const text = heartbeatPrompt(stamp(new Date(at), this.tz), quiet, n, times);
     const message = { id: `heartbeat_${at}`, role: "user", parts: [{ type: "text", text }], metadata: { at } } as UIMessage;
     await this.submitMessages([message], { idempotencyKey: message.id }).catch((error) => console.error("heartbeat: not queued", { error: String(error) }));
     if (n < times) {
@@ -2161,7 +2176,14 @@ export class Resident extends Think<Env> {
   }
 
   private async status(): Promise<string> {
-    const history = await this.session.getHistory();
+    // What the resident carries: the same bounded read Think hydrates, never the whole stored branch.
+    const recent = await this.session.getRecentHistory(this.hydrationByteBudget);
+    const history = recent.messages;
+    const partial = !recent.truncated
+      ? ""
+      : (await this.historyControl().plan()).complete
+        ? "（超过约 32 MiB，只装得下最近一段）"
+        : "（聊天分支超过 1 万条或不完整，只装得下最近一段，旧交接信暂时读不到）";
     const compactions = await this.session.getCompactions();
     const tokens = chatTokens(history);
     const model = this.savedModel() || this.defaultModel;
@@ -2171,7 +2193,7 @@ export class Resident extends Think<Env> {
       persona?.text
         ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
         : "人设：还没填，先用默认的一句（网页门右上角的铅笔）",
-      `对话：${history.length} 条，约 ${tokens} token（写信后固定保留最近约 ${LETTER_KEEP_TOKENS} token 原始聊天，整轮问答不拆开；交接信另算）`,
+      `对话：${history.length} 条${partial}，约 ${tokens} token（写信后固定保留最近约 ${LETTER_KEEP_TOKENS} token 原始聊天，整轮问答不拆开；交接信另算）`,
       `交接信：${idleMinutes(this.cfg) ? `对话达到 ${this.letterThreshold()} token 且没动静 ${idleMinutes(this.cfg)} 分钟才自动写，` : "自动写信已关，"}/handoff 可提前写；缓存 ${promptCache(this.cfg).anthropic.cacheControl.ttl}`,
       `已写交接信：${compactions.length} 封`,
       `写信状态：${letterWriteStatus(this.webLetter().write)}`,
@@ -2234,7 +2256,7 @@ export class Resident extends Think<Env> {
     let via: WebLine["via"] = null;
     // The task the latest note was about: its card goes with the reply to it.
     let about: string | null = null;
-    for (const message of await this.session.getHistory()) {
+    for (const message of (await this.session.getRecentHistory(this.hydrationByteBudget)).messages) {
       const text = textOf(message).trim();
       const meta = message.metadata as { at?: number; messenger?: { message?: { createdAt?: string } } } | undefined;
       const sentAt = meta?.messenger?.message?.createdAt;

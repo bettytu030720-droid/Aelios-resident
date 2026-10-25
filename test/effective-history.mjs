@@ -156,7 +156,7 @@ test("control: stock raw-window bug; adapter includes a summary whose end is out
   assert.equal(stock.totalContentBytes, rawTotal);
   const calls = spyReads(s);
   const c = f.install(s, 1024);
-  assert.equal(await c.fits(100), true);
+  assert.equal(await c.admission(100), "fits");
   const recent = await s.getRecentHistory(1024);
   assert.deepEqual(ids(recent.messages), [`compaction_${record.id}`, "tail"]);
   assert.equal(recent.truncated, false);
@@ -192,7 +192,7 @@ test(">32 MiB raw single media leaf is covered by a small letter and NEVER hydra
   resident.configureSession(s); // repeated configuration must reuse the same instance adapter
   const c = resident.historyControl(s);
   assert.equal(c, resident.historyControl(s));
-  assert.equal(await c.fits(4096), true);
+  assert.equal(await c.admission(4096), "fits");
   const recent = await s.getRecentHistory(B);
   assert.deepEqual(ids(recent.messages), [`compaction_${record.id}`]);
   assert.equal(recent.truncated, false);
@@ -213,7 +213,7 @@ test("uncovered oversized leaf fails admission and guarded getHistory BEFORE any
   const calls = spyReads(s);
   const c = f.install(s, 512);
   f.state.forbidPayloads = true;
-  assert.equal(await c.fits(), false);
+  assert.equal(await c.admission(), "budget");
   await assert.rejects(s.getHistory(), isError("budget"));
   assert.equal(calls.history.length, 0);
   // Like the SDK, ordinary chat still gets the newest message alone rather than no history at all.
@@ -232,7 +232,7 @@ test("ordinary chat falls back to the stock finite suffix while letter admission
   const stock = await s.getRecentHistory(512);
   const calls = spyReads(s);
   const c = f.install(s, 512);
-  assert.equal(await c.fits(30), false);
+  assert.equal(await c.admission(30), "budget");
   await assert.rejects(s.getHistory(), isError("budget"));
   const recent = await s.getRecentHistory(512);
   assert.deepEqual(recent, stock);
@@ -256,19 +256,19 @@ test("summary UTF-8/JSON overhead is charged, even when all RAW rows fit", async
   assert.ok(plan.rawBytes < B);
   assert.ok(plan.summaryBytes > B);
   assert.ok(plan.summaryBytes > record.summary.length);
-  assert.equal(await c.fits(), false);
+  assert.equal(await c.admission(), "budget");
   await assert.rejects(s.getHistory(), isError("budget"));
   await assert.rejects(s.getRecentHistory(B), isError("budget"));
   assert.equal(calls.history.length + calls.recent.length, 0);
   B = plan.effectiveBytes;
-  assert.equal(await c.fits(), true, "inclusive byte boundary");
-  assert.equal(await c.fits(1), false, "letter prompt reserve shares the same effective plan");
+  assert.equal(await c.admission(), "fits", "inclusive byte boundary");
+  assert.equal(await c.admission(1), "budget", "letter prompt reserve shares the same effective plan");
   const full = await s.getRecentHistory(B);
   assert.equal(full.truncated, false);
   assert.equal(byteLength(full.messages[0]), plan.summaryBytes);
   B += 100;
-  assert.equal(await c.fits(100), true);
-  assert.equal(await c.fits(101), false);
+  assert.equal(await c.admission(100), "fits");
+  assert.equal(await c.admission(101), "budget");
   await assert.rejects(s.getRecentHistory(plan.effectiveBytes - 1), isError("budget"));
 });
 
@@ -323,7 +323,7 @@ test("repeated real SDK folds and disk restart keep only the selected latest let
   const effectiveBefore = (await s.getHistory()).map(({ createdAt, ...m }) => m);
   s = (await f.restart()).session();
   const c = f.install(s, 32000);
-  assert.equal(await c.fits(1024), true);
+  assert.equal(await c.admission(1024), "fits");
   assert.deepEqual((await s.getHistory()).map(({ createdAt, ...m }) => m), effectiveBefore);
   assert.deepEqual(await s.getHistoryRowStats(), before);
   assert.equal((await s.getCompactions()).length, 4);
@@ -355,7 +355,7 @@ test("pinned branch, newestFirst full reads, and abort preserve public read opti
   const record = await s.addCompaction("letter", "m0", "m1");
   const calls = spyReads(s);
   const c = f.install(s);
-  assert.equal(await c.fits(1, { leafId: "m2" }), true);
+  assert.equal(await c.admission(1, { leafId: "m2" }), "fits");
   assert.deepEqual((await c.plan({ leafId: "m2" })).messageIds, [`compaction_${record.id}`, "m2"]);
   const reverse = await s.getHistory({ leafId: "m2", newestFirst: true });
   assert.deepEqual(ids(reverse), ["m2", `compaction_${record.id}`]);
@@ -365,19 +365,17 @@ test("pinned branch, newestFirst full reads, and abort preserve public read opti
   assert.equal(calls.history.length, 1, "abort before calling the bound full reader");
 });
 
-test("missing parent on a short path is incomplete: reject full/letter, permit only truncated stock", async (t) => {
+test("missing parent on a short path is incomplete: letters are refused, ordinary reads get the SDK view", async (t) => {
   const f = await fixture(t);
   const s = f.sessions.session();
   await s.importMessage(msg("orphan"), { parentId: "missing-root", createdAt: 0 });
-  const calls = spyReads(s);
   const c = f.install(s);
   assert.equal((await c.plan()).complete, false);
-  assert.equal(await c.fits(), false);
-  await assert.rejects(s.getHistory(), isError("incomplete"));
+  assert.equal(await c.admission(), "incomplete");
+  assert.deepEqual(ids(await s.getHistory()), ["orphan"], "display reads do not fail on an unverified branch");
   const recent = await s.getRecentHistory(8192);
   assert.equal(recent.truncated, true, "stock would incorrectly say false for a missing parent");
   assert.deepEqual(ids(recent.messages), ["orphan"]);
-  assert.equal(calls.history.length, 0);
 });
 
 test("10,000-depth boundary uses SQL root verification, not stat length or effective bytes", async (t) => {
@@ -394,18 +392,19 @@ test("10,000-depth boundary uses SQL root verification, not stat length or effec
   // A compaction can make the depth-capped suffix LOOK tiny; it still isn't a
   // verified full path, even though the SDK returns exactly 10,001 stat rows.
   await s.addCompaction("small capped summary", "d1", "d10001");
-  const calls = spyReads(s);
   const c = f.install(s, 4 * 1024 * 1024);
   assert.equal((await s.getHistoryRowStats()).length, 10001);
   assert.equal((await c.plan()).complete, false);
-  assert.equal(await c.fits(), false);
-  await assert.rejects(s.getHistory(), isError("incomplete"));
+  assert.equal(await c.admission(), "incomplete", "a letter is refused, with its own reason");
+  // Ordinary reads past the SDK depth get the SDK's own capped view instead of failing (/status, web history).
+  const record0 = (await s.getCompactions())[0];
+  assert.deepEqual(ids(await s.getHistory()), [`compaction_${record0.id}`]);
   const capped = await s.getRecentHistory(4 * 1024 * 1024);
   assert.equal(capped.truncated, true);
-  assert.equal(calls.history.length, 0);
+  assert.deepEqual(ids(capped.messages), [`compaction_${record0.id}`]);
   // Exactly depth 10,000 (10,001 rows) with a real root IS complete.
   assert.equal((await c.plan({ leafId: "d10000" })).complete, true);
-  assert.equal(await c.fits(0, { leafId: "d10000" }), true);
+  assert.equal(await c.admission(0, { leafId: "d10000" }), "fits");
   // Hidden legacy rows also count toward the SDK cap even though they do not
   // appear in getHistoryRowStats. Never infer completeness from stats.length.
   const record = (await s.getCompactions())[0];
@@ -466,11 +465,11 @@ test("finite ceilings, reserves, per-instance patching, empty path, and exact re
   const c = f.install(s, () => B);
   assert.equal(other.getHistory, prototypeHistory);
   assert.throws(() => f.install(s), /already installed/);
-  assert.equal(await c.fits(), true);
+  assert.equal(await c.admission(), "fits");
   assert.deepEqual(await s.getHistory(), []);
   assert.deepEqual(await s.getRecentHistory(0), { messages: [], truncated: false, totalContentBytes: 0 });
   await assert.rejects(s.getRecentHistory(Infinity), isError("budget"));
-  await assert.rejects(c.fits(Infinity), isError("budget"));
+  await assert.rejects(c.admission(Infinity), isError("budget"));
   B = Infinity;
   await assert.rejects(s.getHistory(), isError("budget"));
   c.restore();

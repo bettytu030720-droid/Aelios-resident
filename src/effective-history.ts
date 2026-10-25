@@ -36,6 +36,13 @@ export interface EffectiveHistoryPlan {
   readonly messageIds: readonly string[];
 }
 
+/**
+ * Whether a letter writer would receive the whole effective branch. "incomplete":
+ * the path does not verifiably reach its root (deeper than the SDK walks, or a
+ * missing parent). "budget": the effective view, plus the reserve, is too large.
+ */
+export type HistoryAdmission = "fits" | "incomplete" | "budget";
+
 export class EffectiveHistoryError extends Error {
   constructor(readonly code: "budget" | "incomplete" | "changed" | "metadata", message: string) {
     super(message);
@@ -118,9 +125,11 @@ function effective(rows: SessionRowStat[], records: StoredCompaction[]) {
 /**
  * Install once on Think's actual session handle, before its first history read.
  *
- * plan()/fits() and both patched reads share the exact same planner. fits() is
- * metadata-only and is NOT a lease: repeat it with the letter prompt reserve at
- * every letter admission boundary. getHistory() independently checks again.
+ * plan()/admission() and both patched reads share the exact same planner.
+ * admission() is metadata-only and is NOT a lease: repeat it with the letter
+ * prompt reserve at every letter admission boundary. Only admission() and
+ * recovery() require a verified complete branch; ordinary reads of a branch
+ * deeper than the SDK walks get the SDK's own (recent) view instead of failing.
  *
  * Coherence is optimistic, not a transaction: one metadata snapshot plans each
  * read, and the hydrated messages must match it (ids, summaries, actual bytes).
@@ -195,7 +204,6 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
   }
 
   async function full(before: Snapshot, readOptions: HistoryReadOptions, limit: number) {
-    if (!before.plan.complete) throw new EffectiveHistoryError("incomplete", "History path is not verified through its root");
     if (before.plan.effectiveBytes > limit) throw new EffectiveHistoryError("budget", "Effective history exceeds its byte budget");
     readOptions.signal?.throwIfAborted();
     // Pin the read to the snapshot's last stat id; an empty session reads nothing.
@@ -215,10 +223,11 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
   const getRecentHistory: HistorySession["getRecentHistory"] = async (requested, readOptions = {}) => {
     const limit = Math.min(ceiling(), finiteBytes(requested, "Recent history budget"));
     const before = await snapshot(readOptions.leafId);
-    if (before.plan.complete && before.plan.effectiveBytes <= limit) {
+    if (before.plan.effectiveBytes <= limit) {
       return {
         messages: await full(before, readOptions, limit),
-        truncated: false,
+        // A path deeper than the SDK walks shows only its recent rows, as in the SDK.
+        truncated: !before.plan.complete,
         totalContentBytes: before.plan.rawBytes, // NOT the effective byte count
       };
     }
@@ -256,11 +265,12 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
       ceiling();
       return (await snapshot(readOptions.leafId)).plan;
     },
-    async fits(reserve = 0, readOptions: Pick<HistoryReadOptions, "leafId"> = {}): Promise<boolean> {
+    async admission(reserve = 0, readOptions: Pick<HistoryReadOptions, "leafId"> = {}): Promise<HistoryAdmission> {
       const limit = ceiling();
       finiteBytes(reserve, "History reserve");
       const { plan } = await snapshot(readOptions.leafId);
-      return plan.complete && reserve <= limit && plan.effectiveBytes <= limit - reserve;
+      if (!plan.complete) return "incomplete";
+      return reserve <= limit && plan.effectiveBytes <= limit - reserve ? "fits" : "budget";
     },
     /**
      * Metadata-only view for committing an ALREADY WRITTEN letter. Unlike a
