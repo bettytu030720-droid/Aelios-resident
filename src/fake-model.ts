@@ -163,6 +163,16 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   }
   // The first line of the system prompt is the persona.
   if (said.includes("你是谁")) return { text: system.split("\n")[0] };
+  if (said.includes("检查历史视图")) {
+    const results = prompt.flatMap((message) => message.role === "tool" && Array.isArray(message.content)
+      ? message.content.filter((part) => part.type === "tool-result").map((part) => ({
+          tool: part.toolName,
+          chars: "value" in part.output ? (typeof part.output.value === "string" ? part.output.value.length : JSON.stringify(part.output.value).length) : 0
+        })) : []);
+    const pictures = prompt.flatMap((message) => message.role === "user" && Array.isArray(message.content) ? message.content : [])
+      .filter((part) => part.type === "file" && part.mediaType.startsWith("image/")).length;
+    return { text: `HISTORY_VIEW:${JSON.stringify({ matchesPrevious: repeatsPrevious(options), results, pictures })}` };
+  }
   if (said.includes("缓存")) {
     const anthropic = options.providerOptions?.anthropic as { cacheControl?: { type?: string; ttl?: string } } | undefined;
     const cache = anthropic?.cacheControl;

@@ -39,8 +39,9 @@ type CacheControl = { type: "ephemeral"; ttl: "5m" | "1h" };
  * The messages of the handoff letter's turn. The conversation is folded right after it, so nothing would ever read
  * what that turn writes into the cache. So no marker goes at the end: it goes where the turn before put its own, on
  * the last message before the letter prompt that was not a tool's result (hers, or a check-in's note). That much is
- * read from the cache and nothing new is written; what follows is charged at the plain input price, not the price
- * of writing. `cache` is null when the cache has run out: then there is nothing to read, and no marker at all.
+ * eligible for a cache read; no marker is added for the new suffix, which is charged at the plain input price.
+ * A breakpoint is read-or-create, not read-only: if the provider has already expired it, that old prefix may be written.
+ * `cache` is null when the cache has run out: then there is nothing to read, and no marker at all.
  */
 export function markedForLetter(messages: ModelMessage[], cache: CacheControl | null): ModelMessage[] {
   if (!cache) return messages;

@@ -56,7 +56,29 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `site-keys.mjs` | 带钥匙的网站：网站和钥匙怎么认、哪个地址带哪把 |
 | `web-ui.mjs` | 网页门和设置页，含新门槛字段、旧字段移除、双条件和固定保留量的说明，以及独立写信/送达状态、缺省容错、文本绑定、读取和重试接口 |
 | `cache-window.mjs` | 缓存窗口什么时候换、写信那一轮的缓存标记、开机包的文字 |
+| `cache-history.mjs` | 真实 SDK 年龄裁剪问题复现、固定历史视图、工具/媒体只读缩减、SQLite 窗口恢复与校验 |
 | `alarms.mjs` | 闹钟的写法、下次什么时候响、心跳和响铃那一轮的提示 |
+
+## 缓存历史视图回归
+
+`node test/cache-history.mjs` 29 项通过。测试使用合成消息，不使用真实聊天或付费模型。导入实际安装的 `agents/chat`，提取 Think 的真实边界算法，复现内部 UI 消息从 35 增至 37 时，旧工具结果由 3261 字符变成 500 字符、破坏缓存前缀的问题。新 helper 验证跨多轮追加和回合内工具步骤保持相同前缀，只在新窗口选择缩减范围；工具参数、普通聊天文字、原始媒体和工具输出不被覆写。大 JSON、错误与多媒体普通工具结果的预览有 500 字符上限，供应商原生执行的结果保留原结构。
+
+窗口测试执行从 Resident 提取的真实方法，使用文件型 Node SQLite，覆盖数据库关闭重开、1h/5m 过期、持续使用数小时不换窗口、letter 旧视图、fold 后换视图、边界摘要校验，以及恢复中 letter 在 `getTools()` 阶段也不提前开新窗口。它们不等同于完整 Worker 在写信中途被杀的恢复测试。
+
+完整本地 Worker 检查另用 `test/cache-history-worker.mjs`。假服务使用 `node test/mock-server.mjs`；Worker 按测试配置启动，指定一个全新目录：
+
+```sh
+STATE=$(mktemp -d)
+NO_PROXY=127.0.0.1 npx wrangler dev --config wrangler.test.jsonc --local --port 8787 --persist-to "$STATE"
+# 在另一个终端运行
+NO_PROXY=127.0.0.1 node test/cache-history-worker.mjs first
+# 仅停止上面的本地 Worker；保留假服务及 STATE 目录，再用同一条命令启动 Worker
+NO_PROXY=127.0.0.1 node test/cache-history-worker.mjs restart
+```
+
+这两个阶段共 4 项已通过：完整长工具结果和超过 SDK 媒体淘汰阈值的合成图片进入窗口；连续 12 轮仍保持前缀、结果和图片；实际停止重启 Worker 后继承窗口；交接信读取旧前缀，完成后新窗口缩减，后续前缀再保持一致。这里比较的是实际模型调用输入，不假冒服务商账单或声称真实 Anthropic 缓存命中已测。
+
+本轮在承接写信可靠性改动的完整分支上通过类型检查和 21 组独立测试（包含新增缓存历史测试）、`main` 33 项，以及同步故障 6 项和重启补送 2 项；`idle` 5 项、`heartbeat` 7 项在本轮缓存修改后也已通过。保留 SDK 的字节装载与模型上下文保护；超过装载上限造成历史滑动时，摘要校验会让旧下标失效，不承诺该情况下仍命中旧缓存。新增 admission 测试执行实际 `performWriteLetter` 方法，用超限的大小元数据确认在读取正文或调用 compact/model 之前明确失败，另测辅助提示的保留空间，并执行实际 beforeTurn，确认首次 admission 通过后大小越界会再次拒绝，即使最新 live 用户消息已不再是写信提示。没有给完整 Worker 构造超过 32 MiB 的真实媒体负载，也未在该负载下验证异常清理或强杀恢复。
 
 ## 交接信新规则的回归
 
