@@ -169,6 +169,10 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       const saved = await agent.webSetModel(String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
     }
+    case "GET /web/letter":
+      return Response.json(await agent.webLetter());
+    case "POST /web/letter/retry":
+      return Response.json(await agent.webRetryLetters());
     case "GET /web/persona":
       return Response.json(await agent.webPersona());
     case "POST /web/persona": {

@@ -235,7 +235,8 @@ console.log('PASS letter settings expose the threshold, remove the old knob, and
 const letterCalls = [];
 letterPage.notify = () => {};
 letterPage.api = async (path, options) => {
-  letterCalls.push([path, options.body]);
+  letterCalls.push([path, options && options.body]);
+  if (path === '/web/letter') return {};
   return { fields: letterPage.config.fields.map((field) => field.key === options.body.key ? { ...field, value: options.body.text } : field) };
 };
 letterPage.fillDrafts();
@@ -253,10 +254,133 @@ assert.equal(letterPage.savedHere(threshold.key), false);
 assert.equal(letterPage.configDraft[threshold.key], '');
 assert.deepEqual(JSON.parse(JSON.stringify(letterCalls)), [
   ['/web/config', { key: 'LETTER_TOKEN_THRESHOLD', text: '50000' }],
-  ['/web/config', { key: 'LETTER_TOKEN_THRESHOLD', text: '' }]
+  ['/web/letter', null],
+  ['/web/config', { key: 'LETTER_TOKEN_THRESHOLD', text: '' }],
+  ['/web/letter', null]
 ]);
 letterPage.field(threshold.key).fromWorker = '50000';
 assert.equal(letterPage.textInEffect(threshold), '50000');
 assert.equal(letterPage.placeholderFor(threshold), '50000');
 assert.equal(letterPage.tagText(threshold), 'Cloudflare：LETTER_TOKEN_THRESHOLD');
-console.log('PASS the letter threshold uses the normal save/clear API and inherits Cloudflare or the default');
+console.log('PASS the letter threshold uses the normal save/clear API, refreshes letter state, and inherits Cloudflare or the default');
+// Writing and delivery have independent outcomes. Missing fields never imply an empty successful handoff.
+const statePage = vm.runInContext('resident()', context);
+statePage.notify = () => {};
+for (const response of [null, {}, { write: null }, { delivery: {} }, { write: {}, delivery: { latest: {} } }]) {
+  statePage.setLetter(response);
+  assert.equal(statePage.letterCanRetry(), false);
+  assert.equal(statePage.letterDeliveryCounts(), '待发送 0 · 待重试 0 · 已暂停 0');
+  assert.doesNotMatch(statePage.letterWriteStatus(), /没有旧内容可收|信已写好/);
+  assert.doesNotThrow(() => statePage.letterDeliveryDetail());
+}
+const at = Date.UTC(2026, 9, 25, 12);
+for (const [state, label] of [
+  ['writing', '正在写信'], ['recovering', '已有恢复任务，正在恢复写信'], ['written', '信已写好'],
+  ['empty', '没有旧内容可收，本次未写信'], ['failed', '写信失败，旧聊天仍保留'], ['future', '写信状态未知']
+]) {
+  statePage.setLetter({ write: { state, at } });
+  assert.equal(statePage.letterWriteStatus(), label);
+  assert.equal(statePage.letterTime(statePage.letter.write.at), statePage.fmt(at));
+  assert.equal(statePage.sectionNeeds('thinking'), state === 'failed');
+}
+assert.equal(statePage.letterTime(null), '暂无记录');
+statePage.setLetter({ write: { state: 'written', at: NaN }, delivery: { pending: -1, failed: '1', blocked: Infinity, latest: { at: 1e100 } } });
+assert.equal(statePage.letterTime(statePage.letter.write.at), '暂无记录');
+assert.equal(statePage.letter.delivery.latest.at, null);
+assert.equal(statePage.letterCanRetry(), false);
+console.log('PASS letter write states distinguish failure, no content, and recovery; missing or invalid fields are safe');
+const unsafeError = '发送失败：<img src=x onerror=unsafe()> & "请重试"';
+const snapshot = (status, failed = 0, blocked = 0) => ({
+  write: { state: 'written', at, error: unsafeError },
+  delivery: { pending: 2, failed, blocked, latest: { id: 'letter_1', at, status, attempts: 6, lastError: unsafeError, sentAt: status === 'sent' ? at + 1000 : null } }
+});
+for (const [status, label] of [['pending', /待发送/], ['sent', /已确认送达/], ['failed', /发送失败/], ['blocked', /已暂停/]]) {
+  statePage.setLetter(snapshot(status, status === 'failed' ? 1 : 0, status === 'blocked' ? 1 : 0));
+  assert.match(statePage.letterDeliveryStatus(), label);
+  assert.match(statePage.letterDeliveryDetail(), /已尝试 6 次/);
+  assert.equal(statePage.letterCanRetry(), status === 'failed' || status === 'blocked');
+  assert.equal(statePage.sectionNeeds('thinking'), statePage.letterCanRetry());
+  assert.equal(statePage.letterDeliveryDetail().includes('确认送达：'), status === 'sent');
+}
+// Older failures must remain retryable even when the latest letter was sent successfully.
+statePage.config = { fields: [{ key: 'THINKING_EFFORT', kind: 'choice', value: '', fromWorker: '' }] };
+statePage.setLetter(snapshot('sent', 3, 4));
+assert.equal(statePage.letterCanRetry(), true);
+assert.equal(statePage.letterDeliveryCounts(), '待发送 2 · 待重试 3 · 已暂停 4');
+assert.match(statePage.sectionSummary('thinking'), /信已写好.*待重试 3.*已暂停 4/);
+const letterPanel = html.slice(html.indexOf('<template x-if="group.id === \'thinking\'">'), html.indexOf('<template x-for="meta in group.fields"'));
+assert.ok(letterPanel.length > 0 && !letterPanel.includes('x-html'));
+for (const binding of ['letterWriteStatus()', "'最近写信时间：' + letterTime(letter.write && letter.write.at)", 'letter.write && letter.write.error', 'letterDeliveryStatus()', 'letterDeliveryCounts()', 'letterDeliveryDetail()', 'letter.delivery.latest && letter.delivery.latest.lastError', 'letterError']) {
+  assert.ok(letterPanel.includes('x-text="' + binding + '"'), binding + ' uses text-only binding');
+}
+assert.equal(statePage.letter.write.error, unsafeError, 'raw error is kept as text, not interpolated into HTML');
+assert.equal(statePage.letter.delivery.latest.lastError, unsafeError);
+assert.ok(letterPanel.includes('x-show="letterCanRetry()"'));
+assert.match(letterPanel, /只重发已写好的信，不调用模型、不重写信/);
+assert.match(letterPanel, /最多自动尝试 6 次/);
+assert.match(letterPanel, /确认送达不等同于 Aelios 后台记忆处理已完成/);
+console.log('PASS delivery states and queue counts stay separate; retry visibility uses all failures; error bindings use x-text, never x-html');
+const retryCalls = [];
+statePage.api = async (path, options) => {
+  retryCalls.push([path, options]);
+  assert.equal(statePage.letterBusy, 'retry');
+  await statePage.retryLetter(); // A second click while in flight sends nothing.
+  return snapshot('blocked', 0, 4); // A target mismatch remains paused, not reported as delivered.
+};
+await statePage.retryLetter();
+assert.deepEqual(JSON.parse(JSON.stringify(retryCalls)), [['/web/letter/retry', { method: 'POST' }]]);
+assert.equal(statePage.letterCanRetry(), true);
+assert.match(statePage.letterDeliveryStatus(), /已暂停/);
+assert.equal(statePage.letterBusy, '');
+statePage.api = async (path, options) => { retryCalls.push([path, options]); return snapshot('sent'); };
+await statePage.retryLetter();
+assert.equal(statePage.letterCanRetry(), false);
+await statePage.retryLetter();
+assert.equal(retryCalls.length, 2, 'pending-only or sent states cannot trigger a retry');
+statePage.setLetter(snapshot('failed', 1));
+statePage.configBusy = 'AELIOS_URL';
+await statePage.retryLetter();
+assert.equal(retryCalls.length, 2, 'do not retry while saving a target change');
+statePage.configBusy = '';
+statePage.api = async () => { throw new Error(unsafeError); };
+await statePage.retryLetter();
+assert.equal(statePage.letterBusy, '');
+assert.equal(statePage.letterCanRetry(), true, 'request failure preserves retryable deliveries');
+assert.match(statePage.letterError, /^重试同步失败：/);
+await statePage.loadLetter();
+assert.equal(statePage.letterBusy, '');
+assert.match(statePage.letterError, /^读取交接信状态失败/);
+assert.match(statePage.letterWriteStatus(), /信已写好/, 'a read failure does not invent an empty or failed write');
+assert.equal(statePage.sectionNeeds('thinking'), true);
+statePage.api = async () => ({});
+await statePage.loadLetter();
+assert.equal(statePage.letterError, '');
+assert.equal(statePage.letter.write, null);
+console.log('PASS retry sends only POST /web/letter/retry, handles paused targets and duplicate clicks, and preserves state on network errors');
+// Open/save must read the status endpoint. A status read failure must not turn a successful config save into a failure.
+const configPage = vm.runInContext('resident()', context);
+const configCalls = [];
+configPage.notify = () => {};
+for (const name of ['loadMcp', 'loadSites', 'loadStickers', 'loadTasks', 'loadAlarms']) configPage[name] = async () => {};
+let failRead = false;
+configPage.api = async (path, options) => {
+  configCalls.push(path);
+  if (path === '/web/letter') {
+    if (failRead) throw new Error('暂时无法读取');
+    return snapshot('sent');
+  }
+  assert.equal(path, '/web/config');
+  return { fields: [{ key: 'LETTER_TOKEN_THRESHOLD', kind: 'text', value: options ? options.body.text : '', fromWorker: '' }] };
+};
+await configPage.openConfig();
+assert.deepEqual(configCalls, ['/web/config', '/web/letter']);
+assert.equal(configPage.view, 'config');
+assert.equal(configPage.letter.write.state, 'written');
+failRead = true;
+await configPage.saveConfig('LETTER_TOKEN_THRESHOLD', '50000');
+assert.deepEqual(configCalls.slice(2), ['/web/config', '/web/letter']);
+assert.equal(configPage.field('LETTER_TOKEN_THRESHOLD').value, '50000');
+assert.equal(configPage.configError.LETTER_TOKEN_THRESHOLD, '');
+assert.match(configPage.letterError, /读取交接信状态失败/);
+assert.equal(configPage.configBusy, '');
+console.log('PASS opening and saving config read /web/letter; a failed status read does not misreport a successful settings save');

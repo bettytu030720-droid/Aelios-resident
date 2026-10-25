@@ -3,6 +3,7 @@ import http from "node:http";
 
 const log = [];
 let nextMessageId = 1000;
+let faults = { ingestFailures: 0, letterModel: "ok" };
 const ORIGIN = "http://127.0.0.1:9999";
 
 // Other MCP servers: /ext and /ext2 are open, /keyed wants x-api-key: k1, /oauth wants a token from its sign-in.
@@ -116,6 +117,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/__log") return reply(log);
   if (url.pathname === "/__reset") {
     log.length = 0;
+    faults = { ingestFailures: 0, letterModel: "ok" };
+    return reply({ ok: true });
+  }
+  if (url.pathname === "/__faults" && req.method === "POST") {
+    faults = { ...faults, ...json };
     return reply({ ok: true });
   }
 
@@ -274,8 +280,12 @@ const server = http.createServer(async (req, res) => {
     return reply({ jsonrpc: "2.0", id: json.id, result: { content: [{ type: "text", text }] } });
   }
   if (url.pathname === "/v1/memory/ingest") {
-    log.push({ kind: "aelios.ingest", body: json, auth });
-    return reply({ data: { conversation_id: json.conversation_id, message_ids: [] } });
+    log.push({ kind: "aelios.ingest", body: json, auth, letterId: req.headers["x-resident-letter-id"] ?? null });
+    if (json.source === "aelios-resident:letter" && faults.ingestFailures > 0) {
+      faults.ingestFailures -= 1;
+      return reply({ error: "temporary failure with PRIVATE_UPSTREAM_DETAIL" }, 503);
+    }
+    return reply({ data: { conversation_id: json.conversation_id, message_ids: [crypto.randomUUID()] } });
   }
   if (url.pathname === "/v1/precious") {
     log.push({ kind: "aelios.precious", body: json, auth });
@@ -352,6 +362,11 @@ const server = http.createServer(async (req, res) => {
     const off = json.model.includes("plain") || (json.model.includes("dropped") && purpose !== "auxiliary");
     const memory = off ? "off" : purpose === "auxiliary" ? "skipped" : "injected";
     const headers = { "x-aelios-memory": memory };
+    if (said().startsWith("(Not from them: time to write a handoff letter")) {
+      if (faults.letterModel === "error") return reply({ error: { type: "api_error", message: "PRIVATE_UPSTREAM_DETAIL model unavailable" } }, 500);
+      if (faults.letterModel === "empty") return messages("", headers);
+      if (faults.letterModel === "slow") await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
     if (gateway[2] === "messages") {
       return messages(`Aelios 收到 ${json.messages.length} 条，缓存标记${cached()}，旧思考块 ${thinkingCount()} 个`, headers);
     }

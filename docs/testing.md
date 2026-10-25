@@ -44,6 +44,9 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `fold.mjs` | 门槛估算、交接信收哪些聊天、固定近期约 8000 token 和整轮边界 |
 | `letter-config.mjs` | 新门槛的校验、配置优先级和旧保留量字段移除 |
 | `letter-recovery.mjs` | 真实 SDK + Node SQLite 上的交接信恢复、旧版开头三条迁移、幂等和失败重试 |
+| `letter-recovery-schedule.mjs` | 真实 SDK Scheduler/Lifecycle + Node SQLite，复现旧恢复任务自去重，并验证连续三次恢复唤醒不会丢失 |
+| `letter-state.mjs` | SQLite 写信状态与 outbox 持久化、事务、claim/崩溃租约、六次预算与退避、目标绑定及手动重试 |
+| `letter-delivery.mjs` | 发送凭据校验、安全错误、网络异常、目标与 key 轮换、用户状态文案 |
 | `via-aelios.mjs` | 从 Aelios 过的规矩 |
 | `learn.mjs` | 搜网后存知识 |
 | `mcp-servers.mjs` | 接别的 MCP |
@@ -51,13 +54,13 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `voice.mjs` | 语音条 |
 | `cloud-tasks.mjs` | 云端 Claude Code 的单子、回报和记录 |
 | `site-keys.mjs` | 带钥匙的网站：网站和钥匙怎么认、哪个地址带哪把 |
-| `web-ui.mjs` | 网页门和设置页，含新门槛字段、旧字段移除、双条件和固定保留量的说明 |
+| `web-ui.mjs` | 网页门和设置页，含新门槛字段、旧字段移除、双条件和固定保留量的说明，以及独立写信/送达状态、缺省容错、文本绑定、读取和重试接口 |
 | `cache-window.mjs` | 缓存窗口什么时候换、写信那一轮的缓存标记、开机包的文字 |
 | `alarms.mjs` | 闹钟的写法、下次什么时候响、心跳和响铃那一轮的提示 |
 
 ## 交接信新规则的回归
 
-本次已通过类型检查，以及 `main` 33 项、`idle` 5 项、`heartbeat` 7 项本地 Worker 集成检查。独立测试 `fold.mjs` 12 项、`letter-config.mjs`、`letter-recovery.mjs` 15 项和 `web-ui.mjs` 13 组也已通过。每个 Worker 阶段使用独立的本地状态目录。
+此前回归记录为类型检查，以及 `main` 33 项、`idle` 5 项、`heartbeat` 7 项本地 Worker 集成检查；独立测试 `fold.mjs` 12 项、`letter-config.mjs`、`letter-recovery.mjs` 15 项和原 `web-ui.mjs` 13 组通过。每个 Worker 阶段使用独立的本地状态目录。这些是此前记录，不代表本轮 UI 改动重新运行了上述全部检查。
 
 自动写信须同时满足当前携带聊天达到 token 门槛、闲置到点。写后按完整问答保留最近约 8000 token 原始聊天；最近一轮本身超限时整轮保留。覆盖范围如下。
 
@@ -70,6 +73,30 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 - `node test/web-ui.mjs` 不用起 Worker，检查 `LETTER_TOKEN_THRESHOLD` 出现在「思考和交接信」且不藏在「更多设置」，默认提示为 `30000`，沿用普通输入、保存和清掉流程；页面没有 `KEEP_RECENT_TOKENS`，并写明双条件、连续聊天不立即触发、固定近期保留量和手动写信限制。
 
 - `letter-recovery.mjs` 用真实 `agents/sessions` 和 Node SQLite 复现旧恢复路径让两封信并存的问题，验证第二、第三封恢复时只携带新信，旧版永久保留的开头三条可被收起（包括新区间终点在旧信之前时也扩展终点替换旧信），重开存储后重试幂等，读写失败不吞异常。这里测的是恢复 helper 的真实持久化行为，不等同于完整 Worker 在写信途中被杀的端到端测试。
+
+## 写信失败与 Aelios 同步回归
+
+本轮已通过类型检查、20 组独立测试、主流程 33 项、闲置写信 5 项和心跳 7 项。新增 `letter-state.mjs` 14 项、`letter-delivery.mjs` 8 项、`letter-recovery-schedule.mjs` 2 项，`web-ui.mjs` 17 组；`node test/letter-failures.mjs` 6 项故障集成检查通过，另有 `restart-1`、`restart-2` 两阶段实际重启 Worker 后补送检查通过。均使用本地假服务，没有调用付费模型。
+
+UI 按以下合同读取状态，写信结果与送达结果互不替代。
+
+- `GET /web/letter` 返回 `{ write, delivery }`。`write` 为 `null` 或 `{ state, at, error? }`，状态为 `writing`、`recovering`、`written`、`empty`、`failed`。
+- `delivery` 包含 `pending`、`failed`、`blocked` 数量和 `latest`。`latest` 为 `null` 或 `{ id, at, status, attempts, lastError, sentAt }`，状态为 `pending`、`sent`、`failed`、`blocked`。
+- `POST /web/letter/retry` 返回同结构，显式重试所有失败或暂停的发送，不重写信、不调用模型。目标不匹配仍须返回暂停状态，不将旧信送往新目标。
+
+`web-ui.mjs` 直接运行页面的真实 JS 函数，并静态检查 Alpine 文本绑定，不需要 Worker 或浏览器。新增检查覆盖五种写信状态与未知状态，区分失败、无内容和恢复任务；最近写信时间和错误；四种发送状态、尝试次数和确认时间；待发送、待重试及暂停计数；即使最近一封已送达，只要有旧失败/暂停任务仍显示重试入口；缺省字段和无效数值容错。错误内容用含 HTML 标签的样例验证原样作为文本保存，并检查面板使用 `x-text`、不使用 `x-html`，不把后端安全中文错误拼入 HTML。
+
+接口检查覆盖打开配置、保存或清掉配置后读取 `/web/letter`；状态读取失败不误报配置保存失败，也不把旧状态改成「没有内容」；重试只发 `POST /web/letter/retry`，不发写信请求；防止重复点击和保存目标配置时重试；暂停结果不误报送达，网络失败保留现有状态和重试入口。
+
+后端覆盖如下。先按上面的命令启动假服务和本地 Worker，运行 `node test/letter-failures.mjs`；重启补送测试需在全新状态目录运行 `node test/letter-failures.mjs restart-1`，保留该目录和假服务，重启同一个 Worker 后运行 `node test/letter-failures.mjs restart-2`。独立测试用 `node test/letter-state.mjs`、`node test/letter-delivery.mjs`。
+
+- 写信失败不删除旧聊天；`/handoff` 分别报告无内容、写信失败和已有恢复任务，不把失败混成没有内容，不重复启动恢复任务。
+- 已写好的信与同步任务持久化保存；pending 首次立即发送，最多自动尝试 6 次，退避间隔依次为 30 秒、2 分钟、10 分钟、30 分钟、2 小时；耗尽后保留失败任务，手动重试所有失败/blocked 项，不重新调模型写信。
+- 移除 Aelios 配置、改地址或 namespace 时先暂停；手动重试再次核对原目标，不匹配则仍 blocked，旧信不流向新地址或空间；key 轮换后可用新 key 向原目标重试。
+- 后端错误只返回安全中文，不泄露 key、响应原文或私密目标数据。UI 的 `x-text` 绑定不代替后端脱敏。
+- `sent` 要求收到有效 `message_ids` 保存凭据；空的 2xx、无效 JSON、无消息 ID 都不标为成功。当前公开 Aelios 接收接口不去重，重试存在重复原文的风险；固定请求追踪 ID 不提供接收端幂等，也不代表后台记忆提取完成。
+
+实际 Worker 重启用例覆盖首次发送 503 后的待投递任务恢复，验证原信件 ID、正文、尝试次数延续，并且不重新调用模型。尚未覆盖在模型生成、服务端已保存但响应未返回、或本地压缩提交瞬间强制终止 Worker 的完整端到端用例；相关存储边界另由 SQLite/helper 测试覆盖。
 
 ## 测过什么
 
