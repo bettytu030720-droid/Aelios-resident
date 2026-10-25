@@ -379,6 +379,28 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <div class="card" x-show="configSection === group.id">
         <p class="hint" x-show="groupHint(group)" x-text="groupHint(group)"></p>
         <p class="status" x-show="group.id === 'voice'" :class="sectionNeeds('voice') ? 'needs' : ''" x-text="voiceStatus()"></p>
+        <template x-if="group.id === 'thinking'">
+          <div class="tasks-extra letter-state" aria-live="polite">
+            <div class="field">
+              <div class="name"><span>写信和 Aelios 送达</span></div>
+              <p class="status" x-text="letterWriteStatus()"></p>
+              <p class="hint" x-text="'最近写信时间：' + letterTime(letter.write && letter.write.at)"></p>
+              <p class="error" x-show="letter.write && letter.write.error" x-text="letter.write && letter.write.error"></p>
+              <p class="status" x-text="letterDeliveryStatus()"></p>
+              <p class="hint" x-text="letterDeliveryCounts()"></p>
+              <p class="hint" x-show="letter.delivery.latest" x-text="letterDeliveryDetail()"></p>
+              <p class="error" x-show="letter.delivery.latest && letter.delivery.latest.lastError" x-text="letter.delivery.latest && letter.delivery.latest.lastError"></p>
+              <p class="hint">待发送的信首次立即同步，最多自动尝试 6 次，后续间隔为 30 秒、2 分钟、10 分钟、30 分钟、2 小时；失败保留，可手动重试。移除 Aelios 配置、更换地址或记忆空间时先暂停，不把旧信发给新目标；只换 key 可用新 key 重试。</p>
+              <p class="hint">重试同步只重发已写好的信，不调用模型、不重写信。确认送达不等同于 Aelios 后台记忆处理已完成。当前接收接口不去重；若已保存但成功响应丢失，重试可能产生重复原文。</p>
+              <div class="row">
+                <button class="btn" type="button" :disabled="Boolean(letterBusy) || Boolean(configBusy)" @click="loadLetter()" x-text="letterBusy === 'load' ? '读取中…' : '刷新状态'"></button>
+                <div class="spacer"></div>
+                <button class="btn primary" type="button" x-show="letterCanRetry()" :disabled="Boolean(letterBusy) || Boolean(configBusy)" @click="retryLetter()" x-text="letterBusy === 'retry' ? '同步中…' : '重试同步'"></button>
+              </div>
+              <p class="error" x-show="letterError" x-text="letterError"></p>
+            </div>
+          </div>
+        </template>
         <template x-for="meta in group.fields" :key="meta.key">
           <div class="field" x-show="field(meta.key) && shown(meta) && (!meta.more || configMore)">
             <div class="name">
@@ -847,6 +869,9 @@ function resident() {
     configDraft: {},
     configError: {},
     configBusy: '',
+    letter: { write: null, delivery: { pending: 0, failed: 0, blocked: 0, latest: null } },
+    letterBusy: '',
+    letterError: '',
     mcp: { servers: [] },
     mcpDraft: { name: '', url: '', key: '' },
     mcpBusy: '',
@@ -1002,6 +1027,8 @@ function resident() {
       this.personaLoaded = false;
       this.config = { fields: [] };
       this.configDraft = {};
+      this.setLetter(null);
+      this.letterError = '';
       this.picker.open = false;
       clearTimeout(this.timer);
       if (chat) chat.remove();
@@ -1538,6 +1565,7 @@ function resident() {
       return hear + '；用 ' + this.choiceLabel(provider, this.inEffect(provider)) + ' 说话，' + this.choiceLabel(reply, this.inEffect(reply)) + '。' + key;
     },
     sectionNeeds(id) {
+      if (id === 'thinking') return Boolean(this.letterError || (this.letter.write && this.letter.write.state === 'failed') || this.letterCanRetry());
       var voice = this.config.voice || {};
       if (id === 'tasks') return this.inEffect(this.metaOf('CLOUD_TASKS')) === 'on' && !this.cloud.configured;
       return id === 'voice' && Boolean(voice.gap) && voice.gap !== 'off';
@@ -1574,7 +1602,7 @@ function resident() {
           if (this.inEffect(this.metaOf('CLOUD_TASKS')) !== 'on') return '关';
           return this.cloud.configured ? '接好了 · 24 小时内派了 ' + this.cloud.today + ' 单' : '开了，还没接好';
         case 'thinking':
-          return 'Claude 想多久：' + choice('THINKING_EFFORT') + ' · 缓存 ' + choice('CACHE_TTL');
+          return this.letterWriteStatus() + ' · ' + this.letterDeliveryCounts();
         case 'custom':
           return 'Gateway ' + (text('AI_GATEWAY_ID') || 'default') + (text('CUSTOM_BASE_URL') ? ' · 中转 ' + host(text('CUSTOM_BASE_URL')) : '');
         default:
@@ -1606,6 +1634,7 @@ function resident() {
       this.loadStickers().catch(function () {});
       this.loadTasks().catch(function () {});
       this.loadAlarms().catch(function () {});
+      await this.loadLetter();
     },
     closeConfig() {
       var self = this;
@@ -1625,6 +1654,7 @@ function resident() {
         keep[key] = f && f.kind !== 'secret' ? f.value : '';
         this.configDraft = keep;
         this.notify(value ? '存好了，下一句开始用' : '清掉了，用回 Cloudflare 里的或默认的');
+        await this.loadLetter();
         if (key.indexOf('AELIOS_') === 0) this.aelios = Boolean((await this.api('/web/check')).aelios);
         if (key.indexOf('CLOUD_TASK') === 0) await this.loadTasks();
         if (key === 'ALARMS' || key === 'TIME_ZONE') await this.loadAlarms();
@@ -1632,6 +1662,76 @@ function resident() {
         this.configError[key] = error.message;
       } finally {
         this.configBusy = '';
+      }
+    },
+
+    // ---- writing a letter and delivering the already-written letter are separate states ----
+    setLetter(data) {
+      data = data || {};
+      var count = function (n) { return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; };
+      var time = function (n) { return Number.isFinite(n) && n >= 0 && n <= 8640000000000000 ? n : null; };
+      var text = function (s) { return typeof s === 'string' ? s : ''; };
+      var write = data.write;
+      var delivery = data.delivery || {};
+      var latest = delivery.latest;
+      this.letter = {
+        write: write ? { state: text(write.state), at: time(write.at), error: text(write.error) } : null,
+        delivery: {
+          pending: count(delivery.pending), failed: count(delivery.failed), blocked: count(delivery.blocked),
+          latest: latest ? { id: text(latest.id), at: time(latest.at), status: text(latest.status), attempts: count(latest.attempts), lastError: text(latest.lastError), sentAt: time(latest.sentAt) } : null
+        }
+      };
+    },
+    letterTime(at) {
+      return at === null || at === undefined ? '暂无记录' : this.fmt(at);
+    },
+    letterWriteStatus() {
+      var write = this.letter.write;
+      if (!write) return '暂无写信状态';
+      return { writing: '正在写信', recovering: '已有恢复任务，正在恢复写信', written: '信已写好', empty: '没有旧内容可收，本次未写信', failed: '写信失败，旧聊天仍保留' }[write.state] || '写信状态未知';
+    },
+    letterDeliveryStatus() {
+      var latest = this.letter.delivery.latest;
+      if (!latest) return 'Aelios：暂无送达记录';
+      return 'Aelios 最近一封：' + ({ pending: '待发送（自动尝试中）', sent: '已确认送达', failed: '发送失败，可手动重试', blocked: '已暂停，请检查原目标配置' }[latest.status] || '送达状态未知');
+    },
+    letterDeliveryCounts() {
+      var delivery = this.letter.delivery;
+      return '待发送 ' + delivery.pending + ' · 待重试 ' + delivery.failed + ' · 已暂停 ' + delivery.blocked;
+    },
+    letterDeliveryDetail() {
+      var latest = this.letter.delivery.latest;
+      if (!latest) return '';
+      return '最近发送记录：' + this.letterTime(latest.at) + ' · 已尝试 ' + latest.attempts + ' 次'
+        + (latest.sentAt !== null ? ' · 确认送达：' + this.letterTime(latest.sentAt) : '');
+    },
+    letterCanRetry() {
+      return this.letter.delivery.failed > 0 || this.letter.delivery.blocked > 0;
+    },
+    async loadLetter() {
+      if (this.letterBusy) return;
+      this.letterBusy = 'load';
+      this.letterError = '';
+      try {
+        this.setLetter(await this.api('/web/letter'));
+      } catch (error) {
+        this.letterError = '读取交接信状态失败，当前显示可能不是最新的：' + error.message;
+      } finally {
+        this.letterBusy = '';
+      }
+    },
+    async retryLetter() {
+      if (this.letterBusy || this.configBusy || !this.letterCanRetry()) return;
+      this.letterBusy = 'retry';
+      this.letterError = '';
+      try {
+        // The server retries all failed/blocked deliveries, checking their original target again. No model call.
+        this.setLetter(await this.api('/web/letter/retry', { method: 'POST' }));
+        this.notify(this.letterCanRetry() ? '仍有未送达的信，请查看状态和原因' : '重试请求已处理，请查看送达状态');
+      } catch (error) {
+        this.letterError = '重试同步失败：' + error.message;
+      } finally {
+        this.letterBusy = '';
       }
     },
 

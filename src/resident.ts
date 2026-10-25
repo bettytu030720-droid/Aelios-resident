@@ -55,6 +55,9 @@ import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./confi
 import { customModel, isCustom } from "./custom";
 import { LETTER_KEEP_TOKENS, chatTokens, foldIntoLetter, letterTokenThreshold, reachesLetterThreshold } from "./fold";
 import { resumeLetterCompaction } from "./letter-recovery";
+import { LetterStateStore, type WriteState } from "./letter-state";
+import { deliverLetter } from "./letter-delivery";
+import { letterDeliveryStatus, letterWriteStatus } from "./letter-status";
 import { withPictures, type Download } from "./pictures";
 import {
   chatAction,
@@ -216,6 +219,8 @@ export type WebLine = {
 /** Token use of the latest model call. Input includes the cached part. */
 export type LastUsage = { at: number; input: number; cacheRead: number; cacheWrite: number; output: number };
 
+type LetterOutcome = { status: "written" | "empty" | "failed" | "pending"; error?: string };
+
 type LetterJob = {
   promptId: string;
   reason: "idle" | "handoff";
@@ -368,6 +373,9 @@ export class Resident extends Think<Env> {
       customHandler: (result) => callbackPage(result, this.mcp.listServers().find((server) => server.id === result.serverId)?.name ?? null)
     });
     if (this.letterJob()) await this.schedule(1, "resumeLetter", {}, { idempotent: true });
+    const memory = aeliosConfig(this.cfg);
+    if (memory) this.letterState().resumeBlocked(memory, Date.now());
+    await this.armLetterDelivery();
     for (const alarm of this.alarms().all()) await this.armAlarm(alarm, alarm.next);
   }
 
@@ -1505,6 +1513,85 @@ export class Resident extends Think<Env> {
   /** The letter prompt's id while its turn runs, so onChatResponse and boot() can tell that turn apart. */
   #letterPromptId: string | null = null;
   #letterPromise: Promise<unknown> | null = null;
+  #letterAttempted = false;
+  #letterState: LetterStateStore | null = null;
+  #letterDelivery: Promise<void> | null = null;
+
+  private letterState(): LetterStateStore {
+    this.#letterState ??= new LetterStateStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#letterState;
+  }
+
+  /** Safe status only: neither letter contents, provider responses, URLs nor keys leave this API. */
+  webLetter(): { write: WriteState | null; delivery: ReturnType<LetterStateStore["summary"]> } {
+    const latest = this.letters()[0];
+    return { write: this.letterState().readWrite() ?? (latest ? { state: "written", at: latest.at } : null), delivery: this.letterState().summary() };
+  }
+
+  webRetryLetters(): ReturnType<Resident["webLetter"]> {
+    this.letterState().retry(Date.now());
+    this.ctx.waitUntil(this.deliverLetters());
+    return this.webLetter();
+  }
+
+  /** A durable wake-up also covers a process lost after an attempt was claimed but before its response. */
+  private async armLetterDelivery(): Promise<void> {
+    const next = this.letterState().nextAt();
+    const previous = await this.ctx.storage.get<string>("letter_delivery_schedule");
+    if (next === null) {
+      if (previous) await this.cancelSchedule(previous).catch(() => false);
+      await this.ctx.storage.delete("letter_delivery_schedule");
+      return;
+    }
+    // The SDK stores schedules in whole seconds. Round UP so a callback cannot run before nextAt,
+    // deduplicate against its still-running row, then disappear without delivering or rearming.
+    const when = Math.ceil(Math.max(Date.now() + 1000, next) / 1000) * 1000;
+    const planned = await this.schedule(new Date(when), "deliverLetters", { at: next }, { idempotent: true });
+    await this.ctx.storage.put("letter_delivery_schedule", planned.id);
+    if (previous && previous !== planned.id) await this.cancelSchedule(previous).catch(() => false);
+  }
+
+  async deliverLetters(): Promise<void> {
+    if (this.#letterDelivery) return this.#letterDelivery;
+    const running = this.performLetterDelivery();
+    this.#letterDelivery = running;
+    try {
+      await running;
+    } finally {
+      if (this.#letterDelivery === running) this.#letterDelivery = null;
+    }
+  }
+
+  private async performLetterDelivery(): Promise<void> {
+    const store = this.letterState();
+    const memory = aeliosConfig(this.cfg);
+    if (memory) store.resumeBlocked(memory, Date.now());
+    try {
+      // Bound each wake-up; remaining due jobs get another durable wake-up.
+      for (let n = 0; n < 5; n += 1) {
+        const row = store.due(Date.now());
+        if (!row) break;
+        const target = aeliosConfig(this.cfg);
+        if (!target || target.url !== row.url || target.namespace !== row.namespace) {
+          store.block(row.id, "Aelios 配置已移除或目标地址、空间已改变；请恢复原配置后重试。");
+          continue;
+        }
+        const claimed = store.claim(row.id, Date.now());
+        if (!claimed) continue;
+        // Persist the lease's next wake-up before making any external request.
+        await this.armLetterDelivery();
+        const result = await deliverLetter(target, claimed);
+        if (result.ok) store.accepted(row.id, Date.now());
+        else store.attemptFailed(row.id, result.error, Date.now());
+      }
+    } finally {
+      await this.armLetterDelivery();
+    }
+  }
+
+  private failLetter(message: string): void {
+    this.letterState().write({ state: "failed", at: Date.now(), error: message });
+  }
 
   /**
    * The letter being written, in SQLite, so a restart halfway finishes it instead of losing it: the prompt's id,
@@ -1544,22 +1631,33 @@ export class Resident extends Think<Env> {
     if (existing) {
       return existing.summary && existing.fromMessageId === range.fromMessageId && existing.toMessageId === range.toMessageId ? existing.summary : "";
     }
+    this.#letterAttempted = true;
     const createdAt = Date.now();
     const prompt: UIMessage = {
       id: `letter_${crypto.randomUUID()}`,
       role: "user",
       parts: [{ type: "text", text: letterPrompt(stamp(new Date(createdAt), this.tz), this.#letterReason === "idle") }]
     };
-    this.saveLetterJob({ promptId: prompt.id, reason: this.#letterReason, ...range, summary: null, createdAt });
+    this.ctx.storage.transactionSync(() => {
+      this.saveLetterJob({ promptId: prompt.id, reason: this.#letterReason, ...range, summary: null, createdAt });
+      this.letterState().write({ state: "writing", at: createdAt });
+    });
     this.#letterPromptId = prompt.id;
-    let status = "error";
     try {
-      status = (await this.saveMessages([prompt])).status;
+      const status = (await this.saveMessages([prompt])).status;
+      if (status !== "completed" || !this.letterJob()?.summary) throw new Error("letter generation did not complete");
+      return this.letterJob()!.summary!;
+    } catch {
+      // No compaction has been committed: remove only this auxiliary turn, never the original chat.
+      if (!this.letterJob()?.summary) {
+        this.failLetter("模型调用失败、中断或未返回有效交接信。");
+        await this.takeOut(prompt.id);
+        this.deleteLetterJob(prompt.id);
+      }
+      throw new Error("letter generation failed");
     } finally {
       this.#letterPromptId = null;
     }
-    if (status !== "completed") throw new Error(`the letter turn ended ${status}`);
-    return this.letterJob()?.summary ?? "";
   }
 
   private async finishLetter(job: LetterJob, status: string, messageId: string): Promise<void> {
@@ -1567,6 +1665,7 @@ export class Resident extends Think<Env> {
     if (before?.id !== job.promptId) return;
     this.#letterPromptId = null;
     if (status !== "completed") {
+      this.failLetter("模型调用失败或写信被中断。");
       await this.takeOut(job.promptId);
       this.deleteLetterJob(job.promptId);
       return;
@@ -1574,21 +1673,23 @@ export class Resident extends Think<Env> {
     const answer = await this.answerAfter(job.promptId);
     const letter = letterText(answer);
     if (!letter || letter === SKIP) {
+      this.failLetter("模型没有返回有效交接信。");
       await this.takeOut(job.promptId);
       this.deleteLetterJob(job.promptId);
       return;
     }
     const summary = `[Handoff letter you wrote on ${stamp(new Date(job.createdAt), this.tz)}]\n${letter}`;
-    let fresh = false;
+    const memory = aeliosConfig(this.cfg);
     this.ctx.storage.transactionSync(() => {
       this.letters();
       // A response hook replayed after a restart finds the letter already kept.
-      fresh = !this.sql`SELECT 1 FROM res_letters WHERE at = ${job.createdAt}`.length;
+      const fresh = !this.sql`SELECT 1 FROM res_letters WHERE at = ${job.createdAt}`.length;
       if (fresh) this.sql`INSERT INTO res_letters (at, text) VALUES (${job.createdAt}, ${letter})`;
       this.saveLetterJob({ ...job, summary });
+      this.letterState().write({ state: "recovering", at: job.createdAt });
+      if (memory) this.letterState().enqueue({ id: job.promptId, at: job.createdAt, text: letter, target: memory });
     });
-    const memory = aeliosConfig(this.cfg);
-    if (fresh && memory) this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: `（交接信）${letter}` }], "aelios-resident:letter"));
+    if (memory) this.ctx.waitUntil(this.deliverLetters());
     // The prompt and the letter leave the conversation, or every later turn would carry them.
     await this.takeOut(job.promptId);
   }
@@ -1601,17 +1702,22 @@ export class Resident extends Think<Env> {
     const job = this.letterJob();
     if (!job) return;
     if (!job.summary) {
+      this.letterState().write({ state: "recovering", at: job.createdAt });
       if (Date.now() - job.createdAt < 10 * 60_000) {
-        await this.schedule(5, "resumeLetter", {}, { idempotent: true });
+        // A running one-shot still participates in SDK deduplication. Use a fresh wake cursor,
+        // or completion deletes our only recovery wake-up instead of scheduling another poll.
+        await this.schedule(5, "resumeLetter", { promptId: job.promptId, after: Date.now() }, { idempotent: true });
       } else {
         await this.takeOut(job.promptId);
         this.deleteLetterJob(job.promptId);
+        this.failLetter("上次写信中断后未能完成；原始聊天仍保留，可重新写信。");
       }
       return;
     }
     await this.takeOut(job.promptId);
     await resumeLetterCompaction(this.session, { ...job, summary: job.summary });
     this.setWindow("folded", 1);
+    this.letterState().write({ state: "written", at: job.createdAt });
     this.deleteLetterJob(job.promptId);
   }
 
@@ -1645,24 +1751,27 @@ export class Resident extends Think<Env> {
     }
   }
 
-  private async writeLetter(reason: "idle" | "handoff"): Promise<boolean> {
+  private async writeLetter(reason: "idle" | "handoff"): Promise<LetterOutcome> {
+    if (this.#letterPromise) return { status: "pending" };
     return this.letterExclusive(() => this.performWriteLetter(reason));
   }
 
-  /** Fold the older turns into a letter now. False when there was nothing to fold. */
-  private async performWriteLetter(reason: "idle" | "handoff"): Promise<boolean> {
+  /** Keep no-content, failed generation, saved-but-recovering and completed letters distinct. */
+  private async performWriteLetter(reason: "idle" | "handoff"): Promise<LetterOutcome> {
     const existing = this.letterJob();
     if (existing) {
       await this.performResumeLetter();
-      return Boolean(existing.summary);
+      if (this.letterJob()) return { status: "pending" };
+      return existing.summary ? { status: "written" } : { status: "failed", error: this.letterState().readWrite()?.error };
     }
     this.#letterReason = reason;
+    this.#letterAttempted = false;
     // Cleared before, not after: a message that arrives while the letter is written sets it again.
     await this.ctx.storage.put("wrote_since_letter", false);
     try {
       if (reason === "idle" && !reachesLetterThreshold(await this.session.getHistory(), this.letterThreshold())) {
         this.#short = true;
-        return false;
+        return { status: "empty" };
       }
       const folded = Boolean(await this.session.compact());
       // The older turns are gone from the prompt, so the next turn writes the cache anew: a new window opens there.
@@ -1671,9 +1780,26 @@ export class Resident extends Think<Env> {
       if (job?.summary) {
         // Also retire the old always-kept head on deployments whose earlier SDK compactions start after it.
         await resumeLetterCompaction(this.session, { ...job, summary: job.summary });
+        this.letterState().write({ state: "written", at: job.createdAt });
         this.deleteLetterJob(job.promptId);
       }
-      return folded;
+      if (folded) return { status: "written" };
+      if (this.#letterAttempted) {
+        const error = this.letterState().readWrite()?.error ?? "写信未能完成。";
+        this.failLetter(error);
+        return { status: "failed", error };
+      }
+      if (reason === "handoff") this.letterState().write({ state: "empty", at: Date.now() });
+      return { status: "empty" };
+    } catch {
+      if (this.letterJob()?.summary) {
+        this.letterState().write({ state: "recovering", at: Date.now() });
+        await this.schedule(5, "resumeLetter", {}, { idempotent: true });
+        return { status: "pending" };
+      }
+      const error = "写信未能完成，原始聊天仍保留。";
+      this.failLetter(error);
+      return { status: "failed", error };
     } finally {
       this.#letterReason = "handoff";
     }
@@ -1707,8 +1833,8 @@ export class Resident extends Think<Env> {
     // Checked last: a turn that is running now plans its own letter when it ends.
     if (this.activeTurn) return;
     this.#short = false;
-    const folded = await this.writeLetter("idle");
-    if (!folded && this.#short && !this.activeTurn) await this.heartbeat(1);
+    const outcome = await this.writeLetter("idle");
+    if (outcome.status === "empty" && this.#short && !this.activeTurn) await this.heartbeat(1);
   }
 
   /**
@@ -1894,10 +2020,12 @@ export class Resident extends Think<Env> {
         return latest ? `${stamp(new Date(latest.at), this.tz)} 写的：\n\n${latest.text}` : "还没写过交接信。";
       }
       case "handoff": {
-        const before = this.letters()[0]?.at;
-        await this.writeLetter("handoff");
+        const outcome = await this.writeLetter("handoff");
+        if (outcome.status === "empty") return "现在聊得还不多，没什么要收起来的。";
+        if (outcome.status === "pending") return "交接信正在写或恢复中，请稍后用 /status 查看，不会重复开一轮写信。";
+        if (outcome.status === "failed") return `交接信没写成：${outcome.error ?? "模型调用未能完成。"}\n原始聊天没有收起，可以再发 /handoff 重试。`;
         const [latest] = this.letters();
-        if (!latest || latest.at === before) return "现在聊得还不多，没什么要收起来的。";
+        if (!latest) return "交接信状态尚未恢复完成，请稍后用 /status 查看。";
         return `交接信写好了，旧的聊天收起来了：\n\n${latest.text}`;
       }
       default:
@@ -1919,6 +2047,8 @@ export class Resident extends Think<Env> {
       `对话：${history.length} 条，约 ${tokens} token（写信后固定保留最近约 ${LETTER_KEEP_TOKENS} token 原始聊天，整轮问答不拆开；交接信另算）`,
       `交接信：${idleMinutes(this.cfg) ? `对话达到 ${this.letterThreshold()} token 且没动静 ${idleMinutes(this.cfg)} 分钟才自动写，` : "自动写信已关，"}/handoff 可提前写；缓存 ${promptCache(this.cfg).anthropic.cacheControl.ttl}`,
       `已写交接信：${compactions.length} 封`,
+      `写信状态：${letterWriteStatus(this.webLetter().write)}`,
+      `交接信同步：${letterDeliveryStatus(this.letterState().summary())}`,
       usageLine(await this.lastUsage()),
       `长期记忆 Aelios：${
         !aeliosConfig(this.cfg)
@@ -2173,7 +2303,12 @@ export class Resident extends Think<Env> {
     }
     if (key === "TIME_ZONE") await this.rearmAlarms();
     // A different Aelios has a different boot packet.
-    if (key.startsWith("AELIOS_")) await this.ctx.storage.delete("aelios_boot");
+    if (key.startsWith("AELIOS_")) {
+      await this.ctx.storage.delete("aelios_boot");
+      const memory = aeliosConfig(this.cfg);
+      if (memory) this.letterState().resumeBlocked(memory, Date.now());
+      this.ctx.waitUntil(this.deliverLetters());
+    }
     return this.webConfig();
   }
 
