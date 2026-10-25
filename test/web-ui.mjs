@@ -384,3 +384,122 @@ assert.equal(configPage.configError.LETTER_TOKEN_THRESHOLD, '');
 assert.match(configPage.letterError, /读取交接信状态失败/);
 assert.equal(configPage.configBusy, '');
 console.log('PASS opening and saving config read /web/letter; a failed status read does not misreport a successful settings save');
+
+// The model picker. Without Aelios it browses the catalog the page ships with; with Aelios connected it browses
+// Aelios' own model list (what can actually be picked there), falling back to the catalog when that cannot be had.
+const pickerPage = (patch = {}) => {
+  const picker = vm.runInContext('resident()', context);
+  picker.catalog = [
+    { id: 'anthropic/claude-opus-5.5', name: 'claude-opus-5.5', provider: 'Anthropic', hosted: false, desc: 'Opus.' },
+    { id: 'openai/gpt-5', name: 'gpt-5', provider: 'OpenAI', hosted: false, desc: 'GPT.' },
+    { id: '@cf/zai-org/glm-4.7-flash', name: 'glm-4.7-flash', provider: 'Zhipu AI', hosted: true, desc: 'GLM.' },
+    { id: 'anthropic/claude-sonnet-4.5', name: 'claude-sonnet-4.5', provider: 'Anthropic', hosted: false, desc: 'Sonnet.' },
+    { id: 'openai/gpt-4o', name: 'gpt-4o', provider: 'OpenAI', hosted: false, desc: '4o.' },
+    { id: '@cf/meta/llama-3.3', name: 'llama-3.3', provider: 'Meta', hosted: true, desc: 'Llama.' }
+  ];
+  picker.model = { model: 'openai/gpt-5', at: null, fallback: '@cf/zai-org/glm-4.7-flash', recent: [], lastUsage: null, memoryOff: false };
+  return Object.assign(picker, patch);
+};
+// Arrays made inside the page's context have another Array; copy them out so deepEqual compares like with like.
+const titles = (picker) => Array.from(picker.pickerGroups().map((group) => group.title));
+const ids = (picker, title) => Array.from(picker.pickerGroups().find((group) => group.title === title)?.items.map((item) => item.id) ?? []);
+const aeliosList = (items, curated = true, error = '') => ({ loaded: true, items, curated, error });
+const listed = [
+  { id: 'chatgpt/gpt-5', owner: 'chatgpt', main: true },
+  { id: 'openrouter/openai/gpt-6.1-sol:floor', owner: 'openrouter', main: false },
+  { id: 'anthropic/claude-opus-5-5', owner: 'anthropic', main: true }
+];
+
+const plain = pickerPage();
+assert.equal(plain.canon('anthropic/claude-opus-5.5'), 'anthropic/claude-opus-5-5');
+assert.equal(plain.canon('Anthropic/claude-opus-5.5'), 'anthropic/claude-opus-5-5');
+assert.equal(plain.canon('@cf/zai-org/glm-4.7-flash'), 'workers-ai/@cf/zai-org/glm-4.7-flash');
+assert.equal(plain.canon('custom-relay/anthropic/claude-sonnet-4.5'), 'custom-relay/anthropic/claude-sonnet-4.5');
+assert.equal(plain.same('anthropic/claude-opus-5.5', 'anthropic/claude-opus-5-5'), true);
+assert.equal(plain.same('openai/gpt-5', 'openai/gpt-4'), false);
+assert.equal(plain.same('', ''), false);
+console.log('PASS one model spelled with dots or dashes counts as one, the way Aelios names it');
+
+assert.equal(plain.pickerMode(), 'catalog');
+assert.equal(plain.pickerNote(), '');
+assert.deepEqual(titles(plain), ['正在用', '常用', 'Anthropic', 'OpenAI', 'Workers AI · Meta']);
+assert.equal(plain.entry('anthropic/claude-opus-5-5').desc, 'Opus.', 'the catalog still describes a model spelled the other way');
+assert.equal(plain.entry('anthropic/claude-opus-5-5').id, 'anthropic/claude-opus-5-5', 'and the spelling it was given is kept');
+console.log('PASS without Aelios the picker browses the shipped catalog as before');
+
+const waiting = pickerPage({ aelios: true });
+assert.equal(waiting.pickerMode(), 'loading');
+assert.match(waiting.pickerNote(), /正在取 Aelios/);
+assert.deepEqual(titles(waiting), ['正在用'], 'no catalog flashes up while Aelios is being asked');
+console.log('PASS while Aelios is being asked the picker shows what is in use, not the catalog');
+
+const curated = pickerPage({ aelios: true, aeliosModels: aeliosList(listed), model: { ...plain.model, model: 'chatgpt/gpt-5', recent: ['openai/gpt-5'] } });
+assert.equal(curated.pickerMode(), 'aelios');
+assert.deepEqual(titles(curated), ['正在用', '最近用过', '常用', 'openrouter'], 'the model in use and the favourite are not listed a second time under their own provider');
+assert.deepEqual(ids(curated, '常用'), ['anthropic/claude-opus-5.5'], 'a favourite is shown when Aelios lists it, whichever way it is spelled');
+assert.equal(curated.pickerGroups().find((group) => group.title === '常用').items[0].main, true);
+assert.deepEqual(ids(curated, 'openrouter'), ['openrouter/openai/gpt-6.1-sol:floor']);
+assert.equal(curated.pickerGroups().find((group) => group.title === 'openrouter').items[0].main, false, 'a model that would not remember is marked');
+assert.ok(!titles(curated).some((title) => /^(Anthropic|OpenAI|Workers AI)/.test(title)), 'the shipped catalog is not browsed');
+assert.match(curated.pickerNote(), /你在 Aelios 里存的模型清单/);
+assert.equal(curated.entry('anthropic/claude-opus-5-5').desc, 'Opus.', 'the catalog still describes a listed model');
+assert.equal(curated.entry('anthropic/claude-opus-5-5').main, true);
+console.log('PASS with Aelios connected the picker browses its model list, once per model, marks the ones that would not remember');
+
+const searching = pickerPage({ aelios: true, aeliosModels: aeliosList(listed) });
+searching.picker.q = '5.5';
+assert.deepEqual(ids(searching, '搜到的'), ['anthropic/claude-opus-5-5'], 'a search with dots finds a dashed version');
+searching.picker.q = 'sol:floor';
+assert.deepEqual(ids(searching, '搜到的'), ['openrouter/openai/gpt-6.1-sol:floor']);
+searching.picker.q = 'custom-mine/tiny';
+assert.deepEqual(titles(searching), ['目录里没有'], 'an id nobody lists can still be typed in');
+assert.deepEqual(ids(searching, '目录里没有'), ['custom-mine/tiny']);
+searching.picker.q = 'anthropic/claude-opus-5.5';
+assert.ok(!titles(searching).includes('目录里没有'), 'the same model spelled another way is not "not listed"');
+console.log('PASS search runs over Aelios\' list (dots or dashes), and a typed id it does not list is still offered');
+
+const everything = Array.from({ length: 200 }, (_, i) => ({ id: `openrouter/vendor/model-${i}`, owner: 'openrouter' }));
+const huge = pickerPage({ aelios: true, aeliosModels: aeliosList(everything, false) });
+assert.deepEqual(titles(huge), ['正在用'], 'an uncurated catalog is searched, not browsed');
+assert.match(huge.pickerNote(), /一共 200 个模型/);
+huge.picker.q = 'model-1';
+assert.equal(ids(huge, '搜到的').length, 60, 'and search shows at most 60');
+const small = pickerPage({ aelios: true, aeliosModels: aeliosList(everything.slice(0, 40), false) });
+assert.ok(titles(small).includes('openrouter'), 'a short list is browsed even when nobody curated it');
+assert.equal(small.pickerNote(), '');
+console.log('PASS an uncurated catalog of hundreds is searched rather than drawn in full');
+
+const down = pickerPage({ aelios: true, aeliosModels: aeliosList([], false, 'Aelios answered 401') });
+assert.equal(down.pickerMode(), 'catalog');
+assert.match(down.pickerNote(), /没取到（Aelios answered 401）.*自带的目录/);
+assert.ok(titles(down).includes('Anthropic'));
+const empty = pickerPage({ aelios: true, aeliosModels: aeliosList([], false) });
+assert.equal(empty.pickerMode(), 'catalog');
+assert.equal(empty.pickerNote(), '');
+console.log('PASS when Aelios cannot give a list the picker falls back to the shipped catalog and says why');
+
+const loader = pickerPage({ aelios: true });
+const asked = [];
+loader.api = async (path) => { asked.push(path); return { aelios: true, models: listed, curated: true }; };
+await loader.loadAeliosModels();
+assert.deepEqual(asked, ['/web/models']);
+assert.deepEqual([loader.aeliosModels.loaded, loader.aeliosModels.items.length, loader.aeliosModels.curated, loader.aeliosModels.error], [true, 3, true, '']);
+loader.api = async () => { throw new Error('网页门断了'); };
+await loader.loadAeliosModels();
+assert.deepEqual([loader.aeliosModels.loaded, loader.aeliosModels.items.length, loader.aeliosModels.error], [true, 0, '网页门断了']);
+loader.api = async (path) => ({ aelios: true, models: [], curated: false, error: 'Aelios answered 401' });
+await loader.loadAeliosModels();
+assert.equal(loader.aeliosModels.error, 'Aelios answered 401');
+const offline = pickerPage({ aelios: false });
+offline.api = async () => { throw new Error('should not be asked'); };
+await offline.loadAeliosModels();
+assert.equal(offline.aeliosModels.loaded, false);
+console.log('PASS the list is fetched from /web/models only when Aelios is connected, and a failure is kept as a reason');
+
+const same = pickerPage({ model: { ...plain.model, model: 'anthropic/claude-opus-5.5' } });
+same.api = async () => { throw new Error('picking the model already in use must not try it again'); };
+same.picker.open = true;
+await same.chooseModel('anthropic/claude-opus-5-5');
+assert.equal(same.picker.open, false);
+console.log('PASS choosing the model already in use, spelled the other way, just closes the picker');
+

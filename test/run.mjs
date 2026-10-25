@@ -367,6 +367,25 @@ if (phase === "main") {
     assert.match(out, /^模型：fake\n/);
   });
 
+  await step("the picker's list is Aelios' own model list; Aelios refusing is reported, not thrown", async () => {
+    await fetch(`${MOCK}/__reset`);
+    assert.equal((await web("/web/models", "wrong")).status, 401);
+    let list = await (await web("/web/models", "test-web-key")).json();
+    assert.deepEqual([list.aelios, list.curated, list.error], [true, true, undefined]);
+    assert.deepEqual(list.models, [
+      { id: "chatgpt/gpt-5", owner: "chatgpt", main: true },
+      { id: "openrouter/openai/gpt-6.1-sol:floor", owner: "openrouter", main: false },
+      { id: "anthropic/claude-opus-5-5", owner: "anthropic", main: true }
+    ]);
+    const asked = (await log()).filter((e) => e.kind === "aelios.models");
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].auth, "Bearer test-key");
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ models: "refuse" }), headers: { "content-type": "application/json" } });
+    list = await (await web("/web/models", "test-web-key")).json();
+    assert.deepEqual([list.aelios, list.models.length, list.curated, list.error], [true, 0, false, "Aelios answered 401"]);
+    await fetch(`${MOCK}/__reset`);
+  });
+
   await step("with Aelios connected, the chat goes out through Aelios, which recalls and records it", async () => {
     await fillChat();
     await fetch(`${MOCK}/__reset`);
@@ -701,6 +720,12 @@ if (phase === "custom") {
     assert.equal(calls[1].auth, "Bearer test-custom-key");
     assert.equal(calls[1].body.model, "nous/claude-test");
     assert.equal(calls[1].body.stream, true);
+  });
+
+  await step("without Aelios the picker is told to keep to its own catalog", async () => {
+    const list = await (await web("/web/models", "test-web-key")).json();
+    assert.deepEqual(list, { aelios: false, models: [], curated: false });
+    assert.equal((await log()).filter((e) => e.kind === "aelios.models").length, 0, "nothing is asked of an Aelios that is not connected");
   });
 
   await step("the format is changed on the settings page and applies from the next message", async () => {

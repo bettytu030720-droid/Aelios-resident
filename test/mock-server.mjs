@@ -109,8 +109,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
   const url = new URL(req.url, "http://x");
-  const reply = (obj, status = 200) => {
-    res.writeHead(status, { "content-type": "application/json" });
+  const reply = (obj, status = 200, headers = {}) => {
+    res.writeHead(status, { "content-type": "application/json", ...headers });
     res.end(JSON.stringify(obj));
   };
 
@@ -352,6 +352,17 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/custom/v1/messages") {
     log.push({ kind: "custom.messages", apiKey: req.headers["x-api-key"], body: json });
     return messages(`自己的供应商（Anthropic 格式）收到 ${json.messages.length} 条，缓存标记${cached()}，旧思考块 ${thinkingCount()} 个`);
+  }
+  // Aelios' model list (what the web page's picker browses): a saved list, entries saying whether they get memory.
+  const listed = url.pathname.match(/^(?:\/([^/]+))?\/v1\/models$/);
+  if (listed && req.method === "GET") {
+    log.push({ kind: "aelios.models", identity: listed[1] ?? null, auth });
+    if (faults.models === "refuse") return reply({ error: { message: "Unauthorized" } }, 401);
+    return reply({ object: "list", data: [
+      { id: "chatgpt/gpt-5", object: "model", created: 0, owned_by: "chatgpt", aelios: { main: true } },
+      { id: "openrouter/openai/gpt-6.1-sol:floor", object: "model", created: 0, owned_by: "openrouter", aelios: { main: false } },
+      { id: "anthropic/claude-opus-5-5", object: "model", created: 0, owned_by: "anthropic", aelios: { main: true } }
+    ] }, 200, { "x-aelios-models": "list" });
   }
   const gateway = url.pathname.match(/^(?:\/([^/]+))?\/v1\/(messages|chat\/completions)$/);
   if (gateway) {

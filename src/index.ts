@@ -165,6 +165,8 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json({ ok: await agent.webPin(String(body.text ?? "")) });
     case "GET /web/model":
       return Response.json(await agent.webModel());
+    case "GET /web/models":
+      return Response.json(await agent.webModels());
     case "POST /web/model": {
       const saved = await agent.webSetModel(String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });

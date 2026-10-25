@@ -43,6 +43,48 @@ export function aeliosBase(memory: AeliosConfig): string {
   return `${memory.url}${memory.identity ? `/${encodeURIComponent(memory.identity)}` : ""}/v1`;
 }
 
+/** One model in Aelios' own list (GET /v1/models), as the web page's picker takes it. */
+export type AeliosModel = {
+  id: string;
+  /** Who it is from: the part before the first slash (openai, openrouter, custom-…, chatgpt). */
+  owner: string;
+  /** Whether a chat on it gets memory under this identity. Left out when Aelios did not say (an unlisted catalog). */
+  main?: boolean;
+};
+export type AeliosModels = {
+  models: AeliosModel[];
+  /** The owner saved a model list in Aelios; otherwise this is the whole upstream catalog, which can be thousands. */
+  curated: boolean;
+};
+const MODELS_MAX = 5000;
+
+/** The usable entries of an OpenAI-style model list: an id once, and what Aelios said about memory for it. */
+export function modelsOf(body: unknown): AeliosModel[] {
+  const data = (body as { data?: unknown } | null)?.data;
+  if (!Array.isArray(data)) return [];
+  const seen = new Set<string>();
+  const models: AeliosModel[] = [];
+  for (const entry of data) {
+    const { id, owned_by: owner, aelios } = (entry ?? {}) as { id?: unknown; owned_by?: unknown; aelios?: unknown };
+    if (typeof id !== "string" || !id.trim() || id.length > 200 || /\s/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    const main = (aelios as { main?: unknown } | null | undefined)?.main;
+    models.push({ id, owner: typeof owner === "string" ? owner : "", ...(typeof main === "boolean" ? { main } : {}) });
+    if (models.length >= MODELS_MAX) break;
+  }
+  return models;
+}
+
+/**
+ * Aelios' model list: the one the owner saved in its admin page, or else the upstream's whole catalog.
+ * Throws when Aelios cannot be reached or refuses the key.
+ */
+export async function listModels(memory: AeliosConfig, signal?: AbortSignal): Promise<AeliosModels> {
+  const response = await fetch(`${aeliosBase(memory)}/models`, { headers: { authorization: `Bearer ${memory.key}` }, signal });
+  if (!response.ok) throw new Error(`Aelios answered ${response.status}`);
+  return { models: modelsOf(await response.json()), curated: response.headers.get("x-aelios-models") === "list" };
+}
+
 type Message = { role?: unknown; content?: unknown };
 
 /** The text of the last message that was said rather than a tool result: hers, or one of the system's notes. */
