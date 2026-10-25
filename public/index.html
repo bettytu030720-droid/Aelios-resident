@@ -877,7 +877,7 @@ function resident() {
     configDraft: {},
     configError: {},
     configBusy: '',
-    letter: { write: null, delivery: { pending: 0, failed: 0, blocked: 0, latest: null } },
+    letter: { canRetry: false, write: null, delivery: { pending: 0, failed: 0, blocked: 0, latest: null } },
     letterBusy: '',
     letterError: '',
     mcp: { servers: [] },
@@ -1756,6 +1756,7 @@ function resident() {
       var delivery = data.delivery || {};
       var latest = delivery.latest;
       this.letter = {
+        canRetry: data.canRetry === true,
         write: write ? { state: text(write.state), at: time(write.at), error: text(write.error) } : null,
         delivery: {
           pending: count(delivery.pending), failed: count(delivery.failed), blocked: count(delivery.blocked),
@@ -1787,7 +1788,7 @@ function resident() {
         + (latest.sentAt !== null ? ' · 确认送达：' + this.letterTime(latest.sentAt) : '');
     },
     letterCanRetry() {
-      return this.letter.delivery.failed > 0 || this.letter.delivery.blocked > 0;
+      return this.letter.canRetry;
     },
     async loadLetter() {
       if (this.letterBusy) return;

@@ -456,19 +456,14 @@ test("auxiliary read rejects metadata that moves during bounded answer hydration
   assert.deepEqual(f.state.deletions, []);
 });
 
-test("recovery refuses a leaf that moves during preflight, without any body read", async (t) => {
+test("recovery commit refuses a leaf that moved after its snapshot, without any body read", async (t) => {
   const f = await fixture(t);
   const s = f.session;
   await seed(s);
-  const original = s.getHistoryRowStats.bind(s);
-  let moved = false;
-  s.getHistoryRowStats = async (...args) => {
-    const rows = await original(...args);
-    if (!moved) { moved = true; await s.appendMessage(msg("moved")); }
-    return rows;
-  };
+  const view = await f.resident.historyControl().recovery();
+  await s.appendMessage(msg("moved"));
   f.forbid();
-  await assert.rejects(f.resident.historyControl().recovery(), errorCode("changed"));
+  await assert.rejects(view.assertCurrent(), errorCode("changed"));
   assert.deepEqual(f.state.payloads, []);
 });
 

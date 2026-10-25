@@ -88,3 +88,34 @@ test("listModels passes manual redirect mode and the caller's abort signal to fe
   await assert.rejects(listModels({ url: "https://synthetic.invalid", key: "synthetic-private-key", identity: "", namespace: "default" }, controller.signal), { message: "Aelios answered 302" });
   assert.equal(calls.length, 1);
 });
+
+test("every request that carries the Aelios key refuses 3xx: memory, boot, ingest, pin and the model proxy", async (t) => {
+  const aelios = await build({
+    entryPoints: [fileURLToPath(new URL("../src/aelios.ts", import.meta.url))],
+    bundle: true, platform: "node", format: "esm", write: false, logLevel: "error",
+  });
+  const { recall, ingest, fetchBoot, pin } = await import(`data:text/javascript;base64,${Buffer.from(aelios.outputFiles[0].contents).toString("base64")}`);
+  const { aeliosModel } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].contents).toString("base64")}`);
+  const targets = [];
+  const other = await listen(t, (req, res) => {
+    targets.push({ url: req.url, auth: req.headers.authorization });
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  const asked = [];
+  const origin = await listen(t, (req, res) => {
+    asked.push(req.url);
+    res.writeHead(307, { location: `${other}/capture` }).end();
+  });
+  const memory = { url: origin, key: "synthetic-private-key", identity: "", namespace: "default" };
+  t.mock.method(console, "error", () => {});
+  await assert.rejects(recall(memory, "q", 3));
+  assert.equal(await ingest(memory, [{ role: "user", content: "hi" }], "test"), false);
+  assert.equal(await fetchBoot(memory), null);
+  assert.equal(await pin(memory, "line"), false);
+  const prompt = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
+  for (const id of ["openai/gpt-synthetic", "anthropic/claude-synthetic"]) {
+    await assert.rejects(aeliosModel(memory, id).doGenerate({ prompt }));
+  }
+  assert.equal(asked.length, 6, "each call reached Aelios once");
+  assert.deepEqual(targets, [], "no redirect target was requested with or without the key");
+});

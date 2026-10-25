@@ -108,6 +108,7 @@ function assertSafeLogs(f) {
     assert.ok(!logged.includes(privateValue), `log must not contain ${privateValue}`);
   }
   assert.match(logged, /retained for retry/);
+  assert.match(logged, /"error":"\w+"/, "the error's kind is logged for diagnosis");
 }
 function assertDurable(f) {
   assert.deepEqual(f.resident.letterJob(), f.job);

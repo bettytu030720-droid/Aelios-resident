@@ -209,15 +209,19 @@ test(">32 MiB raw single media leaf is covered by a small letter and NEVER hydra
 test("uncovered oversized leaf fails admission and guarded getHistory BEFORE any body read", async (t) => {
   const f = await fixture(t);
   const s = f.sessions.session();
-  await seed(s, 1, 5000);
+  await seed(s, 2, 5000);
   const calls = spyReads(s);
   const c = f.install(s, 512);
   f.state.forbidPayloads = true;
   assert.equal(await c.fits(), false);
   await assert.rejects(s.getHistory(), isError("budget"));
-  await assert.rejects(s.getRecentHistory(512), isError("budget"));
   assert.equal(calls.history.length, 0);
-  assert.equal(calls.recent.length, 0, "bound stock reader's always-include-leaf exception is not safe here");
+  // Like the SDK, ordinary chat still gets the newest message alone rather than no history at all.
+  f.state.forbidPayloads = false;
+  const recent = await s.getRecentHistory(512);
+  assert.deepEqual(ids(recent.messages), ["m1"]);
+  assert.equal(recent.truncated, true);
+  assert.equal(calls.recent.length, 1);
 });
 
 test("ordinary chat falls back to the stock finite suffix while letter admission rejects", async (t) => {
@@ -344,64 +348,6 @@ test("hidden legacy stored overlays are skipped, imported foreign summaries rema
   assert.deepEqual(ids(actual), ids(expected));
 });
 
-test("active leaf moves during metadata preflight: reject before full hydration", async (t) => {
-  const f = await fixture(t);
-  const s = f.sessions.session();
-  await seed(s, 2);
-  const base = s.getHistoryRowStats.bind(s);
-  let changed = false;
-  s.getHistoryRowStats = async (leaf) => {
-    const rows = await base(leaf);
-    if (!changed) { changed = true; await s.appendMessage(msg("new-leaf")); }
-    return rows;
-  };
-  const calls = spyReads(s);
-  f.install(s);
-  await assert.rejects(s.getHistory(), isError("changed"));
-  assert.equal(calls.history.length, 0);
-});
-
-test("same-length overlay replacement during materialization is rejected, not reported as full", async (t) => {
-  const f = await fixture(t);
-  const s = f.sessions.session();
-  await seed(s, 3);
-  await s.addCompaction("old", "m0", "m1");
-  const original = s.getHistory.bind(s);
-  s.getHistory = async (options) => {
-    const messages = await original(options);
-    await s.addCompaction("new", "m0", "m1");
-    return messages;
-  };
-  f.install(s);
-  await assert.rejects(s.getRecentHistory(8192), isError("changed"));
-});
-
-test("moving leaf after full hydration and moving records after stock fallback both fail closed", async (t) => {
-  const f = await fixture(t);
-  const full = f.sessions.session("full");
-  await seed(full, 2);
-  const original = full.getHistory.bind(full);
-  full.getHistory = async (options) => {
-    const messages = await original(options);
-    await full.appendMessage(msg("moved"));
-    return messages;
-  };
-  f.install(full);
-  await assert.rejects(full.getHistory(), isError("changed"));
-
-  const window = f.sessions.session("window");
-  await seed(window, 2, 5000);
-  await window.appendMessage(msg("tail"));
-  const recent = window.getRecentHistory.bind(window);
-  window.getRecentHistory = async (...args) => {
-    const result = await recent(...args);
-    await window.addCompaction("changed record", "m0", "m1");
-    return result;
-  };
-  f.install(window, 512);
-  await assert.rejects(window.getRecentHistory(512), isError("changed"));
-});
-
 test("pinned branch, newestFirst full reads, and abort preserve public read options", async (t) => {
   const f = await fixture(t);
   const s = f.sessions.session();
@@ -493,33 +439,19 @@ test("summary content mismatch is rejected even if ids, lengths and public metad
   await assert.rejects(s.getRecentHistory(8192), isError("changed"));
 });
 
-test("budget shrink during preflight or materialization cannot yield a successful admission", async (t) => {
+test("one metadata snapshot per read, and a bare leaf id reads that branch as ThinkSession allows", async (t) => {
   const f = await fixture(t);
   const s = f.sessions.session();
-  await seed(s, 2);
-  let B = 8192;
-  const calls = spyReads(s);
-  const verify = f.pathComplete(s);
-  const c = installEffectiveHistory(s, {
-    budget: () => B,
-    pathComplete(leafId) { B = 0; return verify(leafId); },
-  });
-  assert.equal(await c.fits(), false);
-  B = 8192;
-  await assert.rejects(s.getHistory(), isError("changed"));
-  B = 8192;
-  await assert.rejects(s.getRecentHistory(8192), isError("changed"));
-  assert.equal(calls.history.length + calls.recent.length, 0);
-  c.restore();
-  B = 8192;
-  const original = s.getHistory.bind(s);
-  s.getHistory = async (options) => {
-    const messages = await original(options);
-    B = 0;
-    return messages;
-  };
-  f.install(s, () => B);
-  await assert.rejects(s.getHistory(), isError("changed"));
+  await seed(s, 3);
+  const stats = s.getHistoryRowStats.bind(s);
+  let walks = 0;
+  s.getHistoryRowStats = async (leaf) => { walks++; return stats(leaf); };
+  f.install(s);
+  await s.getRecentHistory(8192);
+  assert.equal(walks, 1, "getRecentHistory");
+  walks = 0;
+  assert.deepEqual(ids(await s.getHistory("m1")), ["m0", "m1"]);
+  assert.equal(walks, 1, "getHistory");
 });
 
 test("finite ceilings, reserves, per-instance patching, empty path, and exact restoration", async (t) => {

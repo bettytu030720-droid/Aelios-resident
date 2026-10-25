@@ -124,6 +124,13 @@ export class LetterStateStore {
       AND url = ${target.url} AND namespace = ${target.namespace}`;
   }
 
+  /** Whether retry() would reset anything: failed or paused letters for the current destination. */
+  canRetry(target: DeliveryTarget | null): boolean {
+    if (!target) return false;
+    return this.sql<{ id: string }>`SELECT id FROM res_letter_deliveries WHERE status IN ('failed', 'blocked')
+      AND url = ${target.url} AND namespace = ${target.namespace} LIMIT 1`.length > 0;
+  }
+
   /** Restoring the same target does not reset the automatic attempt budget. */
   resumeBlocked(target: DeliveryTarget, now: number): void {
     this.sql`UPDATE res_letter_deliveries SET status = 'pending', next_at = ${now}, last_error = NULL

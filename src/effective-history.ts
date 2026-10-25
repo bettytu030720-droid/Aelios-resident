@@ -122,9 +122,9 @@ function effective(rows: SessionRowStat[], records: StoredCompaction[]) {
  * metadata-only and is NOT a lease: repeat it with the letter prompt reserve at
  * every letter admission boundary. getHistory() independently checks again.
  *
- * Coherence is optimistic, not a transaction: compare all public row stats and
- * ordered compaction records before AND after hydration, and reject changes or
- * missing/mismatched messages. The owner should serialize writes with reads.
+ * Coherence is optimistic, not a transaction: one metadata snapshot plans each
+ * read, and the hydrated messages must match it (ids, summaries, actual bytes).
+ * The owner should serialize writes with reads.
  * Public stats cannot detect an equal-size, equal-token raw content replacement
  * (nor ABA changes); this helper does not claim to provide snapshot isolation.
  * Streaming history(), getMessage(), and SDK-private reads are not patched.
@@ -178,20 +178,9 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
     }
   }
 
-  async function preflight(leafId?: string | null) {
-    const before = await snapshot(leafId);
-    // Pin using the last STAT id, never getLatestLeaf(). Check that pinning did
-    // not change the depth-limited path (e.g. a hidden legacy leaf at the cap).
-    same(before, await snapshot(before.plan.leafId ?? leafId));
-    if (!leafId && before.plan.leafId) same(before, await snapshot(leafId));
-    return before;
-  }
-
-  async function postflight(before: Snapshot, leafId: string | null | undefined, limit: number) {
-    same(before, await snapshot(leafId));
-    // A configuration change while materializing is also a failed admission.
-    if (ceiling() < limit) throw new EffectiveHistoryError("changed", "History budget changed during the read");
-  }
+  // One metadata snapshot per read. Sessions reads Durable Object SQLite
+  // synchronously, so no other request can write between the snapshot and the
+  // body read; validateMessages() still checks what actually came back.
 
   function validateMessages(messages: SessionMessage[], entries: Entry[], limit: number) {
     if (messages.length !== entries.length || entries.some((entry, i) => {
@@ -208,24 +197,24 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
   async function full(before: Snapshot, readOptions: HistoryReadOptions, limit: number) {
     if (!before.plan.complete) throw new EffectiveHistoryError("incomplete", "History path is not verified through its root");
     if (before.plan.effectiveBytes > limit) throw new EffectiveHistoryError("budget", "Effective history exceeds its byte budget");
-    if (ceiling() < limit) throw new EffectiveHistoryError("changed", "History budget changed during preflight");
     readOptions.signal?.throwIfAborted();
-    // Avoid any unpinned body read for an empty session.
+    // Pin the read to the snapshot's last stat id; an empty session reads nothing.
     const messages = before.plan.leafId === null ? []
       : await originalHistory({ ...readOptions, leafId: before.plan.leafId });
-    await postflight(before, readOptions.leafId, limit);
     validateMessages(messages, readOptions.newestFirst ? [...before.entries].reverse() : before.entries, limit);
     return messages;
   }
 
-  const getHistory: HistorySession["getHistory"] = async (readOptions = {}) => {
+  // ThinkSession also takes a bare leaf id, as the pre-Sessions API did.
+  const getHistory = async (leafIdOrOptions: string | HistoryReadOptions = {}) => {
+    const readOptions = typeof leafIdOrOptions === "string" ? { leafId: leafIdOrOptions } : leafIdOrOptions;
     const limit = ceiling();
-    return full(await preflight(readOptions.leafId), readOptions, limit);
+    return full(await snapshot(readOptions.leafId), readOptions, limit);
   };
 
   const getRecentHistory: HistorySession["getRecentHistory"] = async (requested, readOptions = {}) => {
     const limit = Math.min(ceiling(), finiteBytes(requested, "Recent history budget"));
-    const before = await preflight(readOptions.leafId);
+    const before = await snapshot(readOptions.leafId);
     if (before.plan.complete && before.plan.effectiveBytes <= limit) {
       return {
         messages: await full(before, readOptions, limit),
@@ -235,23 +224,24 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
     }
     // Ordinary chat retains the SDK's raw-budgeted suffix when the FULL view
     // cannot fit. Reproduce only the window arithmetic to verify safety BEFORE
-    // calling the bound stock reader. The stock "always include leaf" exception
-    // and an oversized synthetic summary must not bypass our finite ceiling.
+    // calling the bound stock reader; an oversized synthetic summary must not
+    // bypass our finite ceiling.
     let start = Math.max(0, before.rows.length - 1);
     let used = before.rows[start]?.bytes ?? 0;
     while (start > 0 && sum(used, before.rows[start - 1].bytes) <= limit) {
       used += before.rows[--start].bytes;
     }
+    // As in the SDK, the newest message comes back even when it alone is over
+    // the budget: hydrating no history at all is worse.
+    const newestOnly = start === before.rows.length - 1;
     const window = effective(before.rows.slice(start), before.records);
-    if (window.effectiveBytes > limit) {
+    if (!newestOnly && window.effectiveBytes > limit) {
       throw new EffectiveHistoryError("budget", "Even the stock recent window exceeds its byte budget");
     }
-    if (ceiling() < limit) throw new EffectiveHistoryError("changed", "History budget changed during preflight");
     const result: RecentHistoryResult = before.plan.leafId === null
       ? { messages: [], truncated: true, totalContentBytes: before.plan.rawBytes }
       : await originalRecent(limit, { ...readOptions, leafId: before.plan.leafId });
-    await postflight(before, readOptions.leafId, limit);
-    validateMessages(result.messages, window.entries, limit);
+    validateMessages(result.messages, window.entries, newestOnly ? Number.MAX_SAFE_INTEGER : limit);
     if (result.totalContentBytes !== before.plan.rawBytes) {
       throw new EffectiveHistoryError("changed", "Stock recent history raw total changed");
     }
@@ -264,14 +254,13 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
   return {
     async plan(readOptions: Pick<HistoryReadOptions, "leafId"> = {}): Promise<EffectiveHistoryPlan> {
       ceiling();
-      return (await preflight(readOptions.leafId)).plan;
+      return (await snapshot(readOptions.leafId)).plan;
     },
     async fits(reserve = 0, readOptions: Pick<HistoryReadOptions, "leafId"> = {}): Promise<boolean> {
       const limit = ceiling();
       finiteBytes(reserve, "History reserve");
-      const { plan } = await preflight(readOptions.leafId);
-      const available = Math.min(limit, ceiling());
-      return plan.complete && reserve <= available && plan.effectiveBytes <= available - reserve;
+      const { plan } = await snapshot(readOptions.leafId);
+      return plan.complete && reserve <= limit && plan.effectiveBytes <= limit - reserve;
     },
     /**
      * Metadata-only view for committing an ALREADY WRITTEN letter. Unlike a
@@ -279,7 +268,7 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
      * tail must not prevent folding the saved prefix. No body read is leased.
      */
     async recovery() {
-      const before = await preflight();
+      const before = await snapshot();
       if (!before.plan.complete) {
         throw new EffectiveHistoryError("incomplete", "History path is not verified through its root");
       }
@@ -287,10 +276,9 @@ export function installEffectiveHistory(session: HistorySession, options: Effect
       return Object.freeze({
         messages: Object.freeze(before.entries.map(({ id }) => Object.freeze({ id }))),
         compactions: Object.freeze(before.records.map((record) => Object.freeze({ ...record }))),
-        // Recheck the DEFAULT leaf too, not only the pinned old branch. The
-        // caller must await this immediately before its native addCompaction.
+        // The caller must await this immediately before its native addCompaction.
         async assertCurrent(): Promise<void> {
-          same(before, await preflight());
+          same(before, await snapshot());
         },
         containsRange(from: string, to: string): boolean {
           const start = indexById.get(from);

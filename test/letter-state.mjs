@@ -284,11 +284,17 @@ test("explicit retry resets only matching failed/blocked rows and preserves fore
   f.store.accepted("sent", 200);
   const untouched = ["blocked-other", "pending", "sent"].map((id) => f.store.get(id));
   f.reopen();
+  assert.equal(f.store.canRetry(null), false);
+  assert.equal(f.store.canRetry({ ...target, namespace: "elsewhere" }), false, "no failures for that target");
+  assert.equal(f.store.canRetry({ ...target, namespace: "other" }), true);
+  assert.equal(f.store.canRetry(target), true);
   assert.equal(f.store.retry(900_000, null), undefined);
   assert.equal(f.store.get("failed").status, "failed", "missing configuration does not reset any budget");
   assert.equal(f.store.retry(900_000, { ...target, url: `${target.url}/` }), undefined);
   assert.equal(f.store.get("failed").status, "failed", "URL must match exactly");
   assert.equal(f.store.retry(900_000, target), undefined);
+  assert.equal(f.store.canRetry(target), false, "nothing left for this target: no retry button");
+  assert.equal(f.store.canRetry({ ...target, namespace: "other" }), true);
   for (const id of ["failed", "blocked"]) {
     const row = f.store.get(id);
     assert.equal(row.status, "pending");

@@ -401,34 +401,35 @@ export class Resident extends Think<Env> {
     this.mcp.configureOAuthCallback({
       customHandler: (result) => callbackPage(result, this.mcp.listServers().find((server) => server.id === result.serverId)?.name ?? null)
     });
-    // Recovery steps are independent. Keep durable work for a later startup to retry,
-    // and never log scheduler exceptions: they may contain private payloads or keys.
+    // Recovery steps are independent. Keep durable work for a later startup to retry. Log only the
+    // error's kind, never its message: scheduler exceptions may contain private payloads or keys.
+    const kind = (error: unknown) => ({ error: error instanceof Error ? error.name : typeof error });
     try {
       if (this.letterJob()) await this.schedule(1, "resumeLetter", {}, { idempotent: true });
-    } catch {
-      console.error("startup: letter recovery scheduling failed; durable job retained for retry");
+    } catch (error) {
+      console.error("startup: letter recovery scheduling failed; durable job retained for retry", kind(error));
     }
     try {
       const memory = aeliosConfig(this.cfg);
       if (memory) this.letterState().resumeBlocked(memory, Date.now());
-    } catch {
-      console.error("startup: blocked letter restoration failed; durable deliveries retained for retry");
+    } catch (error) {
+      console.error("startup: blocked letter restoration failed; durable deliveries retained for retry", kind(error));
     }
     try {
       await this.armLetterDelivery();
-    } catch {
-      console.error("startup: letter delivery scheduling failed; durable deliveries retained for retry");
+    } catch (error) {
+      console.error("startup: letter delivery scheduling failed; durable deliveries retained for retry", kind(error));
     }
     try {
       for (const alarm of this.alarms().all()) {
         try {
           await this.armAlarm(alarm, alarm.next);
-        } catch {
-          console.error("startup: alarm scheduling failed; durable alarm retained for retry", { id: alarm.id });
+        } catch (error) {
+          console.error("startup: alarm scheduling failed; durable alarm retained for retry", { id: alarm.id, ...kind(error) });
         }
       }
-    } catch {
-      console.error("startup: alarm restoration failed; durable alarms retained for retry");
+    } catch (error) {
+      console.error("startup: alarm restoration failed; durable alarms retained for retry", kind(error));
     }
   }
 
@@ -1626,9 +1627,14 @@ export class Resident extends Think<Env> {
   }
 
   /** Safe status only: neither letter contents, provider responses, URLs nor keys leave this API. */
-  webLetter(): { write: WriteState | null; delivery: ReturnType<LetterStateStore["summary"]> } {
+  webLetter(): { write: WriteState | null; delivery: ReturnType<LetterStateStore["summary"]>; canRetry: boolean } {
     const latest = this.letters()[0];
-    return { write: this.letterState().readWrite() ?? (latest ? { state: "written", at: latest.at } : null), delivery: this.letterState().summary() };
+    return {
+      write: this.letterState().readWrite() ?? (latest ? { state: "written", at: latest.at } : null),
+      delivery: this.letterState().summary(),
+      // Letters for an earlier Aelios address or namespace stay counted, but retrying cannot send them.
+      canRetry: this.letterState().canRetry(aeliosConfig(this.cfg))
+    };
   }
 
   webRetryLetters(): ReturnType<Resident["webLetter"]> {
