@@ -26,7 +26,7 @@
   // Dashboard on every push. Every setting has a default in the code; set the ones you need in
   // Dashboard → Worker → Settings → Variables and Secrets (type Text). See README for the list:
   //   AI_GATEWAY_ID, TG_BOT_USERNAME, TG_ALLOWED, TIME_ZONE, DEBOUNCE_SECONDS,
-  //   KEEP_RECENT_TOKENS, LETTER_IDLE_MINUTES, CACHE_TTL, AELIOS_URL, AELIOS_NAMESPACE,
+  //   LETTER_TOKEN_THRESHOLD, LETTER_IDLE_MINUTES, CACHE_TTL, AELIOS_URL, AELIOS_NAMESPACE,
   //   WEB_SEARCH, WEB_FETCH, WEB_FETCH_MODEL, CHECKIN_SCHEDULE
   // Secrets (Dashboard → Worker → Settings → Variables and Secrets, type Secret):
   //   TG_BOT_TOKEN         from @BotFather

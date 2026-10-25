@@ -200,3 +200,63 @@ assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/web/alarms/remove', { id
 assert.equal(page.alarms.alarms.length, 0);
 assert.ok(html.includes('x-if="group.id === \'chat\'"') && html.includes('removeAlarm(alarm)'));
 console.log('PASS heartbeat three times and alarms off by default; alarms counted in the 聊天 row and deleted from the settings page');
+// Letter settings: one visible threshold, two conditions, and a fixed recent-chat budget instead of a second knob.
+const letterPage = vm.runInContext('resident()', context);
+const thinkingGroup = letterPage.CONFIG_GROUPS.find((group) => group.id === 'thinking');
+const threshold = thinkingGroup.fields.find((meta) => meta.key === 'LETTER_TOKEN_THRESHOLD');
+const idle = thinkingGroup.fields.find((meta) => meta.key === 'LETTER_IDLE_MINUTES');
+assert.ok(threshold, 'the token threshold has its own setting');
+assert.equal(letterPage.CONFIG_GROUPS.flatMap((group) => group.fields).filter((meta) => meta.key === threshold.key).length, 1);
+assert.equal(Boolean(threshold.more), false, 'the threshold is visible without opening 更多设置');
+assert.equal(letterPage.shown(threshold), true);
+assert.ok(!html.includes('KEEP_RECENT_TOKENS'), 'the retired recent-token setting is absent from the page');
+letterPage.config = { fields: [
+  { key: threshold.key, kind: 'text', value: '', fromWorker: '' },
+  { key: idle.key, kind: 'text', value: '', fromWorker: '' }
+] };
+assert.equal(letterPage.field(threshold.key).kind, 'text', 'use the ordinary settings input');
+assert.equal(letterPage.placeholderFor(threshold), '30000');
+assert.equal(letterPage.textInEffect(threshold), '30000');
+assert.match(letterPage.helpFor(threshold), /只接受大于 8000 的整数/);
+assert.match(letterPage.helpFor(threshold), /50000/);
+assert.match(letterPage.helpFor(threshold), /当前携带的聊天估算，含旧交接信、工具调用和结果、图片/);
+assert.match(letterPage.helpFor(threshold), /不含人设、工具定义和历史思考/);
+assert.match(letterPage.helpFor(threshold), /不按累计聊天总量算/);
+assert.match(letterPage.groupHint(thinkingGroup), /同时满足聊天达到 token 门槛、没人说话达到闲置时间（默认 55 分钟）/);
+assert.match(letterPage.groupHint(thinkingGroup), /连续聊天即使超过门槛也不会立即写/);
+assert.match(letterPage.groupHint(thinkingGroup), /固定保留最近约 8000 token 原始聊天，整轮问答不拆开；最近一轮本身超过 8000 时整轮保留/);
+assert.match(letterPage.groupHint(thinkingGroup), /交接信、人设、工具定义另算/);
+assert.match(letterPage.groupHint(thinkingGroup), /手动 \/handoff 不受门槛限制，但也要有旧内容可收/);
+assert.match(letterPage.helpFor(idle), /达到门槛后，也要等这么久没人说话/);
+assert.match(letterPage.helpFor(idle), /off 只靠手动 \/handoff/);
+assert.match(letterPage.helpFor(letterPage.metaOf('HEARTBEAT')), /还没达到写信门槛，或没有旧内容可收/);
+console.log('PASS letter settings expose the threshold, remove the old knob, and explain both conditions and fixed recent chat');
+// Exercise the real save/clear flow rather than the stub used by the earlier picker tests.
+const letterCalls = [];
+letterPage.notify = () => {};
+letterPage.api = async (path, options) => {
+  letterCalls.push([path, options.body]);
+  return { fields: letterPage.config.fields.map((field) => field.key === options.body.key ? { ...field, value: options.body.text } : field) };
+};
+letterPage.fillDrafts();
+letterPage.configDraft[idle.key] = '40';
+letterPage.configDraft[threshold.key] = '50000';
+assert.equal(letterPage.configDirty(threshold.key), true);
+await letterPage.saveConfig(threshold.key, letterPage.configDraft[threshold.key]);
+assert.equal(letterPage.textInEffect(threshold), '50000');
+assert.equal(letterPage.savedHere(threshold.key), true);
+assert.equal(letterPage.configDirty(threshold.key), false);
+assert.equal(letterPage.configDraft[idle.key], '40', 'saving the threshold leaves other drafts intact');
+await letterPage.saveConfig(threshold.key, '');
+assert.equal(letterPage.textInEffect(threshold), '30000');
+assert.equal(letterPage.savedHere(threshold.key), false);
+assert.equal(letterPage.configDraft[threshold.key], '');
+assert.deepEqual(JSON.parse(JSON.stringify(letterCalls)), [
+  ['/web/config', { key: 'LETTER_TOKEN_THRESHOLD', text: '50000' }],
+  ['/web/config', { key: 'LETTER_TOKEN_THRESHOLD', text: '' }]
+]);
+letterPage.field(threshold.key).fromWorker = '50000';
+assert.equal(letterPage.textInEffect(threshold), '50000');
+assert.equal(letterPage.placeholderFor(threshold), '50000');
+assert.equal(letterPage.tagText(threshold), 'Cloudflare：LETTER_TOKEN_THRESHOLD');
+console.log('PASS the letter threshold uses the normal save/clear API and inherits Cloudflare or the default');

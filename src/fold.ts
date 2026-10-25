@@ -1,10 +1,16 @@
-// Which turns a handoff letter folds away. Think's own compaction counts about 4 characters a token,
-// which suits English, but a Chinese character is about one token: with Chinese chat it kept roughly four
-// times KEEP_RECENT_TOKENS and, in a normal day's chat, found nothing older to fold, so no letter was written.
+// Which turns a handoff letter folds away. Chinese characters count roughly as one token;
+// other text as a quarter. The automatic trigger and the retained recent chat are separate quantities.
 import type { CompactionFunction, SessionMessage } from "agents/sessions";
 
-/** The conversation's first messages stay as they are, as in Think's own compaction. */
-const KEEP_HEAD = 3;
+/** Fixed recent original chat retained after a letter. Whole exchanges may take it a little over. */
+export const LETTER_KEEP_TOKENS = 8000;
+export const DEFAULT_LETTER_TOKEN_THRESHOLD = 30000;
+
+/** Ignore invalid Worker variables too, not only invalid values submitted through the settings page. */
+export function letterTokenThreshold(value: string | undefined): number {
+  const tokens = Number(value);
+  return Number.isSafeInteger(tokens) && tokens > LETTER_KEEP_TOKENS ? tokens : DEFAULT_LETTER_TOKEN_THRESHOLD;
+}
 /** Role and framing of one message. */
 const PER_MESSAGE = 4;
 /** A picture she sent, about what Claude charges for a photo of the size Telegram sends. */
@@ -42,42 +48,53 @@ export function tokensOf(message: SessionMessage): number {
   return tokens;
 }
 
+/** Current carried chat, including previous letters, images and tool results, but not system/tool definitions. */
+export function chatTokens(messages: readonly SessionMessage[]): number {
+  return messages.reduce((sum, message) => sum + tokensOf(message), 0);
+}
+
+export function reachesLetterThreshold(messages: readonly SessionMessage[], threshold: number): boolean {
+  return chatTokens(messages) >= threshold;
+}
+
 const isLetter = (message: SessionMessage) => message.id.startsWith("compaction_");
 
 /**
  * Where the kept part starts: the most recent keepRecentTokens, at least her last message and its answer,
  * beginning with her message so no answer is kept without what it answers.
  */
-export function keptFrom(messages: SessionMessage[], keepRecentTokens: number): number {
+export function keptFrom(messages: SessionMessage[], keepRecentTokens = LETTER_KEEP_TOKENS): number {
   let cut = messages.length;
   let kept = 0;
-  while (cut > KEEP_HEAD) {
-    const next = tokensOf(messages[cut - 1]);
+  while (cut > 0) {
+    // Budget whole exchanges, not individual messages: a tiny assistant reply must not pull in another
+    // large user message after the budget has already been filled by the two most recent exchanges.
+    let start = cut - 1;
+    while (start > 0 && messages[start].role !== "user") start -= 1;
+    while (start > 0 && messages[start - 1].role === "user") start -= 1;
+    const next = chatTokens(messages.slice(start, cut));
     if (kept + next > keepRecentTokens && cut < messages.length) break;
     kept += next;
-    cut -= 1;
+    cut = start;
   }
-  while (cut > KEEP_HEAD && (messages[cut]?.role !== "user" || messages[cut - 1].role === "user")) cut -= 1;
   return cut;
 }
 
 /**
- * The compaction the resident runs: everything between the first messages and the kept part goes into the letter.
- * The budget is asked for each time, so a change on the settings page applies to the next letter. `short` is told
- * when the whole conversation still fits in the kept part, so there was nothing to fold (the heartbeat's moment).
+ * Everything before the fixed recent-chat window goes into the letter, including the conversation's start.
+ * Earlier letters are already in the model's context, but their synthetic ids cannot be compaction endpoints.
+ * `short` is told when there is no original chat to fold.
  */
 export function foldIntoLetter(
-  budget: number | (() => number),
   write: (range: { fromMessageId: string; toMessageId: string }) => Promise<string>,
   short?: () => void
 ): CompactionFunction {
   return async (messages) => {
-    const keepRecentTokens = typeof budget === "function" ? budget() : budget;
-    const older = messages.slice(KEEP_HEAD, keptFrom(messages, keepRecentTokens)).filter((message) => !isLetter(message));
+    const older = messages.slice(0, keptFrom(messages)).filter((message) => !isLetter(message));
     if (!older.length) {
       console.log("letter: nothing older than the kept part to fold yet", {
-        carried: messages.reduce((sum, message) => sum + tokensOf(message), 0),
-        keepRecentTokens
+        carried: chatTokens(messages),
+        keepRecentTokens: LETTER_KEEP_TOKENS
       });
       short?.();
       return null;

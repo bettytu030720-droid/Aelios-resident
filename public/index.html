@@ -677,7 +677,7 @@ function resident() {
       { key: 'TG_ALLOWED', label: '谁能在 Telegram 上跟它说话', help: '@用户名或 chat id，逗号隔开。空着谁都不回。', placeholder: '@your_name' },
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
       { key: 'HEARTBEAT', label: '没动静时问它几次要不要找你', def: '3', picks: ['0', '1', '3', '5', '10'],
-        help: '到了写交接信的时候（默认 55 分钟没人说话）对话还短、没东西可收，就问它一句要不要找你，它不想就不发；之后每 55 分钟再问一次，问满这么多次或者你说话为止。每次都读热着的缓存，花的跟你发一条差不多，还把缓存续一小时。0 不问，最多 10。缓存选 5 分钟时不问。' },
+        help: '默认 55 分钟没人说话，当前携带的聊天还没达到写信门槛，或没有旧内容可收，就问它一句要不要找你，它不想就不发；之后每 55 分钟再问一次，问满这么多次或者你说话为止。每次都读热着的缓存，花的跟你发一条差不多，还把缓存续一小时。0 不问，最多 10。缓存选 5 分钟时不问。' },
       { key: 'ALARMS', label: '让它自己定闹钟', def: 'off', labels: ON_OFF,
         help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
@@ -713,12 +713,13 @@ function resident() {
       { key: 'PERPLEXITY_API_KEY', label: 'Perplexity key', more: true },
       { key: 'WEB_FETCH_MODEL', label: '压长网页用的模型', help: '主模型能填的 id 这里都能填。off 不压，只截断。', def: '@cf/qwen/qwen3-30b-a3b-fp8', more: true }
     ] },
-    { id: 'thinking', title: '思考和交接信', fields: [
+    { id: 'thinking', title: '思考和交接信', hint: '自动写信要同时满足聊天达到 token 门槛、没人说话达到闲置时间（默认 55 分钟）。连续聊天即使超过门槛也不会立即写。写后固定保留最近约 8000 token 原始聊天，整轮问答不拆开；最近一轮本身超过 8000 时整轮保留；交接信、人设、工具定义另算。手动 /handoff 不受门槛限制，但也要有旧内容可收。', fields: [
       { key: 'THINKING_EFFORT', label: 'Claude 想多久', help: 'low 最快最省，max 最久最贵。只管 Claude；换了以后第一句要重写一次缓存。', def: 'auto',
         labels: { auto: '模型默认' } },
       { key: 'CACHE_TTL', label: 'Claude 的缓存留多久', help: '1 小时的写入贵一点，停一会儿再聊还能读缓存。', def: '1h', labels: { '1h': '1 小时', '5m': '5 分钟' } },
-      { key: 'LETTER_IDLE_MINUTES', label: '多久没动静写交接信', help: '分钟，最多比缓存时长少 1 分钟。off 只靠 /handoff。', def: '55（缓存 5m 时 4）', more: true },
-      { key: 'KEEP_RECENT_TOKENS', label: '写信后原样留着最近多少 token', help: '中文一字约 1 token，更早的才收进信里。', def: '8000', more: true }
+      { key: 'LETTER_TOKEN_THRESHOLD', label: '写交接信的聊天 token 门槛', def: '30000',
+        help: '只接受大于 8000 的整数，默认 30000，也可设为 50000。按当前携带的聊天估算，含旧交接信、工具调用和结果、图片，不含人设、工具定义和历史思考；不按累计聊天总量算。' },
+      { key: 'LETTER_IDLE_MINUTES', label: '写信前要闲置多久（分钟）', help: '聊天达到门槛后，也要等这么久没人说话才自动写。最多比缓存时长少 1 分钟。off 只靠手动 /handoff。', def: '55（缓存 5m 时 4）', more: true }
     ] },
     { id: 'tasks', title: '云端 Claude Code', hint: '它的手脚：你叫它改代码、做文件、查资料时，它把活写成一张单子，交给你 claude.ai 上的一个定时任务，开一个云端 Claude Code 会话去干，用你订阅的额度。干完结果交回来，它再告诉你。会话在 claude.ai 里也看得到，可以点开接着聊。', fields: [
       { key: 'CLOUD_TASKS', label: '用云端 Claude Code', def: 'off', labels: ON_OFF, help: '要有 Claude 的付费订阅（Pro、Max 这些）才能用。没有就关着，它不会提这件事。' },

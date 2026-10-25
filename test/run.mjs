@@ -3,7 +3,7 @@
 // Usage: node test/run.mjs [phase]
 //   main     (default) everything that needs one fresh Worker
 //   checkin  needs a schedule (start wrangler with --var CHECKIN_SCHEDULE:"every 1 minute")
-//   idle     needs a short quiet time (start wrangler with --var LETTER_IDLE_MINUTES:0.05)
+//   idle     threshold AND quiet time, fixed retention (start with --var LETTER_IDLE_MINUTES:0.05)
 //   crash-1  sends a slow reply; kill workerd once the first bubble is out, restart, then run crash-2
 //   crash-2  checks what she got after the restart
 //   migrate  needs the old model variable (start wrangler with --var MODEL:fake)
@@ -16,7 +16,7 @@
 //   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
 //   sites    keys for sites web_fetch reads, set on the settings page
 //   heartbeat  going quiet while the chat is short (start wrangler with --var LETTER_IDLE_MINUTES:0.05
-//              --var KEEP_RECENT_TOKENS:100000 --var ALARM_MINUTE_SECONDS:0.05)
+//              --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05)
 //   alarms   alarms the resident sets itself (start wrangler with --var ALARM_MINUTE_SECONDS:0.05)
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -84,6 +84,16 @@ async function waitForSends(before, count, timeoutMs = 20000) {
       throw new Error(`timed out: wanted ${count} new sends, have ${all.length - before}: ${JSON.stringify(all.slice(before))}`);
     }
     await sleep(200);
+  }
+}
+
+let fillerId = 0;
+/** Use production-sized chat windows, not a test-only override of the fixed 8000-token retention. */
+async function fillChat(count = 3) {
+  for (let i = 0; i < count; i += 1) {
+    const response = await web("/web/say", "test-web-key", { text: `交接信测试材料 ${++fillerId}：${"文".repeat(3850)}` });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: "completed" });
   }
 }
 
@@ -223,7 +233,8 @@ if (phase === "main") {
     assert.deepEqual(await waitForSends(before, 1), ["还没写过交接信。"]);
   });
 
-  await step("/handoff writes a letter, and the conversation carries it", async () => {
+  await step("/handoff writes a letter below the automatic threshold, and the conversation carries it", async () => {
+    await fillChat();
     let before = (await sent()).length;
     await post("/handoff");
     const [out] = await waitForSends(before, 1, 30000);
@@ -275,6 +286,7 @@ if (phase === "main") {
     const count = await fetched();
     assert.equal(await carried(), first, "a warm cache keeps the packet it has");
     assert.equal(await fetched(), count, "and Aelios is not asked again");
+    await fillChat();
     const before = (await sent()).length;
     await post("/handoff");
     const [letter] = await waitForSends(before, 1, 30000);
@@ -356,6 +368,7 @@ if (phase === "main") {
   });
 
   await step("with Aelios connected, the chat goes out through Aelios, which recalls and records it", async () => {
+    await fillChat();
     await fetch(`${MOCK}/__reset`);
     let response = await web("/web/model", "test-web-key", { text: "anthropic/claude-test" });
     assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
@@ -469,12 +482,20 @@ if (phase === "main") {
     assert.deepEqual(field("AELIOS_API_KEY"), { key: "AELIOS_API_KEY", kind: "secret", value: "", fromWorker: "", saved: false, workerHas: true });
     assert.ok(!JSON.stringify(config).includes("test-key"), "no secret reaches the page");
     assert.equal(field("TIME_ZONE").fromWorker, "Asia/Shanghai");
+    assert.equal(field("KEEP_RECENT_TOKENS"), undefined, "the old retention setting is no longer editable");
+    config = await (await web("/web/config", "test-web-key", { key: "LETTER_TOKEN_THRESHOLD", text: "50000" })).json();
+    assert.equal(field("LETTER_TOKEN_THRESHOLD").value, "50000");
+    config = await (await web("/web/config", "test-web-key", { key: "LETTER_TOKEN_THRESHOLD", text: "" })).json();
+    assert.equal(field("LETTER_TOKEN_THRESHOLD").value, "");
     assert.ok(!config.fields.some((f) => ["TG_BOT_TOKEN", "TG_WEBHOOK_SECRET", "WEB_KEY"].includes(f.key)));
     for (const [key, text, problem] of [
       ["TIME_ZONE", "Mars/Olympus", /时区/],
-      ["KEEP_RECENT_TOKENS", "abc", /大于 0/],
-      ["KEEP_RECENT_TOKENS", "Infinity", /大于 0/],
-      ["KEEP_RECENT_TOKENS", "1e309", /大于 0/],
+      ["LETTER_TOKEN_THRESHOLD", "abc", /大于 8000 的整数/],
+      ["LETTER_TOKEN_THRESHOLD", "Infinity", /大于 8000 的整数/],
+      ["LETTER_TOKEN_THRESHOLD", "1e309", /大于 8000 的整数/],
+      ["LETTER_TOKEN_THRESHOLD", "8000", /大于 8000 的整数/],
+      ["LETTER_TOKEN_THRESHOLD", "9000.5", /大于 8000 的整数/],
+      ["KEEP_RECENT_TOKENS", "10", /没有这个设置/],
       ["LETTER_IDLE_MINUTES", "Infinity", /分钟数/],
       ["CACHE_TTL", "2h", /只能填/],
       ["AELIOS_URL", "ftp://x", /https/],
@@ -590,36 +611,66 @@ if (phase === "checkin") {
 }
 
 if (phase === "idle") {
-  await step("when she goes quiet, a letter is written by itself, silently, and carried on", async () => {
-    for (let i = 0; i < 3; i += 1) {
-      const mark = (await sent()).length;
-      await post(`第 ${i} 句：今天也很想你。`);
-      await waitForSends(mark, 2);
-    }
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const letters = async () => (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
+  await web("/web/config", KEY, { key: "HEARTBEAT", text: "0" });
+
+  await step("quiet time alone does not write a letter, even with more than 8000 tokens of chat", async () => {
+    await fillChat(); // ~11600 tokens: foldable, but below the 30000 automatic threshold.
+    await sleep(6000);
+    assert.equal((await letters()).length, 0);
+    const { data } = await (await web("/web/messages", KEY)).json();
+    assert.ok(!data.some((line) => line.kind === "letter"));
+  });
+
+  await step("50000 and 30000 are trigger settings, not retention budgets", async () => {
+    const response = await web("/web/config", KEY, { key: "LETTER_TOKEN_THRESHOLD", text: "50000" });
+    assert.equal(response.status, 200);
+    await fillChat(6); // ~35000 total: above 30000 but below the selected 50000.
+    await sleep(6000);
+    assert.equal((await letters()).length, 0);
+    const changed = await web("/web/config", KEY, { key: "LETTER_TOKEN_THRESHOLD", text: "30000" });
+    assert.equal(changed.status, 200);
+    assert.equal((await web("/web/config", KEY, { key: "HEARTBEAT", text: "3" })).status, 200);
+  });
+
+  await step("crossing the threshold while chatting does not write immediately; a new message resets the quiet timer", async () => {
+    await fillChat(1);
+    await sleep(500);
+    assert.equal((await letters()).length, 0, "a threshold is not an immediate trigger");
+    await fillChat(1);
+    await sleep(1000);
+    assert.equal((await letters()).length, 0, "still within the new message's quiet time");
+  });
+
+  await step("threshold AND quiet time writes silently, keeps about 8000 original tokens and carries the letter", async () => {
     const before = (await sent()).length;
     const start = Date.now();
     let ingest = [];
     while (!ingest.length) {
-      if (Date.now() - start > 20000) throw new Error("no letter after the quiet time");
-      await sleep(300);
-      ingest = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
+      if (Date.now() - start > 20000) throw new Error("no letter after threshold and quiet time");
+      await sleep(200);
+      ingest = await letters();
     }
     assert.match(ingest[0].body.messages[0].content, /^（交接信）亲爱的下一个我.*（前文和上一轮一字不差）（缓存标记在上一轮那句）/);
-    assert.deepEqual((await sent()).slice(before), [], "the idle letter sends her nothing");
-    const { data: lines } = await (await fetch(`${WORKER}/web/messages`, { headers: { "x-web-key": "test-web-key" } })).json();
-    assert.ok(lines.some((l) => l.kind === "letter"), JSON.stringify(lines));
-    assert.ok(!lines.some((l) => l.text.includes("handoff letter")), "the letter prompt is gone again");
+    assert.deepEqual((await sent()).slice(before), [], "the idle letter sends her nothing, even with heartbeat enabled");
+    const { data: lines } = await (await web("/web/messages", KEY)).json();
+    assert.equal(lines.filter((line) => line.kind === "letter").length, 1);
+    const original = lines.filter((line) => line.kind === "chat");
+    const chars = original.reduce((sum, line) => sum + line.text.length, 0);
+    assert.ok(chars > 7000 && chars < 8100, `fixed recent chat, not the 30000 trigger: ${chars} chars`);
+    assert.ok(!original.some((line) => line.text.startsWith("交接信测试材料 1：")), "the first messages are folded too");
+    assert.ok(!lines.some((line) => line.text.includes("time to write a handoff letter")), "the letter prompt is gone again");
+    assert.equal((await web("/web/config", KEY, { key: "HEARTBEAT", text: "0" })).status, 200);
     const mark = (await sent()).length;
     await post("交接信在吗");
     assert.deepEqual(await waitForSends(mark, 1), ["交接信在。"]);
   });
-  await step("after a letter, nothing more happens until she writes again", async () => {
+
+  await step("after a letter, a short new exchange does not cause another letter at the next quiet time", async () => {
     await sleep(8000);
-    const letters = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
-    assert.equal(letters.length, 2, "one letter per quiet time after she wrote");
-    await sleep(8000);
-    const later = (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
-    assert.equal(later.length, 2);
+    assert.equal((await letters()).length, 1);
   });
 }
 
@@ -1489,7 +1540,8 @@ if (phase === "heartbeat") {
   const KEY = "test-web-key";
   const letters = async () => (await log()).filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident:letter");
   await fetch(`${MOCK}/__reset`);
-  await step("she goes quiet while the chat is still short: a heartbeat asks, and it reaches out", async () => {
+  await step("below the letter threshold, even with foldable older chat: a heartbeat asks and reaches out", async () => {
+    await fillChat();
     const mark = (await sent()).length;
     await post("今天好累。");
     await waitForSends(mark, 2);
@@ -1497,7 +1549,7 @@ if (phase === "heartbeat") {
     const ingest = await checkinsInAelios(1);
     assert.equal(ingest.length, 1);
     assert.deepEqual(ingest[0].body.messages, [{ role: "assistant", content: "在忙吗？\n\n想你了。" }]);
-    assert.equal((await letters()).length, 0, "nothing to fold, so no letter");
+    assert.equal((await letters()).length, 0, "below the configured threshold, so no letter");
   });
   await step("she writes back: the quiet time is over, and the next one counts from 1 again", async () => {
     const mark = (await sent()).length;
@@ -1525,7 +1577,7 @@ if (phase === "heartbeat") {
     const before = (await sent()).length;
     await post("/status");
     const [out] = await waitForSends(before, 1);
-    assert.match(out, /心跳：开，没动静 1 分钟、对话还短时问它要不要找你，一段沉默最多 3 次/);
+    assert.match(out, /心跳：开，没动静 1 分钟、尚不需要写信时问它要不要找你，一段沉默最多 3 次/);
     assert.match(out, /闹钟：关/);
   });
   await step("the count is set on the settings page: 0 never asks, more than 10 is refused", async () => {

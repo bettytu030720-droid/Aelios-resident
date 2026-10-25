@@ -53,7 +53,8 @@ import {
 import { claudeOnRunPath } from "./claude-run";
 import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
 import { customModel, isCustom } from "./custom";
-import { foldIntoLetter, tokensOf } from "./fold";
+import { LETTER_KEEP_TOKENS, chatTokens, foldIntoLetter, letterTokenThreshold, reachesLetterThreshold } from "./fold";
+import { resumeLetterCompaction } from "./letter-recovery";
 import { withPictures, type Download } from "./pictures";
 import {
   chatAction,
@@ -1479,11 +1480,11 @@ export class Resident extends Think<Env> {
   }
 
   override configureSession(session: ThinkSession) {
-    // No token limit: a letter is written when she has been quiet for a while (idleLetter) or on /handoff.
+    // No immediate token-triggered compaction: automatic letters need BOTH the threshold and quiet time.
+    // /handoff may compact sooner, but always keeps the same fixed recent-chat window.
     return session
       .onCompaction(
         foldIntoLetter(
-          () => this.keepRecentTokens(),
           (range) => this.letterTurn(range),
           () => {
             this.#short = true;
@@ -1493,11 +1494,11 @@ export class Resident extends Think<Env> {
       .onCompactionError((error) => console.error("letter: compaction failed", { error: String(error) }));
   }
 
-  private keepRecentTokens(): number {
-    return num(this.cfg.KEEP_RECENT_TOKENS, 8000);
+  private letterThreshold(): number {
+    return letterTokenThreshold(this.cfg.LETTER_TOKEN_THRESHOLD);
   }
 
-  /** Set by the fold when the whole conversation was still in the kept part, so the letter had nothing to fold. */
+  /** No automatic letter yet: below its threshold, or no older original chat to fold. */
   #short = false;
   /** Why the letter being written is written. Set while compact() runs. */
   #letterReason: "idle" | "handoff" = "handoff";
@@ -1609,9 +1610,7 @@ export class Resident extends Think<Env> {
       return;
     }
     await this.takeOut(job.promptId);
-    const compactions = await this.session.getCompactions();
-    const exists = compactions.some((item) => item.toMessageId === job.toMessageId && item.summary === job.summary);
-    if (!exists) await this.session.addCompaction(job.summary, job.fromMessageId, job.toMessageId);
+    await resumeLetterCompaction(this.session, { ...job, summary: job.summary });
     this.setWindow("folded", 1);
     this.deleteLetterJob(job.promptId);
   }
@@ -1661,11 +1660,19 @@ export class Resident extends Think<Env> {
     // Cleared before, not after: a message that arrives while the letter is written sets it again.
     await this.ctx.storage.put("wrote_since_letter", false);
     try {
+      if (reason === "idle" && !reachesLetterThreshold(await this.session.getHistory(), this.letterThreshold())) {
+        this.#short = true;
+        return false;
+      }
       const folded = Boolean(await this.session.compact());
       // The older turns are gone from the prompt, so the next turn writes the cache anew: a new window opens there.
       if (folded) this.setWindow("folded", 1);
       const job = this.letterJob();
-      if (job?.summary) this.deleteLetterJob(job.promptId);
+      if (job?.summary) {
+        // Also retire the old always-kept head on deployments whose earlier SDK compactions start after it.
+        await resumeLetterCompaction(this.session, { ...job, summary: job.summary });
+        this.deleteLetterJob(job.promptId);
+      }
       return folded;
     } finally {
       this.#letterReason = "handoff";
@@ -1691,8 +1698,8 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * Called LETTER_IDLE_MINUTES (55) after the last turn: she has gone quiet, and the conversation is
-   * still in the one-hour cache, so the letter costs little to write. Nothing more happens until she writes again.
+   * Called LETTER_IDLE_MINUTES (55) after the last turn. Only write if the carried chat also reaches
+   * LETTER_TOKEN_THRESHOLD; otherwise this is the heartbeat's moment, even when there is older chat to fold.
    */
   async idleLetter(): Promise<void> {
     await this.ctx.storage.delete("idle_letter");
@@ -1705,7 +1712,7 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * The heartbeat (HEARTBEAT): when the letter's time comes and the conversation is still too short to fold, the
+   * The heartbeat (HEARTBEAT): when the quiet time ends but the automatic letter is not due yet, the
    * resident is asked whether it would like to reach out, and again each LETTER_IDLE_MINUTES after, up to HEARTBEAT
    * times (3 unless set) until they write. Each one reads the cache the one before kept warm, so each costs about
    * one message. Only with the one-hour cache: with five minutes it would be gone by then.
@@ -1901,7 +1908,7 @@ export class Resident extends Think<Env> {
   private async status(): Promise<string> {
     const history = await this.session.getHistory();
     const compactions = await this.session.getCompactions();
-    const tokens = history.reduce((sum, message) => sum + tokensOf(message), 0);
+    const tokens = chatTokens(history);
     const model = this.savedModel() || this.defaultModel;
     const [persona] = this.personas(1);
     return [
@@ -1909,8 +1916,8 @@ export class Resident extends Think<Env> {
       persona?.text
         ? `人设：网页上填的，${persona.text.length} 字，${stamp(new Date(persona.at), this.tz)} 改的`
         : "人设：还没填，先用默认的一句（网页门右上角的铅笔）",
-      `对话：${history.length} 条，约 ${tokens} token（最近 ${this.keepRecentTokens()} token 原样留着，更早的才收进交接信）`,
-      `交接信：${idleMinutes(this.cfg) ? `没动静 ${idleMinutes(this.cfg)} 分钟后趁缓存还在写一封，` : ""}/handoff 随时写；缓存 ${promptCache(this.cfg).anthropic.cacheControl.ttl}`,
+      `对话：${history.length} 条，约 ${tokens} token（写信后固定保留最近约 ${LETTER_KEEP_TOKENS} token 原始聊天，整轮问答不拆开；交接信另算）`,
+      `交接信：${idleMinutes(this.cfg) ? `对话达到 ${this.letterThreshold()} token 且没动静 ${idleMinutes(this.cfg)} 分钟才自动写，` : "自动写信已关，"}/handoff 可提前写；缓存 ${promptCache(this.cfg).anthropic.cacheControl.ttl}`,
       `已写交接信：${compactions.length} 封`,
       usageLine(await this.lastUsage()),
       `长期记忆 Aelios：${
@@ -1926,7 +1933,7 @@ export class Resident extends Think<Env> {
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
       `心跳：${
         this.heartbeatOn()
-          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、对话还短时问它要不要找你，一段沉默最多 ${this.heartbeatTimes()} 次`
+          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、尚不需要写信时问它要不要找你，一段沉默最多 ${this.heartbeatTimes()} 次`
           : !this.heartbeatTimes()
             ? "关"
             : "不问（当前模型没有 Anthropic 缓存，或缓存 5 分钟、交接信关着）"
