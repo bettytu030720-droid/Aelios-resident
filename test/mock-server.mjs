@@ -142,7 +142,9 @@ const server = http.createServer(async (req, res) => {
       return res.end(WEBM);
     }
     res.writeHead(200, { "content-type": "image/jpeg" });
-    return res.end(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]));
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
+    // A synthetic payload above Think's 32 KiB media-eviction threshold (no real model decodes it).
+    return res.end(file[1].includes("cache-large-photo") ? Buffer.concat([jpeg, Buffer.alloc(40 * 1024)]) : jpeg);
   }
 
   const tg = url.pathname.match(/^\/bot[^/]+\/(\w+)$/);

@@ -30,10 +30,11 @@ import {
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { webSearchTool } from "agents/websearch/ai-sdk";
-import { generateText, tool, type ToolSet, type UIMessage } from "ai";
+import { generateText, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
+import { historyAnchor, historyCutoff, historyForWindow, letterHistoryFits } from "./cache-history";
 import { fakeModel } from "./fake-model";
 import { CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import {
@@ -290,6 +291,11 @@ function stampEvent(event: MessengerEvent, timeZone: string): MessengerEvent {
 }
 
 export class Resident extends Think<Env> {
+  // Think otherwise rewrites old tool results/text every eight messages and queues media eviction.
+  // Both change an already-cached prefix. Our read-only view reduces history once per cache window.
+  override truncationStep = Infinity;
+  override mediaEviction = false;
+
   // Messages sent within DEBOUNCE_SECONDS of each other are answered as one turn.
   // A class field: the messenger runtime reads it before onStart.
   override messengerConcurrency: MessengerConcurrency = {
@@ -1409,15 +1415,35 @@ export class Resident extends Think<Env> {
         await this.stopHeartbeats();
       }
     }
+    // Recheck after the auxiliary prompt has actually been persisted, including concurrent appends.
+    if (letter && !letterHistoryFits(await this.session.getHistoryRowStats(), this.hydrationByteBudget, 0)) {
+      throw new Error("Letter history exceeds the safe hydration budget; original chat was not folded.");
+    }
+    const messages = this.windowHistory(ctx.messages);
     const boot = await this.boot();
     // Only our own tools: Think's workspace file tools would cost tokens every turn and do nothing here.
     const own = Object.keys(this.getTools());
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
-      // The letter's turn reads the cache and writes nothing to it (markedForLetter): the marker stays where it was.
-      ...(this.#letterPromptId ? { messages: markedForLetter(ctx.messages, this.letterCache()) } : { providerOptions: promptCache(this.cfg) })
+      // A letter reuses the previous breakpoint, never placing a new marker on its auxiliary prompt.
+      ...(this.#letterPromptId ? { messages: markedForLetter(messages, this.letterCache()) } : { messages, providerOptions: promptCache(this.cfg) })
     };
+  }
+
+  /** Persist only the view boundary, not another copy of private messages or media. Restarts keep the same view. */
+  private windowHistory(messages: ModelMessage[]): ModelMessage[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_cache_history (id INTEGER PRIMARY KEY CHECK (id = 1), opened_at INTEGER NOT NULL, cutoff INTEGER NOT NULL, anchor TEXT NOT NULL)`;
+    const [saved] = this.sql<{ opened_at: number; cutoff: number; anchor: string }>`SELECT opened_at, cutoff, anchor FROM res_cache_history WHERE id = 1`;
+    // A letter reads the preceding turn's view, including when the cache has expired. Fold only AFTER writing it.
+    const openedAt = this.#letterPromptId && saved ? saved.opened_at : this.cacheWindow();
+    // Model-message indices are not Sessions IDs. A branch/deletion/byte-budget slide invalidates the coordinate.
+    const reusable = saved?.opened_at === openedAt && saved.cutoff <= messages.length && saved.anchor === historyAnchor(messages, saved.cutoff);
+    const cutoff = reusable ? saved.cutoff : historyCutoff(messages);
+    if (!reusable) {
+      this.sql`INSERT OR REPLACE INTO res_cache_history VALUES (1, ${openedAt}, ${cutoff}, ${historyAnchor(messages, cutoff)})`;
+    }
+    return historyForWindow(messages, cutoff);
   }
 
   /** Token use of the latest model step, so /status and the web page can show whether the prompt cache is hit. */
@@ -1479,7 +1505,9 @@ export class Resident extends Think<Env> {
     const saved = this.windowState();
     const now = Date.now();
     const current = { usedAt: saved.get("used_at") ?? null, openedAt: saved.get("opened_at") ?? null, folded: saved.get("folded") === 1 };
-    if (current.openedAt !== null && !opensWindow(current, now, cacheTtlMs(this.cfg.CACHE_TTL))) return current.openedAt;
+    // getTools() calls this BEFORE beforeTurn. In-flight/recovered letters must keep the previous view,
+    // menus and boot packet even at TTL expiry; the next ordinary turn may open a new window after folding.
+    if (current.openedAt !== null && (this.#letterPromptId || this.letterJob() || !opensWindow(current, now, cacheTtlMs(this.cfg.CACHE_TTL)))) return current.openedAt;
     this.setWindow("opened_at", now);
     // Counted as used from now on: the rest of this turn stays in the window it opened.
     this.setWindow("used_at", now);
@@ -1769,6 +1797,13 @@ export class Resident extends Think<Env> {
     // Cleared before, not after: a message that arrives while the letter is written sets it again.
     await this.ctx.storage.put("wrote_since_letter", false);
     try {
+      // compact() selects a range from complete history, but Think hydrates model input under a byte budget.
+      // Never summarize/fold messages the writer might not receive. Inspect sizes, not the payloads.
+      if (!letterHistoryFits(await this.session.getHistoryRowStats(), this.hydrationByteBudget)) {
+        const error = "原始聊天超过安全装载范围，无法确认写信模型能读到全部内容；本次没有收起聊天。";
+        this.failLetter(error);
+        return { status: "failed", error };
+      }
       if (reason === "idle" && !reachesLetterThreshold(await this.session.getHistory(), this.letterThreshold())) {
         this.#short = true;
         return { status: "empty" };
