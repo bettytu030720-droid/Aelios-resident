@@ -1,4 +1,4 @@
-// Real agents@0.29 Scheduler + Lifecycle job queue on in-memory node:sqlite.
+// Real agents@0.30.1 Scheduler + Lifecycle job queue on in-memory node:sqlite.
 // Usage (Node 22+): node test/letter-recovery-schedule.mjs
 // No Resident import, Worker, network, generated files, or real five-second wait.
 import assert from "node:assert/strict";
@@ -10,10 +10,10 @@ import { build } from "esbuild";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const sdkPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.resolve("agents")), "utf8"));
-assert.equal(sdkPackage.version, "0.29.0", "re-review the real SDK fixture before changing its version");
+assert.equal(sdkPackage.version, "0.30.1", "re-review the real SDK fixture before changing its version");
 
 // Bundle the installed SDK unchanged. Lifecycle's cloudflare:workers import is
-// side-effect-only in 0.29; Node has no such module. Remove only that runtime
+// side-effect-only in 0.30.1; Node has no such module. Remove only that runtime
 // import, not Scheduler, Lifecycle, JobQueue, callback dispatch, or alarm policy.
 const compiled = await build({
   stdin: {
@@ -87,7 +87,7 @@ async function fixture(t, retry) {
       storage,
       blockConcurrencyWhile: (fn) => fn(),
     },
-    // Agent.schedule in agents@0.29 delegates directly to scheduler.set with
+    // Agent.schedule in agents@0.30.1 delegates directly to scheduler.set with
     // these four arguments. Record inputs/results, but do not fake scheduling.
     async schedule(...args) {
       const result = await scheduler.set(...args);

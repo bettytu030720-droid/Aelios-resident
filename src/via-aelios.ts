@@ -80,7 +80,8 @@ export function modelsOf(body: unknown): AeliosModel[] {
  * Throws when Aelios cannot be reached or refuses the key.
  */
 export async function listModels(memory: AeliosConfig, signal?: AbortSignal): Promise<AeliosModels> {
-  const response = await fetch(`${aeliosBase(memory)}/models`, { headers: { authorization: `Bearer ${memory.key}` }, signal });
+  // Do not forward the key to a redirect target, even another path on the same origin.
+  const response = await fetch(`${aeliosBase(memory)}/models`, { headers: { authorization: `Bearer ${memory.key}` }, signal, redirect: "manual" });
   if (!response.ok) throw new Error(`Aelios answered ${response.status}`);
   return { models: modelsOf(await response.json()), curated: response.headers.get("x-aelios-models") === "list" };
 }

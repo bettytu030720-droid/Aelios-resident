@@ -78,7 +78,7 @@ test("empty database and missing ids return null/zero, with synchronous void wri
   assert.equal(store.accepted("missing", 100), undefined);
   assert.equal(store.attemptFailed("missing", "网络错误", 100), undefined);
   assert.equal(store.block("missing", "目标未配置"), undefined);
-  assert.equal(store.retry(100), undefined);
+  assert.equal(store.retry(100, target), undefined);
   assert.equal(store.resumeBlocked(target, 100), undefined);
   assert.equal(store.write({ state: "empty", at: 100 }), undefined);
 });
@@ -99,7 +99,7 @@ test("enqueue is INSERT OR IGNORE: payload, target, timestamp and progress never
   unchanged();
   f.store.block(input.id, "目标未配置");
   unchanged();
-  f.store.retry(200);
+  f.store.retry(200, target);
   exhaust(f.store, input.id, 200);
   unchanged();
   f.store.accepted(input.id, 999_999);
@@ -218,7 +218,7 @@ test("accepted clears schedule/error, persists sentAt and cannot be regressed by
   f.store.accepted("letter-1", 130);
   f.store.attemptFailed("letter-1", "迟到的错误", 140);
   f.store.block("letter-1", "迟到的配置检查");
-  f.store.retry(150);
+  f.store.retry(150, target);
   f.store.resumeBlocked(target, 160);
   assert.equal(f.store.claim("letter-1", 999_999), null);
   assert.equal(f.store.nextAt(), null);
@@ -271,7 +271,7 @@ test("automatic resume does not bypass the six-attempt budget", (t) => {
   assert.equal(store.get("letter-1").attempts, 6);
 });
 
-test("explicit retry resets every failed/blocked row but leaves pending leases and sent rows alone", (t) => {
+test("explicit retry resets only matching failed/blocked rows and preserves foreign jobs, leases and sent rows", (t) => {
   const f = fixture(t);
   for (const id of ["failed", "blocked", "blocked-other", "pending", "sent"]) {
     f.store.enqueue(letter(id, 100, id === "blocked-other" ? { ...target, namespace: "other" } : target));
@@ -282,10 +282,14 @@ test("explicit retry resets every failed/blocked row but leaves pending leases a
   f.store.block("blocked-other", "目标不同");
   f.store.claim("pending", 100);
   f.store.accepted("sent", 200);
-  const untouched = ["pending", "sent"].map((id) => f.store.get(id));
+  const untouched = ["blocked-other", "pending", "sent"].map((id) => f.store.get(id));
   f.reopen();
-  assert.equal(f.store.retry(900_000), undefined);
-  for (const id of ["failed", "blocked", "blocked-other"]) {
+  assert.equal(f.store.retry(900_000, null), undefined);
+  assert.equal(f.store.get("failed").status, "failed", "missing configuration does not reset any budget");
+  assert.equal(f.store.retry(900_000, { ...target, url: `${target.url}/` }), undefined);
+  assert.equal(f.store.get("failed").status, "failed", "URL must match exactly");
+  assert.equal(f.store.retry(900_000, target), undefined);
+  for (const id of ["failed", "blocked"]) {
     const row = f.store.get(id);
     assert.equal(row.status, "pending");
     assert.equal(row.attempts, 0);
@@ -293,7 +297,6 @@ test("explicit retry resets every failed/blocked row but leaves pending leases a
     assert.equal(row.lastError, null);
     assert.equal(row.sentAt, null);
     assert.equal(row.text, letter(id).text);
-    if (id === "blocked-other") assert.equal(row.namespace, "other");
   }
   for (const row of untouched) assert.deepEqual(f.store.get(row.id), row);
   f.reopen();
@@ -388,7 +391,7 @@ test("SQL failures propagate rather than reporting delivery/write success", () =
     () => store.enqueue(letter()), () => store.get("id"), () => store.due(100),
     () => store.claim("id", 100), () => store.accepted("id", 100),
     () => store.attemptFailed("id", "错误", 100), () => store.block("id", "错误"),
-    () => store.retry(100), () => store.resumeBlocked(target, 100),
+    () => store.retry(100, target), () => store.resumeBlocked(target, 100),
     () => store.nextAt(), () => store.summary(),
     () => store.write({ state: "failed", at: 100 }), () => store.readWrite(),
   ]) assert.throws(call, (caught) => caught === error);

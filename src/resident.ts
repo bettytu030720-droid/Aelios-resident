@@ -34,9 +34,12 @@ import { generateText, tool, type ModelMessage, type ToolSet, type UIMessage } f
 import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
-import { historyAnchor, historyCutoff, historyForWindow, letterHistoryFits } from "./cache-history";
+import { historyAnchor, historyCutoff, historyForWindow } from "./cache-history";
+import { installEffectiveHistory } from "./effective-history";
+import { historyPathComplete } from "./history-path";
+import { readAuxiliaryAnswer, removeAuxiliaryTurn } from "./letter-auxiliary";
 import { fakeModel } from "./fake-model";
-import { CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import { ALARM_PREFIX, CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, LETTER_PREFIX, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import {
   AlarmStore,
   CANCEL_ALARM_DESCRIPTION,
@@ -334,18 +337,28 @@ export class Resident extends Think<Env> {
   #theirTurns = new Set<string>();
   #readOutside = new Set<string>();
 
+  // Lazily created once per object lifetime; mark ready only after the DDL succeeds.
+  private turnTableReady = false;
+  private letterTableReady = false;
+
   // Kept in SQLite too, so a turn that resumes after a restart still knows what it was.
   private markTurn(id: string, flag: "their" | "outside"): void {
-    this.sql`CREATE TABLE IF NOT EXISTS res_turn_flags (request_id TEXT NOT NULL, flag TEXT NOT NULL, created_at INTEGER NOT NULL,
-      PRIMARY KEY (request_id, flag))`;
+    if (!this.turnTableReady) {
+      this.sql`CREATE TABLE IF NOT EXISTS res_turn_flags (request_id TEXT NOT NULL, flag TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (request_id, flag))`;
+      this.turnTableReady = true;
+    }
     this.sql`INSERT OR IGNORE INTO res_turn_flags VALUES (${id}, ${flag}, ${Date.now()})`;
     if (flag === "their") this.#theirTurns.add(id);
     if (flag === "outside") this.#readOutside.add(id);
   }
 
   private restoreTurn(id: string): void {
-    this.sql`CREATE TABLE IF NOT EXISTS res_turn_flags (request_id TEXT NOT NULL, flag TEXT NOT NULL, created_at INTEGER NOT NULL,
-      PRIMARY KEY (request_id, flag))`;
+    if (!this.turnTableReady) {
+      this.sql`CREATE TABLE IF NOT EXISTS res_turn_flags (request_id TEXT NOT NULL, flag TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (request_id, flag))`;
+      this.turnTableReady = true;
+    }
     this.sql`DELETE FROM res_turn_flags WHERE created_at < ${Date.now() - 7 * 86400_000}`;
     for (const row of this.sql<{ flag: string }>`SELECT flag FROM res_turn_flags WHERE request_id = ${id}`) {
       if (row.flag === "their") this.#theirTurns.add(id);
@@ -388,11 +401,35 @@ export class Resident extends Think<Env> {
     this.mcp.configureOAuthCallback({
       customHandler: (result) => callbackPage(result, this.mcp.listServers().find((server) => server.id === result.serverId)?.name ?? null)
     });
-    if (this.letterJob()) await this.schedule(1, "resumeLetter", {}, { idempotent: true });
-    const memory = aeliosConfig(this.cfg);
-    if (memory) this.letterState().resumeBlocked(memory, Date.now());
-    await this.armLetterDelivery();
-    for (const alarm of this.alarms().all()) await this.armAlarm(alarm, alarm.next);
+    // Recovery steps are independent. Keep durable work for a later startup to retry,
+    // and never log scheduler exceptions: they may contain private payloads or keys.
+    try {
+      if (this.letterJob()) await this.schedule(1, "resumeLetter", {}, { idempotent: true });
+    } catch {
+      console.error("startup: letter recovery scheduling failed; durable job retained for retry");
+    }
+    try {
+      const memory = aeliosConfig(this.cfg);
+      if (memory) this.letterState().resumeBlocked(memory, Date.now());
+    } catch {
+      console.error("startup: blocked letter restoration failed; durable deliveries retained for retry");
+    }
+    try {
+      await this.armLetterDelivery();
+    } catch {
+      console.error("startup: letter delivery scheduling failed; durable deliveries retained for retry");
+    }
+    try {
+      for (const alarm of this.alarms().all()) {
+        try {
+          await this.armAlarm(alarm, alarm.next);
+        } catch {
+          console.error("startup: alarm scheduling failed; durable alarm retained for retry", { id: alarm.id });
+        }
+      }
+    } catch {
+      console.error("startup: alarm restoration failed; durable alarms retained for retry");
+    }
   }
 
   get tz(): string {
@@ -1388,7 +1425,12 @@ export class Resident extends Think<Env> {
     if (this.#readOutside.size > 20) this.#readOutside.clear();
     if (ctx.requestId) this.restoreTurn(ctx.requestId);
     const letter = this.letterJob();
-    this.#letterPromptId = letter && this.userMessageBefore("")?.id === letter.promptId ? letter.promptId : null;
+    // Inspect THIS model input, not the latest live UI message: a newer user turn may already be queued.
+    const lastUser = ctx.messages.findLast((message) => message.role === "user");
+    const content = lastUser?.content;
+    const askedForThisTurn = typeof content === "string" ? content : Array.isArray(content)
+      ? content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") : "";
+    this.#letterPromptId = letter && askedForThisTurn.startsWith(LETTER_PREFIX) ? letter.promptId : null;
     this.#letterReason = letter?.reason ?? "handoff";
     // A failed turn can finish before an assistant row exists, so no response hook is guaranteed.
     this.#drafts.clear();
@@ -1426,7 +1468,7 @@ export class Resident extends Think<Env> {
       }
     }
     // Recheck after the auxiliary prompt has actually been persisted, including concurrent appends.
-    if (letter && !letterHistoryFits(await this.session.getHistoryRowStats(), this.hydrationByteBudget, 0)) {
+    if (this.#letterPromptId && !(await this.historyControl().fits(0))) {
       throw new Error("Letter history exceeds the safe hydration budget; original chat was not folded.");
     }
     const messages = this.windowHistory(ctx.messages);
@@ -1525,7 +1567,30 @@ export class Resident extends Think<Env> {
     return now;
   }
 
+  private effectiveHistories = new WeakMap<ThinkSession, ReturnType<typeof installEffectiveHistory>>();
+
+  /** Install on the actual session handle before Think hydrates it; never patch SDK prototypes. */
+  private historyControl(session: ThinkSession = this.session) {
+    let control = this.effectiveHistories.get(session);
+    if (!control) {
+      control = installEffectiveHistory(session, {
+        budget: () => this.hydrationByteBudget,
+        pathComplete: (leafId) => {
+          const sql = <T>(strings: TemplateStringsArray, ...values: (string | number | ArrayBuffer | null)[]) =>
+            this.sql<T>(strings, ...(values as never[]));
+          if (leafId === null) {
+            return this.sql`SELECT id FROM cf_agents_session_messages WHERE session_id = ${session.sessionId} LIMIT 1`.length === 0;
+          }
+          return historyPathComplete(sql, session.sessionId, leafId);
+        }
+      });
+      this.effectiveHistories.set(session, control);
+    }
+    return control;
+  }
+
   override configureSession(session: ThinkSession) {
+    this.historyControl(session);
     // No immediate token-triggered compaction: automatic letters need BOTH the threshold and quiet time.
     // /handoff may compact sooner, but always keeps the same fixed recent-chat window.
     return session
@@ -1567,7 +1632,7 @@ export class Resident extends Think<Env> {
   }
 
   webRetryLetters(): ReturnType<Resident["webLetter"]> {
-    this.letterState().retry(Date.now());
+    this.letterState().retry(Date.now(), aeliosConfig(this.cfg));
     this.ctx.waitUntil(this.deliverLetters());
     return this.webLetter();
   }
@@ -1636,8 +1701,11 @@ export class Resident extends Think<Env> {
    * the turns it folds, and once the letter is there, the letter itself.
    */
   private letterJob(): LetterJob | null {
-    this.sql`CREATE TABLE IF NOT EXISTS res_letter_job (id INTEGER PRIMARY KEY CHECK (id = 1), prompt_id TEXT NOT NULL,
-      reason TEXT NOT NULL, from_message_id TEXT NOT NULL, to_message_id TEXT NOT NULL, summary TEXT, created_at INTEGER NOT NULL)`;
+    if (!this.letterTableReady) {
+      this.sql`CREATE TABLE IF NOT EXISTS res_letter_job (id INTEGER PRIMARY KEY CHECK (id = 1), prompt_id TEXT NOT NULL,
+        reason TEXT NOT NULL, from_message_id TEXT NOT NULL, to_message_id TEXT NOT NULL, summary TEXT, created_at INTEGER NOT NULL)`;
+      this.letterTableReady = true;
+    }
     const [row] = this.sql<{ prompt_id: string; reason: "idle" | "handoff"; from_message_id: string; to_message_id: string; summary: string | null; created_at: number }>`
       SELECT * FROM res_letter_job WHERE id = 1`;
     return row
@@ -1753,29 +1821,34 @@ export class Resident extends Think<Env> {
       return;
     }
     await this.takeOut(job.promptId);
-    await resumeLetterCompaction(this.session, { ...job, summary: job.summary });
+    const session = this.session;
+    // A saved letter already read its range. Reconstruct only IDs/overlays to commit it,
+    // even if later user messages now exceed the full-body hydration budget.
+    const view = await this.historyControl(session).recovery();
+    if (!view.containsRange(job.fromMessageId, job.toMessageId)) {
+      throw new Error("Saved letter range is not on the selected branch");
+    }
+    await resumeLetterCompaction({
+      getHistory: async () => view.messages,
+      getCompactions: async () => view.compactions,
+      addCompaction: async (summary, from, to) => {
+        await view.assertCurrent();
+        if (!view.containsRange(from, to)) throw new Error("Saved letter range is not on the selected branch");
+        return session.addCompaction(summary, from, to);
+      }
+    }, { ...job, summary: job.summary });
     this.setWindow("folded", 1);
     this.letterState().write({ state: "written", at: job.createdAt });
     this.deleteLetterJob(job.promptId);
   }
 
   private async answerAfter(id: string): Promise<SessionMessage[]> {
-    const history = await this.session.getHistory();
-    const at = history.findIndex((message) => message.id === id);
-    if (at < 0) return [];
-    const answer: SessionMessage[] = [];
-    for (const message of history.slice(at + 1)) {
-      if (message.role === "user") break;
-      answer.push(message);
-    }
-    return answer;
+    return readAuxiliaryAnswer(this.session, id, this.hydrationByteBudget);
   }
 
-  /** Delete one message and the answer right after it. Returns the answer. */
-  private async takeOut(id: string): Promise<SessionMessage[]> {
-    const answer = await this.answerAfter(id);
-    await this.session.deleteMessages([id, ...answer.map((message) => message.id)]);
-    return answer;
+  /** Remove only the auxiliary turn by branch metadata; never hydrate unrelated original chat. */
+  private async takeOut(id: string): Promise<void> {
+    await removeAuxiliaryTurn(this.session, id);
   }
 
   private async letterExclusive<T>(work: () => Promise<T>): Promise<T> {
@@ -1809,7 +1882,7 @@ export class Resident extends Think<Env> {
     try {
       // compact() selects a range from complete history, but Think hydrates model input under a byte budget.
       // Never summarize/fold messages the writer might not receive. Inspect sizes, not the payloads.
-      if (!letterHistoryFits(await this.session.getHistoryRowStats(), this.hydrationByteBudget)) {
+      if (!(await this.historyControl().fits(64 * 1024))) {
         const error = "原始聊天超过安全装载范围，无法确认写信模型能读到全部内容；本次没有收起聊天。";
         this.failLetter(error);
         return { status: "failed", error };
@@ -1851,14 +1924,14 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * After a turn: plan the idle letter. Her message moves it to LETTER_IDLE_MINUTES from now; a check-in
-   * leaves a planned one where it is (it reads the cache, which keeps the cache alive), and only plans one
-   * when none is planned, as when the letter's time came while the check-in was running.
+   * After a turn: plan the idle check. Her message or a completed alarm moves it to LETTER_IDLE_MINUTES
+   * from now; a check-in/heartbeat leaves an existing deadline alone. The caller keeps real-user identity
+   * and their_last_at separate from this activity clock.
    */
-  private async planIdleLetter(fromThem: boolean): Promise<void> {
+  private async planIdleLetter(resetDeadline: boolean): Promise<void> {
     const minutes = idleMinutes(this.cfg);
     const previous = await this.ctx.storage.get<string>("idle_letter");
-    if (previous && !fromThem) return;
+    if (previous && !resetDeadline) return;
     if (previous) await this.cancelSchedule(previous).catch(() => false);
     if (!minutes || !(await this.ctx.storage.get<boolean>("wrote_since_letter"))) {
       await this.ctx.storage.delete("idle_letter");
@@ -1984,11 +2057,14 @@ export class Resident extends Think<Env> {
     const asked = before?.text ?? "";
     // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
     const fromThem = Boolean(asked) && !isNote(asked);
-    if (fromThem) {
+    // A completed alarm turn (even SKIP) starts a new quiet activity cycle, without becoming her message.
+    // Check-ins, heartbeats and failed alarms leave the current cycle's deadline and count alone.
+    const activity = fromThem || (result.status === "completed" && asked.startsWith(ALARM_PREFIX));
+    if (activity) {
       await this.ctx.storage.put("wrote_since_letter", true);
       await this.stopHeartbeats();
     }
-    await this.planIdleLetter(fromThem);
+    await this.planIdleLetter(activity);
     if (result.status !== "completed") {
       if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
       return;

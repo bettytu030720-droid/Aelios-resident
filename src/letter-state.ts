@@ -116,9 +116,12 @@ export class LetterStateStore {
       WHERE id = ${id} AND status != 'sent'`;
   }
 
-  retry(now: number): void {
+  /** Explicit retry resets only the current destination; foreign jobs retain their state and budget. */
+  retry(now: number, target: DeliveryTarget | null): void {
+    if (!target) return;
     this.sql`UPDATE res_letter_deliveries SET status = 'pending', attempts = 0,
-      next_at = ${now}, last_error = NULL, sent_at = NULL WHERE status IN ('failed', 'blocked')`;
+      next_at = ${now}, last_error = NULL, sent_at = NULL WHERE status IN ('failed', 'blocked')
+      AND url = ${target.url} AND namespace = ${target.namespace}`;
   }
 
   /** Restoring the same target does not reset the automatic attempt budget. */
