@@ -52,7 +52,7 @@
    | 没接 Aelios，有 Anthropic 或别家的 API key | 用户把 key 存进 AI Gateway `default` 的 Provider Keys（第 7 步），模型选 `anthropic/claude-…` 这类 |
    | 没接 Aelios，有中转站的地址和 key | 用户在设置页「供应商」里填中转地址和 key，模型写 `custom/<那家的模型名>`（第 7 步） |
    | 什么 key 都没有 | 先用默认的 `@cf/zai-org/glm-4.7-flash`，免费档就能用，以后再换 |
-   | 只有 Claude 订阅（Pro、Max），没有 API key | 订阅变不成聊天用的 API。聊天先用免费模型或别家的 key；订阅可以给住户当手脚用（README「叫云端 Claude Code 干活」），装完再配 |
+   | 只有 Claude 订阅（Pro、Max），没有 API key | 订阅变不成聊天用的 API。聊天先用免费模型或别家的 key；订阅可以给住户当手脚用（README.zh-CN.md「叫云端 Claude Code 干活」），装完再配 |
 
 5. **用户的 Telegram 用户名**（`@` 开头），住户只回白名单里的人。用户没设用户名的话，第 9 步用日志查数字 id。
 6. **用户在哪个时区？** 问城市就行，你换成 IANA 时区名，比如北京、上海写 `Asia/Shanghai`，香港写 `Asia/Hong_Kong`，东京写 `Asia/Tokyo`。不填默认是 `Asia/Singapore`。
@@ -174,7 +174,7 @@ curl -sS -X POST <住户地址>/web/config -H "x-web-key: <网页钥匙>" -H "co
 | `TIME_ZONE` | 第 0 步换好的时区，比如 `Asia/Shanghai` |
 | `CHECKIN_SCHEDULE` | 要主动找的话，比如 `every day at 09:00`；不要就别填 |
 
-打印 `已存` 就是存上了；打印 `"error":…` 就照着报错改。别的设置（搜网、语音、表情包这些）先不用动，默认就能用，README「设置一览」有全部的。
+打印 `已存` 就是存上了；打印 `"error":…` 就照着报错改。别的设置（搜网、语音、表情包这些）先不用动，默认就能用，README.zh-CN.md「设置一览」有全部的。
 
 ## 6. 接上 Aelios（不要长期记忆就跳过）
 
@@ -309,7 +309,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 
 ### 搜网
 
-默认开着：一个自己的 key 都没有时，用 Cloudflare 的 Web Search，按次从 AI Gateway 的额度里扣一点（README「花钱吗」有价钱）。
+默认开着：一个自己的 key 都没有时，用 Cloudflare 的 Web Search，按次从 AI Gateway 的额度里扣一点（README.zh-CN.md「花钱吗」有价钱）。
 
 - 问用户有没有 Tavily、Brave、Perplexity 的 key，有几个填几个：`TAVILY_API_KEY`、`BRAVE_API_KEY`、`PERPLEXITY_API_KEY`，按这个顺序用，一家不行换下一家。
 - 不想让它搜：`WEB_SEARCH` 填 `off`。
@@ -320,7 +320,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 默认开着，不用 key。长网页先用一个便宜的模型压短再给它看，默认是 Workers AI 的 `@cf/qwen/qwen3-30b-a3b-fp8`，免费档的每日额度里就能用。
 
 - 一般不用改。用户想换成别的模型压（比如自己有 key 的某个便宜模型），`WEB_FETCH_MODEL` 填那个模型名，第 7 步能填的名字这里都能填；填 `off` 就不压、只截断。
-- 要它读 Cloudflare Access 挡着的网站、GitHub 私库的文件：设置页「搜网和读网页」→「带钥匙的网站」，请用户自己填，README「搜网和读网页」有步骤。
+- 要它读 Cloudflare Access 挡着的网站、GitHub 私库的文件：设置页「搜网和读网页」→「带钥匙的网站」，请用户自己填，README.zh-CN.md「搜网和读网页」有步骤。
 - 不想让它读网页：`WEB_FETCH` 填 `off`。
 
 ### 语音条
@@ -335,7 +335,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 
 - key：最省事的是请用户把那家的 key 存进住户用的 AI Gateway（设置里「AI Gateway 的名字」，留空就是 `default`）→ **Provider Keys**，别名 `default`，跟第 7 步一样，这样设置页不用填。或者 `VOICE_API_KEY` 照上面「要填 key 时」的办法填。
 - 什么时候发（`VOICE_REPLY`）：`mirror` 用户发语音才回语音（默认），`always` 每条都发，`tool` 它想发才发。
-- 填完请用户在 Telegram 上发一条语音试试。发不出去时 `/status` 的语音那一行写着为什么；报 401、说没收到 key 的，多半是 key 存在了别的 Gateway 里（README「遇到问题」）。
+- 填完请用户在 Telegram 上发一条语音试试。发不出去时 `/status` 的语音那一行写着为什么；报 401、说没收到 key 的，多半是 key 存在了别的 Gateway 里（README.zh-CN.md「遇到问题」）。
 
 ### 表情包
 
@@ -398,7 +398,7 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 - 闹钟默认关着。问用户要不要让它自己定闹钟（提醒用户的事、晚点再来找用户），告诉用户闹钟要是在一小时以上没说话之后响，比平时一条贵不少。要的话 `ALARMS` 填 `on`。
 - 交接信自动写要同时满足当前携带聊天估算达到门槛、没人说话达到闲置时间，默认是 `LETTER_TOKEN_THRESHOLD=30000` 和 `LETTER_IDLE_MINUTES=55`。连续聊天超过门槛也不立即写。门槛按当前携带聊天算，包含旧交接信、工具调用和结果、图片，不含人设、工具定义和历史思考。
 - 用户要改写信门槛时，照第 5 步填 `LETTER_TOKEN_THRESHOLD`，只接受大于 `8000` 的整数，比如 `30000` 或 `50000`。写后固定保留最近约 8000 token 原始聊天，整轮问答可能略超，交接信、人设、工具定义另算，保留量不能调。旧 `KEEP_RECENT_TOKENS` 的存值和环境变量都忽略，不迁移成门槛，别再填它。手动 `/handoff` 不受门槛限制，但仍要有旧内容可收。
-- 别的设置（Claude 想多久、缓存多久这些）都有默认值，一般不用动，README「设置一览」有全部的。
+- 别的设置（Claude 想多久、缓存多久这些）都有默认值，一般不用动，README.zh-CN.md「设置一览」有全部的。
 
 ## 11. 交给用户
 
@@ -429,6 +429,6 @@ Telegram：@<bot 的用户名>，私聊它就行
 
 ## 附：其它
 
-- **不想用命令行部署的用户**：照 README「上线」在 Cloudflare 后台点着装，装好再从第 3 步往下做（跳过第 2 步），第 3 步的 `wrangler secret put` 要在这个仓库的目录里跑，或者带上 `--name aelios-resident`。
+- **不想用命令行部署的用户**：照 README.zh-CN.md「上线」在 Cloudflare 后台点着装，装好再从第 3 步往下做（跳过第 2 步），第 3 步的 `wrangler secret put` 要在这个仓库的目录里跑，或者带上 `--name aelios-resident`。
 - **查日志**：`npx wrangler tail aelios-resident`。
-- **设置项都有哪些、默认是什么**：README「设置一览」。用接口填的跟在设置页里填的是同一份。
+- **设置项都有哪些、默认是什么**：README.zh-CN.md「设置一览」。用接口填的跟在设置页里填的是同一份。

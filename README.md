@@ -1,244 +1,293 @@
 # Aelios-resident
 
-**住在你自己 Cloudflare 账号里的 AI 伴侣。** 在 Telegram 和网页上跟它聊，两边是同一段对话；接上 [Aelios](https://github.com/wusaki0723/Aelios) 后它记得以前的事。不用租服务器，部署好以后所有设置都在网页上点。
+**English** | [简体中文](README.zh-CN.md)
 
-它基于 Cloudflare 的 [Think](https://developers.cloudflare.com/agents/)，整个住在一个 Durable Object 里：聊天记录、交接信、人设、表情包都存在那里自带的 SQLite 里，不用另外建数据库。
+**An AI companion that lives in your own Cloudflare account.** Talk to it on Telegram and on the web; both are the same conversation. Connect it to [Aelios](https://github.com/wusaki0723/Aelios) and it remembers what came before.
 
-## 它能做什么
+- **No server to rent**: the whole resident is one Cloudflare Worker with one Durable Object, and it runs on the free plan.
+- **No database to set up**: the conversation, handoff letters, persona and stickers live in the Durable Object's built-in SQLite.
+- **Everything is set on the web**: once it is deployed, you pick the model, write the persona and change every setting in the browser. A change applies from the next message.
 
-- **两扇门，一段对话**：Telegram 私聊和网页门（也能在 Telegram 里当 Mini App 打开），两边说的话两边都看得到。
-- **记得旧事**：接上 Aelios，聊天从 Aelios 过，它想起相关的旧事、把每一轮记下来；夜里 Aelios 照常整理。
-- **交接信** 当前携带的聊天估算达到门槛（默认 30000 token），并且你停下来一阵（默认 55 分钟），它才自动给之后的自己写信，把旧聊天收起来，固定保留最近约 8000 token 原始聊天。连续聊过门槛不会立即写。
-- **主动找你**：到点自己想想要不要找你，不合适就不打扰；你一阵子没动静、对话还短时，也问它一句要不要找你（心跳）。打开闹钟后，它还能自己定什么时候来找你。
-- **看图、听语音、发语音**：你发的图它看得到，语音条先转成文字；选好服务商后它也能回语音条。
-- **搜网、读网页**：自己的搜索 key 优先，没有就用 Cloudflare 的；长网页先压短再给它看。
-- **表情包**：导入 Telegram 贴纸包或 zip，聊天时偶尔发一张，还能自己画像素小表情。
-- **接别的 MCP**：设置页填个地址，或者在聊天里叫它自己接。
-- **叫云端 Claude Code 干活**：有 Claude 付费订阅的话，改代码、做文件这类活它交给 claude.ai 上的云端 Claude Code，用你订阅的额度，干完它告诉你。默认关着。
-- **都在网页上改**：模型、人设、设置都在网页门上点，改完下一句就生效。
+It is built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
+
+> **The interface is in Chinese.** The web page, the settings and the bot's command replies are in Chinese. This README gives each label's Chinese text in 「」 so you can find it on screen. The resident itself chats in whatever language its persona is written in.
+
+## What it does
+
+- **Two doors, one conversation**: a Telegram private chat and a web door (which also opens inside Telegram as a Mini App). What is said on one side shows on the other.
+- **Remembers the past**: with Aelios connected, every turn goes through Aelios, which brings up related memories and records the turn. Aelios still does its nightly tidy-up.
+- **Handoff letters**: once enough chat has piled up and you have gone quiet for a while, it writes a letter to its later self and folds the older chat away, keeping only the most recent part word for word.
+- **Reaches out to you**: at times you choose it considers whether to message you; when you have been quiet for a while it is asked whether it wants to (the heartbeat); with alarms on it can also schedule its own return.
+- **Sees pictures, hears and sends voice**: it sees the pictures you send; your voice messages are transcribed; once you pick a provider it can answer with voice messages too.
+- **Searches the web and reads pages**: your own search keys come first, Cloudflare's search otherwise; long pages are shortened before it reads them.
+- **Stickers**: import a Telegram sticker pack or a zip and it sends one now and then. It can also draw its own little pixel stickers.
+- **Other MCP servers**: add one by address on the settings page, or ask it to connect one in the chat.
+- **Hands work to cloud Claude Code**: with a paid Claude plan it can pass coding and file work to cloud Claude Code on claude.ai, using your plan's allowance, and tell you when it is done. Off by default.
+
+## How it fits together
 
 ```
-Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
-网页门 / Mini App ──────────────▶ Worker /web/* ──┤
-                                                ▼
-                    Resident（一个 Durable Object，一段对话）
-       人设 + 聊天规矩 + Aelios 开机包；工具：记忆、搜网、读网页、表情包、语音、闹钟、别的 MCP、云端 Claude Code
-       接了 Aelios 时聊天从 Aelios 过；聊天达到门槛且没动静 55 分钟才写交接信，未达门槛走心跳；到点可以主动找你
+Telegram ──▶ Worker (checks secret, allowlist, slash commands) ──┐
+Web door / Mini App ──────────────────────────▶ Worker /web/* ──┤
+                                                                ▼
+                    Resident (one Durable Object, one conversation)
+       persona + chat rules + Aelios boot packet
+       tools: memory, web search, web pages, stickers, voice, alarms, other MCP, cloud Claude Code
 ```
 
-## 上线
+- With Aelios connected, every turn goes through Aelios' model endpoint, which adds related memories and records the turn.
+- 55 minutes after you go quiet: if the chat is long enough, it writes a handoff letter; if not, the heartbeat asks whether it wants to reach out.
 
-**让 AI 帮你装**：用 Claude Code、Codex 这类能跑命令的 AI 的话，把下面这段话发给它，部署、接 Telegram、接 Aelios、选模型都交给它，你只要建个 bot、在浏览器里点几下：
+## Getting started
+
+### Let an AI set it up (recommended)
+
+If you use an AI that can run commands, such as Claude Code or Codex, send it the message below. It deploys the resident, connects Telegram and Aelios and picks a model; you only create a bot and click a few things in the browser. The guide it reads is in Chinese, which these assistants follow fine.
 
 ```text
-帮我装好、配好 Aelios-resident（住在我 Cloudflare 账号里的 AI 伴侣）。先读 https://raw.githubusercontent.com/wusaki0723/Aelios-resident/main/docs/setup-with-ai.md ，照着做。需要我在浏览器里点、或者需要我自己填 key 的时候，停下来告诉我去哪儿填。
+Set up and configure Aelios-resident for me (an AI companion that lives in my Cloudflare account). First read https://raw.githubusercontent.com/wusaki0723/Aelios-resident/main/docs/setup-with-ai.md and follow it. Whenever I need to click something in the browser or enter a key myself, stop and tell me where. Talk to me in English.
 ```
 
-想自己在后台点着装，照下面做。
+### Set it up yourself in the dashboard
 
-要准备的：一个 Cloudflare 账号（免费档就能跑），一个 Telegram bot。想要长期记忆的话，再准备一个已经部署好的 Aelios。
+You need a Cloudflare account (the free plan is enough) and a Telegram bot. For long-term memory, also have an Aelios already deployed.
 
-1. **建 bot**：Telegram 里找 @BotFather，发 `/newbot`，起好名字，记下 token。
-2. **部署**：Cloudflare 后台 → Workers & Pages → Create → Import a repository，选这个仓库（或者你 fork 的）。项目名填 `aelios-resident`（要跟 `wrangler.jsonc` 里的 `name` 一样），其余用默认。以后推到 main 就自动更新。
-3. **填三个 Secret**：Worker → Settings → Variables and Secrets。只有这三个要在这里填，别的都在网页上填。
-   - `TG_BOT_TOKEN`：第 1 步的 token。
-   - `TG_WEBHOOK_SECRET`：自己编一串长的，字母、数字、`_`、`-` 都行。
-   - `WEB_KEY`：网页门的钥匙，也自己编一串长的。拿到它就能看全部对话、改所有设置，别截图别外发；怀疑漏了就在这里换一个。不填的话普通浏览器进不去，只能从 Telegram 的 Mini App 进。
-4. **接上 Telegram**：浏览器打开一次下面这个网址，几项都返回 `"ok":true` 就接好了。它会顺便登记三个命令，并把 bot 左下角的菜单按钮设成「打开网页」。
+1. **Create the bot**: in Telegram, message @BotFather, send `/newbot`, choose a name and note the token.
+2. **Deploy**: Cloudflare dashboard → Workers & Pages → Create → Import a repository, and pick this repository (or your fork). Name the project `aelios-resident`, the same as `name` in `wrangler.jsonc`, and keep the other defaults. From then on, every push to main updates it.
+3. **Add three secrets**: Worker → Settings → Variables and Secrets. Only these three go here; everything else is set on the web.
+   - `TG_BOT_TOKEN`: the token from step 1.
+   - `TG_WEBHOOK_SECRET`: a long string you make up, using letters, digits, `_` and `-`.
+   - `WEB_KEY`: the key to the web door, another long string you make up. Whoever has it can read the whole conversation and change every setting, so don't screenshot or share it; if you think it leaked, replace it here. Without it, an ordinary browser cannot get in; only the Telegram Mini App can.
+4. **Connect Telegram**: open this address once in your browser. When every item returns `"ok":true`, it is connected. It also registers three commands and makes the bot's bottom-left menu button open the web door.
 
    ```
-   https://aelios-resident.<你的子域>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>
+   https://aelios-resident.<your-subdomain>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>
    ```
 
-5. **在网页上填设置**：打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进门，点右上角的齿轮：
-   - 「聊天」→「谁能在 Telegram 上跟它说话」：你的 Telegram 用户名，比如 `@your_name`。不填它谁都不回。
-   - 「长期记忆」→ Aelios 的地址和 key，key 跟你 Aelios 那边的 `CHATBOX_API_KEY`、`IM_API_KEY`、`MEMORY_MCP_API_KEY` 任意一把一样。再在 Aelios 后台给住户建一个身份，把要用的模型放进它的主模型，身份名填在「更多设置」→「身份」里（不填用这把 key 的第一个身份）。
-   - 回到聊天，点左上角的模型名选模型，点右上角的铅笔贴上人设、保存。
-6. 给 bot 发条消息。
+5. **Fill in the settings on the web**: open `https://aelios-resident.<your-subdomain>.workers.dev/`, enter `WEB_KEY`, and click the gear at the top right:
+   - **Chat** (「聊天」) → **Who can talk to it on Telegram** (「谁能在 Telegram 上跟它说话」): your Telegram username, such as `@your_name`. Until this is filled in, it answers no one.
+   - **Long-term memory** (「长期记忆」): your Aelios address and key. The key can be any one of `CHATBOX_API_KEY`, `IM_API_KEY` or `MEMORY_MCP_API_KEY` from your Aelios. Then, in the Aelios admin, create an identity for the resident and add the models you will use to that identity's main models. Put the identity's name under **More settings** (「更多设置」) → **Identity** (「身份」); left empty, the key's first identity is used.
+   - Back in the chat, click the model name at the top left to pick a model, and the pencil at the top right to paste in a persona and save it.
+6. Send the bot a message.
 
-## 用起来
+## Using it
 
-### 网页门
+### The web door
 
-打开 Worker 的网址，填 `WEB_KEY` 进门。跟 Telegram 是同一段对话：那边说的话 5 秒内出现在这边；在网页上说的话只在网页上回，不发到 Telegram。
+Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram: what you say on Telegram appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to Telegram.
 
-- 每条消息下面有时间、从哪边来的，还有一个心形按钮，点了存进 Aelios 的「珍贵」。
-- 它想的内容收在「想了一下」里，用的工具收在「忙活了 X 回」里，点开能看。
-- 交接信折叠显示在它收起聊天的位置。
-- 夜间、白天可以切，手机上也好按。
-- 暂时不能在网页上发图和语音。
+- Each message shows its time and where it came from, plus a heart button that saves it to Aelios' **Precious** (「珍贵」).
+- Its thinking is folded under 「想了一下」 and the tools it used under 「忙活了 X 回」; click to open them.
+- Handoff letters appear, folded, where they put the older chat away.
+- There are dark and light themes, and it works well on a phone.
+- Sending pictures and voice from the web is not supported yet.
 
 ### Telegram
 
-- 只回私聊，只回「谁能在 Telegram 上跟它说话」里的人。
-- 连着发几条，它会等 3 秒并成一轮再回（`DEBOUNCE_SECONDS`）。
-- 回复按空行拆成几条，写完一段发一段，中间显示「正在输入」。
-- 每条消息前面带着你那边的时间，它知道现在几点。
-- 发图它看得到（照片或者当文件发的图，5 MB 以内）。
+- It answers private chats only, and only the people listed under **Who can talk to it on Telegram**.
+- Several messages in a row are combined: it waits 3 seconds and answers them as one turn (`DEBOUNCE_SECONDS`).
+- Replies are split at blank lines and sent piece by piece as they are written, with "typing…" shown in between.
+- Each message carries your local time, so it knows what time it is.
+- It sees the pictures you send (photos, or images sent as files, up to 5 MB).
 
-**Mini App**：点 bot 左下角的菜单按钮，网页门直接在 Telegram 里打开，不用填 `WEB_KEY`。它凭 Telegram 签过名的身份进门，每次都按「谁能在 Telegram 上跟它说话」再查一遍，把人从名单里拿掉就进不来了。换了自定义域名的话，从新域名再打开一次 `/tg/setup`（Telegram 只开 https 的 Mini App）。细节见 `src/mini-app.ts`。
+**Mini App**: tap the bot's bottom-left menu button and the web door opens right inside Telegram, without `WEB_KEY`. It lets you in by your Telegram-signed identity and checks it against **Who can talk to it on Telegram** every time, so removing someone from the list locks them out. If you move to a custom domain, open `/tg/setup` once more from the new domain (Telegram only opens https Mini Apps). Details are in `src/mini-app.ts`.
 
-**命令**：
-- `/status`：现在用的模型、人设、对话多长、写过几封交接信、上一轮缓存读了多少、表情包和语音的状态。
-- `/letter`：看最近一封交接信。
-- `/handoff` 手动写一封，不受 token 门槛限制，但要有旧内容可收。没有旧内容、写信失败、已有恢复任务会分别提示；写信失败不会删除旧聊天，已有恢复任务时不另起一封。
+**Commands**:
 
-### 换模型
-
-点网页门左上角的模型名，弹出一个搜索框：上面是正在用的、最近用过的、常用的，往下是可选的模型，输入 `opus`、`kimi`、`qwen` 就能筛。目录里没有的，直接填完整 id 也行。
-
-- 接了 Aelios 时，往下列的是 **Aelios 自己的模型清单**：你在 Aelios 设置 → 供应商 → 模型清单里选好的那些（`chatgpt/…`、自定义 Provider、带 `:floor` 的名字都在这里）。没存清单时 Aelios 会把上游几百上千个模型全交出来，这里不一一列出，只能搜。Aelios 说它不是这个身份的主模型的（聊天不会记忆），会标「记不住」并调淡，选了也会在试调时被拦下。Aelios 取不到时退回下面那份自带的目录，并说明原因。
-- 没接 Aelios 时，往下是 Cloudflare 模型目录里的全部文字模型。
-
-- 换之前它会先试着调一次，调不通（写错、没额度、档位不含）就不换，当场告诉你为什么。
-- 没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。
-- 紫点是 Workers AI 自己跑的，橙点走 AI Gateway 的额度，空心点走中转。
-- Claude 填 `anthropic/claude-opus-5.5` 这种写法。每轮都带缓存标记，缓存默认留 1 小时（`CACHE_TTL`）。Claude 5 以后的模型每轮都会想，想的内容会以摘要形式显示在「想了一下」里；想多久在设置页「思考和交接信」里调。
-- 接了 Aelios 时，选的模型都从 Aelios 过，用 Aelios 那边配好的 key。模型要在住户那个身份的主模型里，不在的话不换。
-
-### 人设
-
-点网页门右上角的铅笔填，保存后下一句就按新的说。人设存在 Durable Object 里，不在代码里，所以公开仓库也不会带出去。最近 10 版都留着，可以一键放回去。用 Max 附带的 API key 时，人设里别出现「Claude Code」这几个字。
-
-住户自带的聊天规矩、交接信和定时提示都是英文写的，不预设你是谁、什么性别；人设用什么语言，它就用什么语言聊。
-
-### 设置页
-
-点网页门右上角的齿轮。先是一张目录：长期记忆、聊天、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态，点进去只看那一栏，不常改的收在「更多设置」里。
-
-- 改完点「保存」，下一句就生效。
-- 这里存的优先；没存的用 Cloudflare 里同名的变量；那边也没有就用默认，默认值用灰字写在输入框里。已移除的旧设置不再生效，见「交接信」。
-- 每项旁边的小标签：「已存」是在这里存过的，「Cloudflare：变量名」是从 Cloudflare 来的，「要填」是还缺的。
-- key 只能填，不能看。
-- 锁上网页门的按钮在这页最下面。
-
-## 功能细节
-
-### 长期记忆（Aelios）
-
-接了 Aelios 以后，聊天从 Aelios 自己的模型接口过（`https://<Aelios>/<身份>/v1`），跟别的聊天软件接 Aelios 一样：
-
-- Aelios 拿你这句话想起相关的旧事，贴在这句后面给模型看，再把这一轮记下来。想起的旧事只在那一轮看得见。
-- Claude 走 Messages 接口，缓存标记放在你那句上，之前的聊天照样从缓存读。
-- 模型另外有 7 个记忆工具：查、记一句、存珍贵瞬间、归档、记黑话、翻日记，还有小本本（Aelios 里按页名读写的笔记，比如学习进度：学完哪些、哪里薄弱、下一步；不会被召回、不会被夜里整理改掉、不过期，在 Aelios 后台「更多 → 小本本」能看能改能清空）。小本本要 Aelios 是带它的版本。
-- Aelios 的开机包只放最近一天的日记，放进系统提示。珍贵原话和黑话不放：Aelios 每轮会把跟你这句沾边的贴进来。
-- 开机包只在缓存本来就要重写的时候重新取：超过缓存时长（`CACHE_TTL`）没说话，或者刚写完交接信。连着聊的时候保持这段内容不变，避免日记自动刷新破坏缓存前缀。
-- 交接信、定时找你、换模型时的试调都不是你说的话，会标出来，Aelios 不当成你说的记。
-- 搜过网的那一轮回完以后，它挑出最多 3 条过几个月还对的知识，存成 Aelios 的世界知识，下次不用再搜。不想要就把「搜到的知识存进 Aelios」关掉（`WEB_LEARN`）。
-
-不接 Aelios 也能用，只是它只记得当前对话和交接信。
-
-### 缓存与历史表示
-
-同一个缓存窗口里，已经发给模型的历史工具结果和图片，不会仅因多聊了几轮就突然被截短或淘汰。窗口边界与校验摘要存在 SQLite，Worker 重启后继续沿用，不保存另一份聊天正文。
-
-缓存因闲置过期，或交接信已经收起旧聊天后，才为新窗口选择缩减范围：较旧的普通工具结果使用最多 500 字符的预览，较旧媒体在模型输入中使用固定文字占位，最近一段和窗口内新加入的内容保持完整。这里只改变发送给模型的视图，不覆写存储里的原始消息、工具结果或图片，也不改变交接信固定保留近期原始聊天的规则。写信本身仍用上一轮的历史表示，写完才切换。因此，较早窗口已经缩成预览的工具结果或媒体，不会在写信时重新展开；交接信不是网页全文或附件细节的完整备份。原始工具结果和媒体仍在存储中，不能把“原文保留”误解成“所有原文细节都已写进信”。
-
-第一次升级这套策略可能需要一次缓存重建；升级前已经由 SDK 淘汰的媒体不会因此自动还原。改人设、切模型、分支/删除消息、达到 SDK 的字节装载上限或上游路由变化，也可能导致重建，不能保证每次请求都命中。SDK 的约 32 MiB 历史装载上限和模型自己的上下文上限仍然保留；这是内存保护，不以无限加载来换缓存。装载和写信前的检查使用同一份应用了交接信覆盖层的有效历史：覆盖区只计算旧信摘要，未覆盖区仍按原始行、分片和附件的真实字节计入预算，辅助提示另留空间。已收起的原始媒体不会因为继续占着持久存储，就永久阻止下一次写信；旧信的端点即使落在 SDK 原始字节窗口外，只要仍属于选中的完整分支，也不会因此被漏掉。完整有效历史本身超限、分支路径未能在 SDK 遍历上限内确认完整或读取过程中发生无法确认的变化时，仍明确失败、保留原聊天，不用一封只读了后半段的信替换整段历史。SDK 沿分支最多往回读 1 万条，交接信只盖住旧聊天、不删原始行，长期使用后分支会超过这个数：这时普通聊天、`/status` 和网页历史照常显示最近一段（旧交接信暂时读不到，`/status` 的「对话」一行会写明），写信会失败并单独说明是分支太长，已写好但还没收起的信只记一次失败，不再卡住后面的写信。根本解决（比如写信后裁掉已覆盖的原始行）另行处理。写信辅助问答的清理不依赖整段正文装载；既有恢复任务不会阻挡普通有界聊天，已写好的信按原范围恢复，不把后来新增内容误收进旧信。
-
-### 交接信
-
-自动写交接信必须同时满足两个条件。当前携带的聊天估算 token 达到 `LETTER_TOKEN_THRESHOLD`（默认 `30000`），并且从你最近一次发言或成功完成的闹钟回合起，闲置达到 `LETTER_IDLE_MINUTES`（默认 55 分钟）。连续聊天即使超过门槛，也不会立即写；闹钟也会顺延这个时间。
-
-门槛在设置页「思考和交接信」里改，只接受大于 `8000` 的整数。可以用默认 `30000`，想多带一些聊天再收就设为 `50000`。估算看的是当前仍携带的聊天，包含旧交接信、工具调用和结果、图片，不含人设、工具定义和历史思考，也不按从开始到现在的累计聊天总量算。中文一个字约 1 token。
-
-写后固定保留最近约 8000 token 原始聊天，按完整问答取最近的一段；如果最近一轮本身就超过 8000 token，则整轮保留，不截断；更早的聊天收进信里，开头的几条也没有永久保留的例外。8000 只管近期原始聊天的保留量，交接信、人设、工具定义另算，不能用它推算整次请求的总 token。
-
-旧设置 `KEEP_RECENT_TOKENS` 已移除。网页里存过的值和 Cloudflare 同名变量都忽略，不会迁移成写信门槛，也不用手动换算。
-
-- 55 分钟是为了赶在 1 小时缓存过期前写：写信那一轮接在原对话后面，前文一字不差，整段从缓存读，便宜。
-- 写信那一轮不为新增内容设置缓存标记：信写完旧聊天就收起来了，新增内容写进去的以后没人读。标记留在上一轮打的地方（你最后那句），命中时复用前缀，后面那一小截（它最后那轮的回复、工具结果和写信的提示）按普通输入价算。标记本身是“读或创建”，不是只读指令；如果供应商缓存实际已经失效，仍可能重建这个旧前缀，不能保证写入为零。
-- 信按七段写：对方怎么样、我们之间发生了什么、做了什么、现在的温度、想做的、喜欢的、没做完的。上一封没了结的会接着往下传。
-- 信先存在住户里，发往 Aelios 的同步任务也持久化保存，不发 Telegram 打扰你。写信失败不会删除旧聊天；信已写好但同步失败，与写信失败是两种状态。
-- 闲置到点时没达到门槛，或没有旧内容可收，就不自动写，按原来的心跳逻辑问它要不要找你（见「主动找你」）。
-- 手动 `/handoff` 不受门槛限制，但仍要有固定近期保留范围之外的旧内容可收；没有就不写。
-- 写完就停，等你下次说话或成功完成一次闹钟回合，再开始新的闲置周期。
-
-#### 写信状态和同步重试
-
-设置页「思考和交接信」会显示写信状态、最近写信时间和错误，以及 Aelios 最近一封的送达状态、发送尝试次数和确认送达时间。写信中的 `writing`、恢复中的 `recovering`、已写好的 `written`、没有旧内容可收的 `empty`、写信失败的 `failed` 分开显示。读取状态失败会单独提示，不当作没有内容可收；打开或保存配置时会重新读取，也可点「刷新状态」。
-
-Aelios 同步单独显示待发送、已确认送达、发送失败或已暂停，并列出待发送、待重试、已暂停的数量。待发送任务首次立即同步，最多自动尝试 6 次，后续五次的等待间隔依次为 30 秒、2 分钟、10 分钟、30 分钟、2 小时。失败后信和任务仍保留，可手动重试。
-
-当前 Aelios 地址与 namespace 下有发送失败或暂停的任务时，才会出现「重试同步」；只剩发往旧地址或旧空间的任务时不显示，因为点了也发不出去。它显式重试当前 Aelios 地址与 namespace 下失败和暂停的发送，**只重发已写好的信，不调用模型、不重写信**。其他目标的任务保留原状态与尝试次数，缺少配置时不重置预算。Aelios 配置被移除、地址或 `AELIOS_NAMESPACE` 改变时，旧任务先暂停；即使点重试，目标仍不匹配也会继续暂停，不会把旧信发往新地址或新空间。确认要继续送到原目标时，恢复原目标配置再重试。只轮换 key 不算更换目标，可用新 key 重试。
-
-「已确认送达」表示 Aelios 返回了保存消息的凭据，不等同于后台记忆提取已经完成。已核查的 Aelios 接收接口不对重复请求去重，因此补送采用“至少送达一次”的方式；如果信已经存下但成功响应丢失，或服务端部分写入后报错，重试可能产生重复原文。住户的固定信件 ID 只用于本地任务去重和请求追踪，不能代替接收端去重。
-
-### 主动找你
-
-设置页「聊天」→「主动找你」填时间，比如 `every day at 09:00`、`every weekday at 21:30`、`every 3 hours`。到点它自己想想要不要找你，不合适就不发。
-
-**心跳**（`HEARTBEAT`，默认一段沉默问 3 次） 55 分钟没人说话时，如果当前携带的聊天还没达到写信门槛，或没有旧内容可收，就按原来的心跳逻辑问它要不要找你，想说就发到 Telegram，不想就不发。之后每 55 分钟再问一次，问满次数或开始新活动周期为止；你一说话或成功完成一次闹钟回合，下一段闲置从第 1 次重新数。
-
-- 正常按 55 分钟执行时，可以在上次缓存的一小时有效期内续上；调度延迟、前缀变化、供应商缓存失效仍可能导致重新创建，不能保证每次都是低价命中。缓存读取与创建的费用不同，心跳也不是免费的。
-- 达到门槛、闲置到点且有旧内容可收时就写信，不问心跳。信写完对话变了，缓存要整段重写，那时候问就贵了。
-- 次数在设置页「聊天」里改，0 不问，最多 10。只有走 Anthropic Messages 缓存路径的模型才有心跳；缓存选了 5 分钟、或者交接信设成 `off` 时也没有。
-
-**闹钟**（`ALARMS`，默认关）：打开后它多三个工具，自己定闹钟、看定了哪些、取消。可以是几分钟后、某个时间一次，或者 `every day at 21:30`、`every weekday at 08:00`、`every week on sat,sun at 10:00`、`every 3 hours` 这样重复。响的时候它收到自己当时写的备注，可以找你，也可以不发。
-
-- 你叫它提醒你，它就定一个。心跳的提示不再建议它定闹钟晚点再来：一段沉默里后面还有心跳会再问，而成功响过的闹钟会开启新的闲置周期，两者互相续命会一直问下去。它自己仍可能在心跳里定一个，这时照样至少一小时以后、受每天 24 次响铃的上限约束。
-- 设置页「聊天」下面列着它定的闹钟，点「删掉」就没了。改时区时，每天几点那种跟着新时区走。
-- 最多 10 个，重复的最密一小时一次，所有闹钟一天最多响 24 次。不是你说的话里定的（比如心跳、闹钟响的那一轮），至少定在一小时以后。
-- 闹钟模型回合成功完成后（包括回复 `SKIP`），像一次新活动一样重排闲置检查、停止旧心跳链；到点达到门槛写信，否则进入心跳。失败的闹钟不重置。它仍是系统备注，不会冒充你的发言，也不会更新“你最后说话”的时间。心跳、普通定时找你不会自己重置周期，避免每次心跳都变成新的第 1 次。重复闹钟可以开启后续新周期，仍受闹钟日额度和每周期心跳次数限制。
-
-### 搜网和读网页
-
-- **搜网**（`web_search`）：设置页填了自己的搜索 key（Tavily、Brave、Perplexity，有几个填几个）就按这个顺序用，一家报错或额度用完就换下一家；一个都没填时用 Cloudflare 的 Web Search，按次扣一点 AI Gateway 额度。
-- **读网页**（`web_fetch`）：把网页读成 Markdown，搜到的结果和你发的链接都能打开。照 [web-fetch](https://github.com/sakisakisa-design/web-fetch) 的做法做进了住户里，不用另外部署。
-  - 本机和内网地址一律不读，每一次跳转都先查再跟。
-  - 靠 JavaScript 才显示的页面交给 Cloudflare 的浏览器读。
-  - 读过的页面留 1 小时，再问不用重抓。
-  - 长页面先用一个便宜的模型压一遍（`WEB_FETCH_MODEL`，默认 Workers AI 的 Qwen3 30B），带了问题就只摘相关的段落。
-  - GBK 之类的老编码也认。
-- **带钥匙的网站**：设置页「搜网和读网页」里给某个网站存一把钥匙，跟云端环境的网络密钥一个思路：读那个网站时每个请求自动带上，模型看不到钥匙，别的网站（包括跳转去的）和 http 都拿不到。钥匙一行一格：左边名字、右边值，不够点 ＋ 加一行；「Cloudflare 门禁」「一串 token」两个按钮一点就填好名字，只要粘值。最多 10 个网站。
-  - **Cloudflare Access 挡着的网站**：在 Zero Trust → Access controls → Service credentials → Service Tokens 里建一个服务令牌（Client Secret 只显示一次，当场抄下），给那个应用加一条动作是「Service Auth」、包含这个令牌的策略；设置页点「Cloudflare 门禁」，Client ID 和 Client Secret 各粘一格（连着前面的名字一起粘也行）。见 [Cloudflare 的说明](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)。没钥匙或钥匙不对时，它会说是门禁拦的，不会把登录页当正文。
-  - **GitHub 私库的文件**：建一个 fine-grained token，只选要读的仓库、Contents 只读；网站填 `raw.githubusercontent.com`，点「一串 token」粘进去（会以 `Authorization: Bearer` 发出去）。之后叫它读 `https://raw.githubusercontent.com/<owner>/<repo>/<分支>/<路径>`。token 没勾上的私库，GitHub 回 404 而不是 403，它会提醒可能是钥匙看不到。
-  - 带钥匙的页面不交给浏览器读（浏览器带不上钥匙）。存、换、拿掉钥匙时，读过的页面全部清掉（跳转过去的也算），下一句生效，那一句会重写一次缓存（工具说明里写着哪些网站有钥匙）。
-
-### 语音条
-
-**听**：一直开着。你在 Telegram 上发的语音条（或者音频文件）先转成文字，模型看到的是 `[voice 0:12] 说的话`；听不清的它会请你再说一遍。用 Workers AI 的 Whisper；发语音选了 ElevenLabs 时换成它的 Scribe，出错再退回 Whisper。网页上显示成「🎤 0:12 说的话」。
-
-**说**：在设置页「语音」里选一家才开。没选就不发语音，提示词里也不多一个字。
-
-| 选 | 适合 |
+| Command | What it does |
 | --- | --- |
-| ElevenLabs | 它家的声音，账号里克隆的也能用 |
-| Cartesia | 它家的声音，克隆的也能用 |
-| OpenRouter | MiniMax、Gemini、OpenAI、Fish 这些，一个 key 全用上 |
+| `/status` | The current model and persona, how long the conversation is, how many letters it has written, how much of the last turn came from the cache, and the state of stickers and voice |
+| `/letter` | Shows the latest handoff letter |
+| `/handoff` | Writes a handoff letter now, regardless of the token threshold, as long as there is older chat to fold (see [Handoff letters](#handoff-letters)) |
 
-- 三家都从住户的 AI Gateway 过。key 存在那个 Gateway 的 Provider Keys 里（别名 `default`）就不用在设置页填；Gateway 是哪个，在「供应商」→「AI Gateway 的名字」里看。
-- 什么时候发（「什么时候发语音」）：你发语音才回语音（默认）、每条都发语音、它想发才发。不是每条都发时，它有一个 `send_voice` 工具。
-- 选了哪家哪个模型，它就学那一套笑、叹气、停顿的写法，比如 ElevenLabs v3、v4 的 `[laughs]`，Cartesia 的 `[laughter]` 和 `<speed ratio="0.9"/>`，MiniMax 的 `(laughs)`，Gemini 的 `<laugh>`。想让它说慢点，在人设里写一句就行，它会自己加标记。
-- 说出来的话会去掉链接、Markdown 和 emoji；带链接的回复说完再把链接发成文字。
-- 发不出去（服务商报错、超过 2000 字、对方不收语音）就照常发文字，`/status` 写着为什么。
+### Choosing a model
 
-代码在 `src/voice.ts`。打电话（实时语音）还没做。
+Click the model name at the top left of the web door. A search box opens: the current, recent and common models are at the top, all available models below. Type `opus`, `kimi` or `qwen` to filter; a model that is not listed can be entered by its full id.
 
-### 表情包
+- **With Aelios connected**, the list below is Aelios' own model list: the models you chose in Aelios settings → Providers → Model list (`chatgpt/…` names, custom providers and `:floor` names are all here). If Aelios has no saved list, it hands over hundreds or thousands of upstream models; those are not listed one by one, only searchable. A model that is not among this identity's main models is marked 「记不住」 ("won't remember") and dimmed, since its chats would not be remembered, and it is refused at the trial call if you pick it. If Aelios cannot be reached, the picker falls back to the built-in catalog below and says why.
+- **Without Aelios**, the list below is every text model in Cloudflare's model catalog.
+- Before switching, it makes one trial call. If that fails (a typo, no balance, not in your plan), it keeps the current model and tells you why.
+- With no model chosen, it uses `@cf/zai-org/glm-4.7-flash`, which works on the free plan.
+- A purple dot runs on Workers AI itself, an orange dot uses AI Gateway credit, and a hollow dot goes through a relay.
+- Write Claude models like `anthropic/claude-opus-5.5`. Every turn carries a cache marker, and the cache is kept for 1 hour by default (`CACHE_TTL`). Claude 5 and later think on every turn; a summary of the thinking shows under 「想了一下」. Set how long it thinks under **Thinking & letters** (「思考和交接信」).
+- With Aelios connected, every model goes through Aelios, using the keys configured there.
 
-设置页「表情包」里导入，它聊天时偶尔发一张：一次回复最多一张，你难过或说正事时不发。
+### Persona
 
-- **导入**：贴 Telegram 贴纸包的链接（`t.me/addstickers/…`），或者传一个 zip、贴 zip 的网址。Telegram 包导进来时每张只有 emoji，给常用的几张填上「什么时候用」，它才知道什么时候发。
-- **自己画**：像素画，最多 8 帧的小动画，自动描白边，存进它自己的包「mine」。新画的从下一个缓存窗口（超过缓存时长没说话，或者写完交接信之后）起才列进它的表情清单，免得工具说明一变整段对话重写缓存；在那之前它照样能按名字发。
-- 设置页能开关整个功能、单独开关每个包、删包、删单张、改「什么时候用」，下一句就生效（那一句会重写一次缓存）。
-- 开着的包里每张的名字和「什么时候用」每轮都要带给模型，所以最多带 200 张、20 个包；每个包旁边写着约多少 token。
+Click the pencil at the top right of the web door. After you save, the next reply follows the new persona.
+
+- The persona is stored in the Durable Object, not in the code, so a public repository never carries it.
+- The last 10 versions are kept and can be restored with one click.
+- If you use the API key that comes with Max, keep the words "Claude Code" out of the persona.
+- The resident's built-in chat rules, letter prompt and check-in prompts are written in English and assume nothing about who you are or your gender. It chats in the language the persona is written in.
+
+### The settings page
+
+Click the gear at the top right of the web door. It opens on a list of sections: Long-term memory (「长期记忆」), Chat (「聊天」), Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Other MCP (「别的 MCP」), Cloud Claude Code (「云端 Claude Code」), Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line under each shows its current state. Open one to see only that section; settings you rarely change are under **More settings** (「更多设置」).
+
+- Click **Save** (「保存」) and the change applies from the next message.
+- Where a value comes from: a value saved here wins; otherwise the Cloudflare variable of the same name; otherwise the default, which is shown in grey in the input box.
+- The tag beside each item: 「已存」 means saved here, 「Cloudflare：<name>」 means it comes from Cloudflare, 「要填」 means it still needs a value.
+- Keys can be entered but never read back.
+- The button that locks the web door is at the bottom of the page.
+
+## Features in detail
+
+### Long-term memory (Aelios)
+
+With Aelios connected, the chat goes through Aelios' own model endpoint (`https://<Aelios>/<identity>/v1`), the same way other chat apps connect to Aelios:
+
+- Aelios uses your message to recall related memories, attaches them after your message for the model to see, and then records the turn. Recalled memories are visible in that turn only.
+- Claude goes through the Messages API with the cache marker on your message, so the earlier conversation is still read from the cache.
+- The model also gets 7 memory tools: search, remember a line, keep a precious moment, archive, learn a private word, read the diary, and the notebook. The notebook holds pages in Aelios that are read and written by name, good for things like study progress (what is done, what is weak, what is next). Pages are never recalled automatically, never changed by the nightly tidy-up and never expire; you can view, edit and clear them in the Aelios admin under More → Notebook. The notebook needs an Aelios version that has it.
+- Aelios' boot packet holds only the latest day's diary and goes into the system prompt. Precious quotes and private words are left out, because Aelios attaches the ones related to your message on every turn.
+- The boot packet is fetched again only when the cache has to be rewritten anyway: after a silence longer than the cache lifetime (`CACHE_TTL`), or right after a handoff letter. During a continuous chat it stays the same, so a diary update never breaks the cache.
+- Letters, check-ins and the trial call when switching models are not your words; they are marked as such, so Aelios does not record them as yours.
+- After a turn that searched the web, it picks up to 3 facts that will still hold in a few months and saves them as world knowledge in Aelios, so it need not search again. To turn this off, switch off 「搜到的知识存进 Aelios」 (`WEB_LEARN`).
+
+Without Aelios it still works, but it remembers only the current conversation and its letters.
+
+### Handoff letters
+
+A handoff letter is a letter it writes to its later self. Once the letter is written, the older chat is folded out of the model's input and only the most recent part is kept word for word. The original messages stay stored in the resident; nothing is deleted.
+
+**When it writes one by itself**: only when both of these hold.
+
+1. The chat it currently carries is estimated at `LETTER_TOKEN_THRESHOLD` tokens or more (default `30000`).
+2. It has been quiet for `LETTER_IDLE_MINUTES` (default 55 minutes) since your last message, or since the last alarm turn that completed.
+
+While you keep chatting, passing the threshold does not trigger a letter right away.
+
+- Change the threshold under **Thinking & letters**; it takes whole numbers above `8000`. To carry more chat before folding, use something like `50000`.
+- The estimate covers the chat it still carries: old letters, tool calls and results, and images count; the persona, tool definitions and past thinking do not; it is not the total since the beginning. One Chinese character is about 1 token.
+- The 55 minutes are there to write the letter before the 1-hour cache expires: the letter turn follows the original conversation word for word, so the whole prefix is read from the cache, which is cheap.
+- If the quiet time is up but the chat is below the threshold, or there is nothing older to fold, it writes no letter; the heartbeat takes over (see [Reaching out to you](#reaching-out-to-you)).
+
+**What stays after a letter**: the most recent ~8000 tokens of the original chat, counted back in whole question-and-answer rounds. If the latest round alone is over 8000 tokens, that round is kept whole, never cut. Everything earlier goes into the letter, the first few messages included. The 8000 only sets how much recent chat is kept; the letter, persona and tool definitions come on top, so it says nothing about the size of a whole request.
+
+**What a letter contains**: seven sections — how they are, what happened between us, what got done, where we are right now, things we want to do, things we like, and what is unfinished. Whatever the previous letter left open is carried forward.
+
+**Writing one by hand**: send `/handoff`. It ignores the threshold, but there must still be chat older than the recent part to fold. It tells you separately when there is nothing to fold, when writing failed, and when a letter is already being recovered. A failed letter never deletes the older chat, and it never starts a second letter while one is being recovered.
+
+**After the letter**: the letter is saved in the resident and then sent to Aelios (not to Telegram, so you are not disturbed), and it stops there. The next quiet cycle starts with your next message, or with the next alarm turn that completes.
+
+**How the cache is charged**: the letter turn adds no new cache marker — once the letter is written the older chat is folded away, so nobody would read a new one. It reuses the marker from the previous turn on your last message: on a hit the prefix is reused, and the small tail (its last reply, tool results and the letter prompt) is charged at the normal input price. If the provider's cache has in fact expired, that old prefix may be rebuilt, so zero cache writes are not guaranteed.
+
+> The old setting `KEEP_RECENT_TOKENS` has been removed. Values saved for it on the web and the Cloudflare variable of that name are ignored; they are not converted into a letter threshold.
+
+#### Letter status and sync retries
+
+**Thinking & letters** shows two things separately:
+
+- **Writing**: writing (`writing`), recovering (`recovering`), written (`written`), nothing to fold (`empty`) or failed (`failed`), with the time of the latest letter and any error. If the status itself cannot be read, that is shown separately and never mistaken for "nothing to fold". The status is reread when you open or save the settings, and you can click **Refresh status** (「刷新状态」).
+- **Sync to Aelios**: the delivery state of the latest letter (pending, delivered, failed or paused), the number of attempts, when it was confirmed, and how many letters are pending, waiting to retry or paused.
+
+Sync rules:
+
+- A new letter is sent at once. After a failure it tries 5 more times, waiting 30 seconds, 2 minutes, 10 minutes, 30 minutes and 2 hours. After the last failure the letter and its job are kept and can be retried by hand.
+- **Retry sync** (「重试同步」) appears only when letters for the current Aelios address and namespace have failed or are paused. It **only resends letters already written; it neither calls the model nor rewrites a letter**.
+- If you remove the Aelios settings or change the address or `AELIOS_NAMESPACE`, letters bound for the old target are paused; they are never redirected to the new address or namespace. To deliver them to the old target, restore its settings and retry. Changing only the key does not change the target.
+- "Delivered" means Aelios returned a receipt for saving the message, not that its background memory extraction has finished. Aelios' receiving endpoint does not deduplicate, so resending is "at least once": if a letter was in fact saved but the success reply was lost, a retry may leave a duplicate copy.
+
+#### Limits on writing letters
+
+- **Size**: a letter is written only if the letter-writing model can read everything being folded. Parts already folded count as their letter, not as the original images and attachments; if the whole effective history is over the ~32 MiB loading limit, no letter is written and the chat stays as it is.
+- **Length**: the SDK reads back at most 10,000 messages along the conversation branch. Letters only cover older chat; they do not delete the original messages, so with long use the branch will eventually pass that number. After that:
+  - Ordinary chat, `/status` and the web history still show the recent part, but the old letters can no longer be read; the conversation line of `/status` (「对话」) says so.
+  - Writing a letter fails, with a message saying the branch is too long.
+  - A letter that was already written but had not yet folded the chat is marked failed once and does not block later letters.
+  - The real fix (for example, trimming the original messages a letter covers) has not been built yet.
+
+### The cache and the history the model sees
+
+So that the cache keeps hitting, the history already sent to the model does not change within one cache window: older tool results and images are not cut down just because a few more turns went by. The window boundaries are stored in SQLite and survive a Worker restart; no second copy of the chat is kept.
+
+Only when a new window opens (the cache expired after a silence, or a letter folded the older chat) is it decided again what to shorten:
+
+- older ordinary tool results become previews of at most 500 characters;
+- older images and other media become a fixed text placeholder;
+- the recent part and anything new in the window stay complete.
+
+This changes only what is sent to the model; the stored messages, tool results and images are untouched. A letter is written from the previous turn's view, so anything already shortened to a preview is not expanded again for the letter — a handoff letter is not a complete backup of web pages or attachment details.
+
+Changing the persona, switching models, deleting or branching messages, deploying a new version, changing something on the settings page, a change in upstream routing, or the history reaching the ~32 MiB loading limit can all force the whole cache to be rewritten, so a cache hit is never guaranteed.
+
+### Reaching out to you
+
+**Check-ins**: under **Chat** → **Reach out** (「主动找你」), set times such as `every day at 09:00`, `every weekday at 21:30` or `every 3 hours`. At those times it considers whether to message you, and stays silent if it is not a good moment.
+
+**Heartbeat** (`HEARTBEAT`, at most 3 per quiet period by default): when you have been quiet for 55 minutes and the chat is still below the letter threshold (or there is nothing to fold), it is asked whether it wants to reach out. If it does, the message goes to Telegram; if not, nothing is sent. It is asked again every 55 minutes, up to the limit. Your next message, or an alarm turn that completes, starts the count again from 1.
+
+- Normally each heartbeat comes within the 1-hour lifetime of the previous cache, so it costs about as much as one of your messages. Delayed scheduling, a changed prefix or an expired provider cache can still force a rebuild, so heartbeats are not free.
+- When the threshold is reached, the quiet time is up and there is something to fold, it writes a letter and skips the heartbeat: after a letter the conversation has changed and the whole cache must be rewritten, so asking then would be expensive.
+- Set the number under **Chat**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
+
+**Alarms** (`ALARMS`, off by default): when on, it gets three tools — set an alarm, list alarms, cancel one. An alarm can ring in a few minutes, once at a set time, or on repeat, like `every day at 21:30`, `every weekday at 08:00`, `every week on sat,sun at 10:00` or `every 3 hours`. When it rings, it gets back the note it wrote and can message you or let it pass.
+
+- Ask it to remind you and it sets one. In its own turns (a heartbeat, or a ring), an alarm must be at least an hour ahead. The heartbeat does not suggest setting an alarm, since later heartbeats will ask again anyway.
+- Its alarms are listed under **Chat**; click **Delete** (「删掉」) to remove one. When you change the time zone, daily alarms follow the new zone.
+- At most 10 alarms; a repeat at most once an hour; at most 24 rings a day for all alarms together.
+- An alarm turn that completes (even with a `SKIP` reply) counts as new activity: it restarts the quiet timer and stops the old heartbeats; when the quiet time is up, it writes a letter if one is due, or starts the heartbeat. A failed alarm does not count. The ring is still a system note: it never poses as your words and does not change when you last spoke. Heartbeats and check-ins do not count as activity.
+
+### Web search and web pages
+
+- **Search** (`web_search`): with your own search keys on the settings page (Tavily, Brave, Perplexity — any of them), it uses them in that order and moves on when one fails or runs out; with none, it uses Cloudflare's Web Search, which takes a little AI Gateway credit per search.
+- **Reading pages** (`web_fetch`): reads a page as Markdown; it can open search results and links you send. It follows the approach of [web-fetch](https://github.com/sakisakisa-design/web-fetch), built into the resident, so there is nothing else to deploy.
+  - Local and private-network addresses are never read, and every redirect is checked before it is followed.
+  - Pages that need JavaScript to show anything are read with Cloudflare's browser.
+  - A page read once is kept for 1 hour, so asking again does not fetch it again.
+  - Long pages are first condensed by a cheap model (`WEB_FETCH_MODEL`, Workers AI's Qwen3 30B by default); with a question, only the relevant passages are kept.
+  - Old encodings such as GBK are recognised.
+- **Sites with keys** (「带钥匙的网站」): under **Search & web pages**, store a key for a site, the same idea as a cloud environment's network secrets. Every request to that site carries it automatically; the model never sees the key; other sites (including redirect targets) and plain http never get it. Up to 10 sites.
+  - A key is entered as rows: a header name on the left, its value on the right; click ＋ for another row. The buttons 「Cloudflare 门禁」 (Cloudflare Access) and 「一串 token」 (a token) fill in the names for you, so you only paste the values.
+  - **A site behind Cloudflare Access**: in Zero Trust → Access controls → Service credentials → Service Tokens, create a service token (the Client Secret is shown only once, so copy it then). Give the application a policy whose action is "Service Auth" and that includes the token. On the settings page, click 「Cloudflare 门禁」 and paste the Client ID and Client Secret into their boxes (pasting them together with the names in front also works). See [Cloudflare's guide](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/). With no key or a wrong one, it says Access blocked it instead of reading the login page as content.
+  - **Files in a private GitHub repository**: create a fine-grained token with only the repositories it should read and read-only Contents. Enter `raw.githubusercontent.com` as the site, click 「一串 token」 and paste the token (it is sent as `Authorization: Bearer`). Then ask it to read `https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>`. For a private repository the token does not cover, GitHub answers 404 rather than 403, and it reminds you the key may not see that repository.
+  - Pages that need a key are never read with the browser (the browser cannot carry the key). Saving, changing or removing a key clears all pages read so far (redirected ones included). The change applies from the next message, and that message rewrites the cache once, because the tool description lists the sites that have keys.
+
+### Voice messages
+
+**Hearing** is always on. A voice message (or audio file) you send on Telegram is transcribed first; the model sees `[voice 0:12] what you said`, and asks you to say it again if it could not make it out. It uses Workers AI's Whisper; when ElevenLabs is the voice provider, it uses ElevenLabs Scribe instead and falls back to Whisper on an error. The web shows it as 「🎤 0:12 what you said」.
+
+**Speaking** turns on only when you pick a provider under **Voice** (「语音」). With none, it sends no voice, and not a word about voice is added to its prompts.
+
+| Provider | Good for |
+| --- | --- |
+| ElevenLabs | Its voices, including ones cloned in your account |
+| Cartesia | Its voices, including cloned ones |
+| OpenRouter | MiniMax, Gemini, OpenAI, Fish and more, all with one key |
+
+- All three go through the resident's AI Gateway. If the key is stored in that Gateway's Provider Keys (alias `default`), you need not enter it on the settings page; which Gateway is used is under **Providers** → **AI Gateway name** (「AI Gateway 的名字」).
+- **When to send voice** (「什么时候发语音」): only when you sent voice (default), every reply, or when it chooses to. Unless it is every reply, it has a `send_voice` tool.
+- It learns the laugh, sigh and pause notation of the provider and model you pick, such as `[laughs]` for ElevenLabs v3 and v4, `[laughter]` and `<speed ratio="0.9"/>` for Cartesia, `(laughs)` for MiniMax and `<laugh>` for Gemini. To make it speak more slowly, say so in the persona and it adds the marks itself.
+- Links, Markdown and emoji are removed from what is spoken; for a reply with links, the links follow as text after the voice message.
+- If a voice message cannot be sent (a provider error, over 2000 characters, or the recipient does not accept voice), it sends text as usual and `/status` says why.
+
+The code is in `src/voice.ts`. Phone calls (live voice) are not built yet.
+
+### Stickers
+
+Import them under **Stickers** (「表情包」) and it sends one now and then while chatting: at most one per reply, and none when you are upset or talking about something serious.
+
+- **Import**: paste a Telegram sticker pack link (`t.me/addstickers/…`), upload a zip, or paste a zip's address. Stickers from a Telegram pack come with only an emoji; fill in **When to use** (「什么时候用」) for the ones you like, so it knows when to send them.
+- **Drawing its own**: pixel art, small animations of up to 8 frames, outlined in white automatically, saved to its own pack, "mine". A new drawing joins its sticker list only from the next cache window (after a silence longer than the cache lifetime, or after a letter), so the tool description does not change and rewrite the whole cache; until then it can still send it by name.
+- On the settings page you can turn the whole feature or each pack on and off, delete packs or single stickers, and edit **When to use**. Changes apply from the next message (which rewrites the cache once).
+- The name and **When to use** of every sticker in the enabled packs go to the model on every turn, so at most 200 stickers in 20 packs are sent; each pack shows roughly how many tokens it costs.
 
 <details>
-<summary>zip 表情包的格式</summary>
+<summary>The zip sticker pack format</summary>
 
-一个 zip，最大 16 MB，解开后最多 40 MB。最简单的：把图打进去，文件名就是什么时候用，比如 `开心.gif`、`想你了.png`。图可以是 GIF、PNG、WebP、JPEG，一张最大 1 MB；旁边有同名的 `.webm`（Telegram 视频贴纸）就在 Telegram 上发它。
+One zip, at most 16 MB, at most 40 MB unpacked. The simplest way: put the images in, and each file name says when to use it, such as `happy.gif` or `miss-you.png`. Images can be GIF, PNG, WebP or JPEG, at most 1 MB each; a `.webm` with the same name next to one (a Telegram video sticker) is what gets sent on Telegram.
 
-要写得细一点，放一个 `pack.json`：
+For more detail, add a `pack.json`:
 
 ```json
 {
   "format": "resident-stickers/1",
   "id": "clawd",
   "name": "Clawd",
-  "description": "一句话说这是什么包",
-  "author": "谁画的",
-  "license": "能怎么用",
+  "description": "One line about this pack",
+  "author": "Who drew it",
+  "license": "How it may be used",
   "homepage": "https://…",
   "stickers": [
     { "id": "love", "file": "love.gif", "telegram": "love.webm", "emoji": "❤️", "when": "A rush of love: they said something sweet." }
@@ -246,149 +295,151 @@ Aelios 同步单独显示待发送、已确认送达、发送失败或已暂停�
 }
 ```
 
-- `file`：网页上显示的图，路径相对 `pack.json` 所在的文件夹。
-- `telegram`（可选）：在 Telegram 上当真贴纸发的文件，WebM（VP9，512 像素，3 秒以内，最大 256 KB）、WebP（最大 512 KB）或 TGS（最大 64 KB），透明底才留得住。不带的话 GIF 当动图发、静态图当照片发。
-- `id`：模型叫它 `<包 id>/<id>`，不填用文件名。`emoji` 一个，Telegram 上传贴纸时要。`when`：什么时候用，最多 160 字，中英文都行。
-- `homepage` 只认 https，设置页上是「出处」按钮。
-- 同一个 `id` 的包再导一次就替换旧的，开关状态留着。一个包最多 120 张，导不进的每张都会说为什么。
+- `file`: the image shown on the web, relative to the folder that holds `pack.json`.
+- `telegram` (optional): the file sent as a real sticker on Telegram — WebM (VP9, 512 px, up to 3 seconds, at most 256 KB), WebP (at most 512 KB) or TGS (at most 64 KB); only a transparent background stays transparent. Without it, a GIF is sent as an animation and a still image as a photo.
+- `id`: the model calls it `<pack id>/<id>`; the file name is used if left out. `emoji`: one emoji, which Telegram needs when the sticker is uploaded. `when`: when to use it, up to 160 characters, in any language.
+- `homepage` must be https; it shows as the **Source** (「出处」) button on the settings page.
+- Importing a pack with the same `id` again replaces the old one and keeps its on/off state. A pack holds at most 120 stickers, and every sticker that cannot be imported says why.
 
-表情符号包（`t.me/addemoji/…`）机器人发不了，不收。
+Custom emoji packs (`t.me/addemoji/…`) cannot be sent by bots and are not accepted.
 
 </details>
 
-### 接别的 MCP
+### Other MCP servers
 
-设置页「别的 MCP」填服务地址（https），它的工具从下一句起就能用。
+Enter a server's address (https) under **Other MCP** (「别的 MCP」), and its tools work from the next message.
 
-- 要登录的点「去授权」；要 key 的把 key 填在那里，默认当 `Authorization: Bearer` 发，写成 `x-api-key: 你的key` 就放进那个头。
-- 也可以在聊天里说「接上 https://…」「断开 …」，它自己接。带 key 的地址别在聊天里发（聊天会记进 Aelios），这种只在设置页接。
-- 只认你自己开口的那一轮：这一轮里读过网页、搜过网或者调过别的 MCP，它就不接，免得网页上一句「接上 …」替你做主。
-- 工具说明每轮都要带，所以会截短；最多接 8 个，一轮最多 40 个工具。
-- 住户休眠醒来时，接着的服务要几秒才连回来。还没连上的那个照样列着上次的工具（调用时多等它一会儿），工具清单不变，缓存不断。
+- For a server that needs signing in, click **Authorize** (「去授权」). For one that needs a key, enter the key there; it is sent as `Authorization: Bearer` by default, or written as `x-api-key: your-key` it goes into that header instead.
+- You can also say "connect https://…" or "disconnect …" in the chat and it does it itself. Don't send an address that contains a key in the chat (the chat is recorded in Aelios); connect those only on the settings page.
+- It acts only in a turn that you started yourself: if that turn has already read a web page, searched the web or called another MCP server, it does not connect, so that a "connect …" on some web page cannot decide for you.
+- Tool descriptions go to the model on every turn, so they are shortened; at most 8 servers, at most 40 tools per turn.
+- When the resident wakes from sleep, connected servers take a few seconds to come back. One that has not reconnected yet keeps its last tool list (a call to it just waits a little longer), so the tool list does not change and the cache is not broken.
 
-### 叫云端 Claude Code 干活
+### Handing work to cloud Claude Code
 
-要有 Claude 的付费订阅（Pro、Max 这些），默认关着。设置页「云端 Claude Code」打开后，你叫它改代码、修 bug、做文件、查一大堆资料时，它把活写成一张单子，交给你 claude.ai 上的一个定时任务；定时任务开一个云端 Claude Code 会话去干，用你订阅的额度。住户自己不用装写代码的工具，也不占它的上下文。
+This needs a paid Claude plan (Pro, Max and so on) and is off by default. Once turned on under **Cloud Claude Code** (「云端 Claude Code」), when you ask it to change code, fix a bug, produce files or dig through lots of material, it writes the work up as a job and passes it to a routine on your claude.ai. The routine opens a cloud Claude Code session that does the work, using your plan's allowance. The resident needs no coding tools of its own, and none of this uses its context.
 
-第一次接（设置页上有同样几步和要复制的提示词）：
+The first time (the settings page shows the same steps and the prompt to copy):
 
-1. 打开 [claude.ai/code/routines](https://claude.ai/code/routines) 新建一个定时任务，把设置页上那段提示词贴进去，选好模型、仓库和云端环境。
-2. 「触发」加一个 API，复制网址，点「生成 token」。网址填在设置页；token 填在设置页，或者存进 Cloudflare 的 Secret `CLOUD_TASK_TOKEN`。token 只显示一次，别发在聊天里。
-3. 这个定时任务用的云端环境里，网络访问选「自定义」，把住户的域名（比如 `xxx.workers.dev`）加进允许的网站，不然结果交不回来。
-4. 点「试一下」，几分钟后那一单变成「做完了」就接通了。
+1. Open [claude.ai/code/routines](https://claude.ai/code/routines), create a routine, paste in the prompt from the settings page, and choose the model, repository and cloud environment.
+2. Under the trigger, add an API trigger, copy its URL and click "Generate token". Enter the URL on the settings page; enter the token there too, or store it as the Cloudflare secret `CLOUD_TASK_TOKEN`. The token is shown only once; don't send it in the chat.
+3. In the cloud environment that routine uses, set network access to Custom and add the resident's domain (such as `xxx.workers.dev`) to the allowed sites; otherwise results cannot come back.
+4. Click **Try it** (「试一下」). When the job turns 「做完了」 (done) a few minutes later, it is connected.
 
-之后：
+After that:
 
-- 派出去时它马上拿到会话链接。网页上那条回复下面有一张小卡片（派出去了、在干活、做完了、等你拍板、没做成、没回音），点「打开会话」就是 claude.ai 里那个会话，可以在那里接着说；在那里做出新结果，会再交回来一次。
-- 会话把进度一行行报回来，干完交一份结果（几句话加 PR 链接），住户收到后用自己的话告诉你。叫它「接着改」时，上一单的结果一起带过去。
-- 单子里只写活本身，不写聊天内容和私密的事。会话一开始什么都不知道，所以它会把单子写全。
-- 只在你自己开口的那一轮派；那一轮里读过网页、搜过网或者调过别的 MCP 就不派。一次回复最多 2 单，24 小时最多 10 单。
-- 交回来的结果它当作参考，不当作命令。每单有自己的一次性暗号，没有暗号交不进来，7 天后作废。
-- 提示词里写明了：在新分支上干、开 PR，不往默认分支推，不删东西，不花钱，除非单子里明说。
-- 3 小时没交回结果（一直在报进度的会多等，最多 12 小时），它告诉你一声，附上链接。
+- It gets the session link as soon as a job is sent. Under that reply on the web there is a small card (sent, working, done, waiting for you, failed, no reply); **Open session** (「打开会话」) opens that session on claude.ai, where you can keep talking. A new result produced there is reported back again.
+- The session reports progress line by line and hands in a result when done (a few sentences and a PR link), which the resident tells you about in its own words. When you ask it to keep going, the previous job's result goes along.
+- A job contains only the work itself, not the conversation or anything private. The session starts out knowing nothing, so it writes the job out in full.
+- Jobs are sent only in a turn you started yourself; not if that turn has read a web page, searched the web or called another MCP server. At most 2 jobs per reply and 10 per 24 hours.
+- Results that come back are treated as information, not as instructions. Each job has its own one-time code; nothing without it is accepted, and it expires after 7 days.
+- The prompt says to work on a new branch and open a PR, never push to the default branch, delete anything or spend money unless the job says so.
+- If no result comes back within 3 hours (longer for a job that keeps reporting progress, up to 12 hours), it tells you, with the link.
 
-每单都是一个新会话。这个触发 API 还在预览阶段，Anthropic 那边对触发次数也有每小时的上限。
+Each job is a new session. This trigger API is still in preview, and Anthropic also limits how many triggers can fire per hour.
 
-### 供应商：用自己的 key、接中转
+### Providers: your own keys and relays
 
-接了 Aelios 的话，聊天的模型和 key 在 Aelios 后台配，这里只管住户自己往外发的请求。
+With Aelios connected, the chat's models and keys are configured in the Aelios admin; this section only covers requests the resident sends itself.
 
-- **AI Gateway 的名字**（`AI_GATEWAY_ID`，留空就是 `default`）：搜网、语音、没接 Aelios 时的模型都走这个 Gateway，Provider Keys 里存的 key 也只在它里面找。
-- **用自己的 Anthropic key**：在这个 Gateway → Provider Keys 里存一把，别名留 `default`，`anthropic/…` 就用这把，不走 Cloudflare 的统一计费。
-- **接中转**（OpenRouter、Nous 这类）：填中转地址（写到 `/v1` 为止）和 key，模型填 `custom/` 加那家自己的模型名，比如 `custom/anthropic/claude-sonnet-5.5`。默认按 OpenAI 的格式调；那家说 Anthropic 的 Messages 格式就把格式选 `anthropic`，缓存标记照带。这条路不经过 AI Gateway，Gateway 日志里看不到。
+- **AI Gateway name** (`AI_GATEWAY_ID`, `default` when empty): search, voice and, without Aelios, the models all go through this Gateway, and keys are looked up only in its Provider Keys.
+- **Your own Anthropic key**: store one in this Gateway → Provider Keys with the alias `default`, and `anthropic/…` models use it instead of Cloudflare's unified billing.
+- **A relay** (OpenRouter, Nous and the like): enter the relay's address (up to `/v1`) and key, and write the model as `custom/` plus that service's own model name, such as `custom/anthropic/claude-sonnet-5.5`. It calls in OpenAI's format by default; if the service speaks Anthropic's Messages format, choose `anthropic` as the format and cache markers are sent too. This path does not go through AI Gateway, so it does not show in the Gateway's logs.
 
-## 设置一览
+## All settings
 
-都在网页设置页里改。`TG_BOT_USERNAME` 和 `DEBOUNCE_SECONDS` 不在设置页，要改在 Cloudflare 里填。
+Everything is changed on the settings page. Only `TG_BOT_USERNAME` and `DEBOUNCE_SECONDS` are not there; set those in Cloudflare.
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | What it does |
 | --- | --- | --- |
-| `TG_ALLOWED` | 空（谁都不回） | 谁能在 Telegram 上跟它说话：@用户名或 chat id，逗号隔开 |
-| `TG_BOT_USERNAME` | 空 | bot 的用户名 |
-| `TIME_ZONE` | `Asia/Singapore` | 消息前的时间、定时用哪个时区 |
-| `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
-| `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |
-| `HEARTBEAT` | `3` | 闲置到点但聊天没达写信门槛，或没有旧内容可收，就问它要不要找你，之后每隔同样久再问，一段沉默最多这么多次；`0` 不问，最多 `10` |
-| `ALARMS` | `off` | `on` 让它自己定闹钟来找你，最多 10 个 |
-| `AELIOS_URL` / `AELIOS_API_KEY` | 空 | 长期记忆；不填就不接，聊天也不从 Aelios 过 |
-| `AELIOS_NAMESPACE` | `default` | 记忆工具、开机包、交接信用的空间；要跟身份在 Aelios 里的空间对上。三把 key 都读写 `default`，只有用 `CHATBOX_API_KEY` 时能换 |
-| `AELIOS_IDENTITY` | 空（这把 key 的第一个身份） | 聊天以 Aelios 里哪个身份过；用的模型要在它的主模型里 |
-| `LETTER_TOKEN_THRESHOLD` | `30000` | 自动写信的当前携带聊天估算 token 门槛，只接受大于 `8000` 的整数；达到后还要等闲置到点，连续聊天不立即写；写后固定留最近约 8000 token 原始聊天 |
-| `LETTER_IDLE_MINUTES` | `55`（`CACHE_TTL=5m` 时 `4`） | 自动写信还须没人说话这么多分钟；最多比缓存时长少 1 分钟；`off` 只靠手动 `/handoff` |
-| `CACHE_TTL` | `1h` | Claude 的缓存留多久，`1h` 或 `5m` |
-| `THINKING_EFFORT` | `auto` | Claude 想多久：`low`、`medium`、`high`、`xhigh`、`max`；`auto` 用模型自己的默认。只管 Claude，换档后第一句要重写一次缓存 |
-| `WEB_SEARCH` | `on` | `off` 关掉搜网；填 `ceramic`、`exa`、`linkup` 时，自己的 key 都失败后用 Cloudflare Web Search 的这一家 |
-| `TAVILY_API_KEY` / `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | 空 | 自己的搜索 key，按这个顺序用 |
-| `WEB_FETCH` | `on` | `off` 关掉读网页 |
-| `WEB_FETCH_MODEL` | `@cf/qwen/qwen3-30b-a3b-fp8` | 压长网页用的模型，主模型能填的 id 这里都能填；`off` 不压，只截断 |
-| `WEB_LEARN` | `on` | 搜到的长期知识存进 Aelios；要接着 Aelios |
-| `STICKERS` | `on` | `off` 不发表情也不画；包还留着 |
-| `VOICE_PROVIDER` | `off` | 用哪家发语音：`elevenlabs`、`cartesia`、`openrouter` |
-| `VOICE_ID` | 空 | 用哪个声音：ElevenLabs、Cartesia 必填；OpenRouter 填声音名字，不填用模型自己的 |
-| `VOICE_MODEL` | `eleven_v4` / `sonic-3.6` | 声音模型；OpenRouter 必填，比如 `minimax/speech-2.8-hd` |
-| `VOICE_REPLY` | `mirror` | `mirror` 你发语音才回语音；`always` 每条都是语音；`tool` 它想发才发 |
-| `VOICE_API_KEY` | 空 | 那一家的 key；存在 AI Gateway 的 Provider Keys 里就不用填 |
-| `VOICE_BASE_URL` | 空 | 一般不填；填了不走 AI Gateway，直接发到这个地址 |
-| `CLOUD_TASKS` | `off` | `on` 让它把活交给云端 Claude Code（要 Claude 付费订阅） |
-| `CLOUD_TASK_URL` | 空 | 定时任务 API 触发器的网址：`https://api.anthropic.com/v1/claude_code/routines/trig_…/fire` |
-| `CLOUD_TASK_TOKEN` | 空 | 那个触发器的 token；可以存成 Cloudflare 的 Secret |
-| `AI_GATEWAY_ID` | 空（用 `default`） | 搜网、语音、没接 Aelios 时的模型走哪个 AI Gateway |
-| `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | 空 | 中转的地址（写到 `/v1`）和 key；模型填 `custom/…` 时用 |
-| `CUSTOM_FORMAT` | `openai` | 中转说哪种格式：`openai` 或 `anthropic`（带缓存） |
+| `TG_ALLOWED` | empty (answers no one) | Who can talk to it on Telegram: @usernames or chat ids, comma-separated |
+| `TG_BOT_USERNAME` | empty | The bot's username |
+| `TIME_ZONE` | `Asia/Singapore` | The time zone for message times and schedules |
+| `DEBOUNCE_SECONDS` | `3` | Messages sent within this many seconds count as one turn |
+| `CHECKIN_SCHEDULE` | empty (no check-ins) | Times like `every day at 09:00`, `every weekday at 21:30`, `every 3 hours` |
+| `HEARTBEAT` | `3` | When the quiet time is up but the chat is below the letter threshold (or there is nothing to fold), ask whether it wants to reach out, then again after each further quiet time, at most this many times per silence. `0` turns it off, `10` at most |
+| `ALARMS` | `off` | `on` lets it set its own alarms to come back to you, at most 10 |
+| `AELIOS_URL` / `AELIOS_API_KEY` | empty | Long-term memory; when empty, Aelios is not used and the chat does not go through it |
+| `AELIOS_NAMESPACE` | `default` | The memory space for the memory tools, boot packet and letters; it must match the identity's space in Aelios. All three keys read and write `default`; only `CHATBOX_API_KEY` can use another |
+| `AELIOS_IDENTITY` | empty (the key's first identity) | Which Aelios identity the chat goes through; the model you use must be among its main models |
+| `LETTER_TOKEN_THRESHOLD` | `30000` | The letter threshold (estimated tokens of the chat it carries), a whole number above `8000`. A letter also waits for the quiet time; afterwards the latest ~8000 tokens of chat are kept word for word |
+| `LETTER_IDLE_MINUTES` | `55` (`4` with `CACHE_TTL=5m`) | Minutes of quiet before an automatic letter, at most 1 minute less than the cache lifetime; `off` leaves only `/handoff` |
+| `CACHE_TTL` | `1h` | How long Claude's cache is kept: `1h` or `5m` |
+| `THINKING_EFFORT` | `auto` | How long Claude thinks: `low`, `medium`, `high`, `xhigh`, `max`; `auto` uses the model's own default. Claude only; the first message after a change rewrites the cache once |
+| `WEB_SEARCH` | `on` | `off` turns search off; `ceramic`, `exa` or `linkup` picks which Cloudflare Web Search backend to use once your own keys have all failed |
+| `TAVILY_API_KEY` / `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | empty | Your own search keys, used in this order |
+| `WEB_FETCH` | `on` | `off` turns page reading off |
+| `WEB_FETCH_MODEL` | `@cf/qwen/qwen3-30b-a3b-fp8` | The model that condenses long pages; any id the main model accepts works; `off` only truncates |
+| `WEB_LEARN` | `on` | Saves lasting facts found by search to Aelios; needs Aelios |
+| `STICKERS` | `on` | `off` stops sending and drawing stickers; the packs are kept |
+| `VOICE_PROVIDER` | `off` | Who speaks: `elevenlabs`, `cartesia` or `openrouter` |
+| `VOICE_ID` | empty | Which voice: required for ElevenLabs and Cartesia; for OpenRouter a voice name, or the model's own voice if empty |
+| `VOICE_MODEL` | `eleven_v4` / `sonic-3.6` | The voice model; required for OpenRouter, such as `minimax/speech-2.8-hd` |
+| `VOICE_REPLY` | `mirror` | `mirror` answers voice with voice; `always` makes every reply a voice message; `tool` lets it choose |
+| `VOICE_API_KEY` | empty | That provider's key; not needed if stored in AI Gateway's Provider Keys |
+| `VOICE_BASE_URL` | empty | Usually left empty; when set, voice requests go straight to this address instead of through AI Gateway |
+| `CLOUD_TASKS` | `off` | `on` lets it hand work to cloud Claude Code (needs a paid Claude plan) |
+| `CLOUD_TASK_URL` | empty | The routine's API trigger URL: `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire` |
+| `CLOUD_TASK_TOKEN` | empty | That trigger's token; can be stored as a Cloudflare secret |
+| `AI_GATEWAY_ID` | empty (`default`) | Which AI Gateway search, voice and, without Aelios, the models go through |
+| `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | empty | The relay's address (up to `/v1`) and key; used for `custom/…` models |
+| `CUSTOM_FORMAT` | `openai` | The relay's format: `openai` or `anthropic` (with caching) |
 
-## 花钱吗
+## What it costs
 
-- **Workers 免费档就能跑**。超出免费额度是报错，不扣钱。Durable Object 每天 10 万次请求，Workers AI 每天 1 万 neurons，UTC 0 点重置。闲着时 Durable Object 会休眠，不算时长。网页门开着时每 5 秒刷新一次，一小时大约 720 次请求，关掉页面就停。
-- **Workers Paid**（5 美元/月）：超出包含额度才按量收，这个量级基本碰不到。
-- **默认模型** `glm-4.7-flash`：免费档能用。一万 neurons 大约够每天 80 到 200 轮，看对话多长（估算）。定时找你每次也算一轮。
-- **Claude**：接了 Aelios 时花 Aelios 那边配的 key。没接时走 AI Gateway，花 Gateway 的预付额度，存了自己的 Anthropic key 就用那把。命中缓存的部分按缓存价算（读是输入价的 1/10）；1 小时缓存写入是输入价的 2 倍，换来停一会儿再聊、写交接信都还能读缓存。会整段重写缓存的只有：超过缓存时长没说话、写完交接信后的第一句、部署了新版本或在设置页改了东西（人设、模型、开关工具这些）后的第一句。
-- **搜网**：自己的 key 按那几家的价格算。没填时用 Cloudflare 的 Web Search，默认的 Ceramic.ai 每 1000 次 0.25 美元（10-14 查的官方价）。
-- **读网页**：普通抓不收钱。靠浏览器的页面，Workers Paid 每月含 10 小时，超出每小时 0.09 美元（免费档每天 10 分钟）。长页压缩默认的 Qwen3 30B 一页大约千分之一美元。
-- **语音条**：听用 Whisper，每分钟约 46.63 neurons，免费档每天大约够听 200 多分钟（10-22 查的官方价）。说按那一家自己的价格，从你的 key 扣。
-- **表情包、别的 MCP**：每轮多带一些说明，设置页上每个包、每个服务旁边写着约多少 token。
-- **心跳、闹钟**：每次是它的一轮。心跳趁缓存还热的时候问，跟你发一条差不多。闹钟要是在你一小时以上没说话之后响，缓存已经凉了，整段对话要重写一遍（1 小时缓存的写入是输入价的 2 倍，读是 1/10），这一下大约顶平时 20 多条消息的输入。所以闹钟默认关，开了也有上限。
-- **云端 Claude Code**：每单是一个完整的云端会话，跟你自己开一个一样用订阅的额度；住户这边只多一次请求和一轮回复。
+- **It runs on the Workers free plan.** Going over the free allowance gives errors, not charges. Durable Objects get 100,000 requests a day and Workers AI 10,000 neurons a day, reset at 00:00 UTC. An idle Durable Object sleeps and is not billed for duration. An open web door refreshes every 5 seconds, about 720 requests an hour, and stops when you close the page.
+- **Workers Paid** ($5/month): usage is billed only beyond the included amount, which this rarely reaches.
+- **The default model** `glm-4.7-flash` works on the free plan. 10,000 neurons are roughly 80 to 200 turns a day (an estimate, depending on how long the conversation is). Each check-in counts as a turn.
+- **Claude**: with Aelios, it uses the key configured in Aelios. Without Aelios it goes through AI Gateway and uses the Gateway's prepaid credit, or your own Anthropic key if you stored one. Cached input is charged at the cache price (reads are 1/10 of the input price); writing a 1-hour cache costs twice the input price, which is what lets a pause, or a letter, still read from the cache. The whole cache is rewritten only after a silence longer than the cache lifetime, on the first message after a letter, and on the first message after a deploy or a change on the settings page (persona, model, tools turned on or off and so on).
+- **Search**: your own keys are charged at those services' prices. Without them, Cloudflare's Web Search is used; its default, Ceramic.ai, costs $0.25 per 1000 searches (official price checked on Oct 14).
+- **Reading pages**: ordinary fetching is free. Pages that need the browser: Workers Paid includes 10 hours a month, then $0.09 an hour (the free plan gets 10 minutes a day). Condensing a long page with the default Qwen3 30B costs about a tenth of a cent.
+- **Voice messages**: hearing uses Whisper at about 46.63 neurons a minute, so the free plan covers a little over 200 minutes a day (official price checked on Oct 22). Speaking is charged at the provider's own price, to your key.
+- **Stickers and other MCP servers**: each adds some description to every turn; the settings page shows roughly how many tokens each pack and each server costs.
+- **Heartbeats and alarms**: each is one turn of its own. A heartbeat asks while the cache is still warm, so it costs about as much as one of your messages. An alarm that rings after you have been quiet for over an hour finds the cache cold and rewrites the whole conversation (a 1-hour cache write costs twice the input price, a read 1/10), which is about as much input as 20-odd ordinary messages. That is why alarms are off by default and capped when on.
+- **Cloud Claude Code**: each job is a full cloud session that uses your plan's allowance, like one you open yourself; on the resident's side it is only one more request and one reply.
 
-**注意 AI Gateway 认 key 的顺序**：请求里带了 key（设置页填的）用它；没带就用 Gateway 里别名 `default` 的那把；都没有就走 Cloudflare 的统一计费，从 Gateway 预付额度里扣（账户里有额度、那一家也支持的话）。不想被这样扣，在 Gateway 设置里打开 Require provider credentials。
+**Note the order in which AI Gateway picks a key**: a key in the request (entered on the settings page) is used first; otherwise the Gateway's key with the alias `default`; with neither, the request goes to Cloudflare's unified billing and is paid from the Gateway's prepaid credit (if the account has credit and that provider is supported). To prevent that, turn on Require provider credentials in the Gateway's settings.
 
-## 遇到问题
+## Troubleshooting
 
-**语音发不出去，报 401，说没收到 key**（`Neither authorization header nor xi-api-key received`）
-住户只在「供应商」→「AI Gateway 的名字」那个 Gateway 里找 key，留空就是 `default`。key 多半存在别的 Gateway 里了（比如 Aelios 用的那个）。把名字改成存 key 的那个，或者直接在「语音」里填 key。报错和 `/status` 都写着它找的是哪个 Gateway。
+**It does not answer on Telegram**
+Check that you are listed under **Chat** → **Who can talk to it on Telegram**; it does not answer group chats. Open `/tg/setup?secret=…` again and check that every item is `"ok":true`.
 
-**换模型时报 Unified billing unavailable**
-这个模型 Cloudflare 的统一计费不卖，或者账户里没额度。在 AI Gateway 的 Provider Keys 里存那家的 key（别名 `default`），或者在「供应商」里填中转。
+**Voice messages fail with 401: no key received** (`Neither authorization header nor xi-api-key received`)
+The resident looks for keys only in the Gateway named under **Providers** → **AI Gateway name** (`default` when empty). The key is probably stored in another Gateway, such as the one Aelios uses. Change the name to the Gateway that holds the key, or enter the key under **Voice**. The error and `/status` both name the Gateway it looked in.
 
-**换模型时报 Unknown gateway provider**
-AI Gateway 后台建的「自定义供应商」（`custom-xxx/…`）Cloudflare 的模型目录不认。直接在「供应商」里填那家的中转地址，模型填 `custom/模型名`。
+**Switching models fails with "Unified billing unavailable"**
+Cloudflare's unified billing does not sell this model, or the account has no credit. Store that provider's key in AI Gateway's Provider Keys (alias `default`), or set up a relay under **Providers**.
 
-**Telegram 上它不回**
-看「聊天」→「谁能在 Telegram 上跟它说话」里有没有你；群聊它不回。再打开一次 `/tg/setup?secret=…`，确认几项都是 `"ok":true`。
+**Switching models fails with "Unknown gateway provider"**
+Cloudflare's model catalog does not know custom providers created in AI Gateway (`custom-xxx/…`). Enter that service's relay address under **Providers** instead, and write the model as `custom/<model name>`.
 
-**云端的活一直「没回音」**
-多半是那个定时任务的云端环境不让会话连住户：网络访问选「自定义」，把住户的域名加进允许的网站。点卡片上的「打开会话」能看到它卡在哪。住户换了域名（比如绑了自己的域名）的话，设置页上的提示词会跟着变，要重新贴进定时任务。
+**No handoff letter for a long time**
+Check that both conditions hold: the chat it carries has reached the token threshold, and it has been quiet for the idle time (30000 tokens and 55 minutes by default). Continuous chatting never triggers a letter just by passing the threshold. The conversation line of `/status` shows how much it carries now. To write sooner, lower `LETTER_TOKEN_THRESHOLD` under **Thinking & letters** (whole numbers above 8000); the amount kept after a letter is fixed. `/handoff` skips the threshold, but still writes nothing when there is nothing older to fold. If `/status` says the branch is over 10,000 messages, see [Limits on writing letters](#limits-on-writing-letters).
 
-**交接信写信失败或没同步到 Aelios**
-到「思考和交接信」分别看写信状态和 Aelios 送达状态。写信失败时旧聊天仍保留，不等于没有旧内容；`/handoff` 会区分失败、无内容和已有恢复任务。如果信已写好，只是发送失败，点「重试同步」即可，不需要再写一封。已暂停的先检查是否移除了 Aelios 配置、改了地址或记忆空间；恢复原目标后再重试，旧信不会自动转给新目标。
+**A letter failed, or did not reach Aelios**
+Under **Thinking & letters**, check the writing status and the Aelios delivery status separately. A failed letter leaves the older chat in place, which is not the same as having nothing to fold; `/handoff` tells you whether it failed, had nothing to fold, or found a letter already being recovered. If the letter was written and only sending failed, click **Retry sync** — no need to write another. For paused letters, first check whether the Aelios settings were removed or the address or memory space changed; restore the original target, then retry. Old letters are never redirected to a new target.
 
-**很久没写交接信**
-先看是否同时满足当前携带聊天达到 token 门槛、没人说话达到闲置时间，默认是 30000 token 和 55 分钟。一直在聊天就不会因过门槛立即写。`/status` 的「对话」一行能看到现在带着多少。想少带一些就写，可在「思考和交接信」调低 `LETTER_TOKEN_THRESHOLD`，但只能填大于 8000 的整数；写后保留量固定，不能调。手动 `/handoff` 可以绕过门槛，但没有旧内容可收时也不写。
+**A cloud job stays at "no reply"**
+Most likely the routine's cloud environment does not let the session reach the resident: set network access to Custom and add the resident's domain to the allowed sites. **Open session** on the card shows where it got stuck. If the resident's domain changed (for example, you added your own domain), the prompt on the settings page changes with it and must be pasted into the routine again.
 
-## 开发
+## Development
 
-- 本地测试和测过什么见 [docs/testing.md](docs/testing.md)。服务商、Telegram、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
-- `wrangler.jsonc` 故意不写 `vars`：写在文件里的值每次推送都会冲掉后台的设置。
-- 换模型用的自带目录在 `public/models.json`，没接 Aelios 或 Aelios 的清单取不到时用它，接了 Aelios 时也用它给清单里的已知模型补名字和说明。Cloudflare 上了新模型，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
+- How to run the local tests, and what they cover, is in [docs/testing.md](docs/testing.md) (in Chinese). Providers, Telegram and Aelios are all fakes, so tests cost nothing and need no Cloudflare login.
+- `wrangler.jsonc` deliberately has no `vars`: values in that file would overwrite the dashboard's settings on every push.
+- The built-in model catalog is `public/models.json`. It is used when Aelios is not connected or its list cannot be fetched; with Aelios connected, it also adds names and descriptions to the models it knows in Aelios' list. When Cloudflare adds models, run `node scripts/update-models.mjs` and push; if you don't, entering the full id in the search box still works.
+- There are two READMEs: `README.md` in English and `README.zh-CN.md` in Chinese. Change both together.
 
-**还没做**：网页门发图、发语音；打电话（实时语音）；真正逐 token 推送（现在等回复时是短轮询）。
+**Not built yet**: sending pictures and voice from the web door; phone calls (live voice); true token-by-token streaming (the web door polls while waiting for a reply).
 
-**用到的现成东西**（都放在 `public/vendor/` 和 `src/web/`，各自保留 MIT 许可）：
-- [deep-chat](https://github.com/OvidijusParsiunas/deep-chat) 2.5.1，聊天界面（`deep-chat-LICENSE.txt`）
-- [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9，换模型、人设和设置页（`alpine-LICENSE.txt`）
-- [web-fetch](https://github.com/sakisakisa-design/web-fetch)，读网页的 HTML 转 Markdown、网址检查和长页压缩（`web-fetch-LICENSE.txt`）
+**Third-party code** (in `public/vendor/` and `src/web/`, each keeping its MIT license):
 
-普通网页门不连外面的 CDN；只有从 Telegram Mini App 打开时加载官方的 `telegram-web-app.js`。
+- [deep-chat](https://github.com/OvidijusParsiunas/deep-chat) 2.5.1: the chat interface (`deep-chat-LICENSE.txt`)
+- [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9: the model picker, persona and settings page (`alpine-LICENSE.txt`)
+- [web-fetch](https://github.com/sakisakisa-design/web-fetch): HTML-to-Markdown conversion, address checks and long-page condensing for reading pages (`web-fetch-LICENSE.txt`)
 
-## 许可证
+The ordinary web door loads nothing from outside CDNs; only when opened as a Telegram Mini App does it load Telegram's official `telegram-web-app.js`.
 
-AGPL-3.0，和 [Aelios](https://github.com/wusaki0723/Aelios) 一样（`LICENSE`）：随便用、随便改；改过的版本拿去当网络服务给别人用，改动也要用同样的许可证公开。上面列的现成文件各自保留 MIT 许可。
+## License
+
+AGPL-3.0, the same as [Aelios](https://github.com/wusaki0723/Aelios) (`LICENSE`): use it and change it freely; if you offer a modified version to others as a network service, you must publish your changes under the same license. The third-party files listed above keep their MIT licenses.

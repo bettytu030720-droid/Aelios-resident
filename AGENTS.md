@@ -17,4 +17,4 @@ Follow [docs/setup-with-ai.md](docs/setup-with-ai.md) step by step. It starts fr
 
 - Node.js 22+. Install with `npm ci`.
 - Before a PR: `npm run typecheck`, then the tests in [docs/testing.md](docs/testing.md) for the parts you touched. They run against fake Telegram, fake Aelios and a scripted model, so they cost nothing and need no Cloudflare login.
-- User-facing docs are in Chinese (`README.md`, `docs/`).
+- User-facing docs: `README.md` is in English (the default) and `README.zh-CN.md` in Chinese; change both together. `docs/` is in Chinese.
