@@ -85,7 +85,10 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 ### 换模型
 
-点网页门左上角的模型名，弹出一个搜索框：上面是正在用的、最近用过的、常用的，往下是 Cloudflare 模型目录里的全部文字模型，输入 `opus`、`kimi`、`qwen` 就能筛。目录里没有的，直接填完整 id 也行。
+点网页门左上角的模型名，弹出一个搜索框：上面是正在用的、最近用过的、常用的，往下是可选的模型，输入 `opus`、`kimi`、`qwen` 就能筛。目录里没有的，直接填完整 id 也行。
+
+- 接了 Aelios 时，往下列的是 **Aelios 自己的模型清单**：你在 Aelios 设置 → 供应商 → 模型清单里选好的那些（`chatgpt/…`、自定义 Provider、带 `:floor` 的名字都在这里）。没存清单时 Aelios 会把上游几百上千个模型全交出来，这里不一一列出，只能搜。Aelios 说它不是这个身份的主模型的（聊天不会记忆），会标「记不住」并调淡，选了也会在试调时被拦下。Aelios 取不到时退回下面那份自带的目录，并说明原因。
+- 没接 Aelios 时，往下是 Cloudflare 模型目录里的全部文字模型。
 
 - 换之前它会先试着调一次，调不通（写错、没额度、档位不含）就不换，当场告诉你为什么。
 - 没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。
@@ -374,7 +377,7 @@ AI Gateway 后台建的「自定义供应商」（`custom-xxx/…`）Cloudflare 
 
 - 本地测试和测过什么见 [docs/testing.md](docs/testing.md)。服务商、Telegram、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
 - `wrangler.jsonc` 故意不写 `vars`：写在文件里的值每次推送都会冲掉后台的设置。
-- 换模型用的目录在 `public/models.json`。Cloudflare 上了新模型，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
+- 换模型用的自带目录在 `public/models.json`，没接 Aelios 或 Aelios 的清单取不到时用它，接了 Aelios 时也用它给清单里的已知模型补名字和说明。Cloudflare 上了新模型，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
 
 **还没做**：网页门发图、发语音；打电话（实时语音）；真正逐 token 推送（现在等回复时是短轮询）。
 

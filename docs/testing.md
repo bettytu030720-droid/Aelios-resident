@@ -47,7 +47,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `letter-recovery-schedule.mjs` | 真实 SDK Scheduler/Lifecycle + Node SQLite，复现旧恢复任务自去重，并验证连续三次恢复唤醒不会丢失 |
 | `letter-state.mjs` | SQLite 写信状态与 outbox 持久化、事务、claim/崩溃租约、六次预算与退避、目标绑定及手动重试 |
 | `letter-delivery.mjs` | 发送凭据校验、安全错误、网络异常、目标与 key 轮换、用户状态文案 |
-| `via-aelios.mjs` | 从 Aelios 过的规矩 |
+| `via-aelios.mjs` | 从 Aelios 过的规矩，以及 Aelios 的模型清单怎么读（`modelsOf`、`listModels`） |
 | `learn.mjs` | 搜网后存知识 |
 | `mcp-servers.mjs` | 接别的 MCP |
 | `stickers.mjs` | 表情包 |
@@ -129,6 +129,7 @@ UI 按以下合同读取状态，写信结果与送达结果互不替代。
 - 定时：每分钟一次的定时，第一次主动发了两个气泡并记进 Aelios，第二次模型回 SKIP，什么都没发。
 - 空闲交接信 5 项：使用真实大小的聊天而非缩小保留量。超过 8000 但未达门槛时闲置不写；50000 与 30000 改的是门槛；超过门槛但仍在说话时不写且新消息重置计时；达到门槛并闲置到点才写，即使心跳开着也不发 Telegram；记进 Aelios、网页带信、近期原始聊天约 8000、开头不额外保留、写信提示撤掉、缓存前文与标记不变；写完再说一句短话，下一次闲置不会立刻再写。
 - 没接 Aelios 时走中转（`--var AELIOS_URL:`，`node test/run.mjs custom`）：OpenAI 格式先试调再换上，带着 key 回话；在设置页把格式改成 `anthropic`，下一句就走 Messages：带着 key、每轮有缓存标记，第二轮发回去的第一轮回复留着字、没有思考块。
+- 模型选择器（`node test/web-ui.mjs` 的最后一组，`node test/via-aelios.mjs`，以及 `main` 和 `custom` 里的 `/web/models`）：接了 Aelios 时浏览 Aelios 自己的模型清单，点和横杠写法的同一个模型算一个，主模型之外的标「记不住」，没存清单的几百个上游模型只搜不列，Aelios 取不到时退回自带目录并说明原因，没接 Aelios 时不去问；`/web/models` 带 Aelios 的身份地址和钥匙，被拒时返回原因而不是报错。
 - 从 Aelios 过的那几条规矩（`node test/via-aelios.mjs`）5 项：模型名怎么改写、哪个走 Messages；身份怎么放进地址；她说的话是她的，定时和交接信那一轮（包括里面调了工具之后的请求）标成不是她说的，旧的中文提示也认。
 - 发给 Claude 前的整理（`node test/claude-run.mjs`）4 项：system 合成一段；之前几轮的思考块拿掉、回复和工具调用留着、这一轮工具之间的思考留着、只有思考的那条整条去掉；第一轮和没思考块的原样发；别家模型不动。另外用真的 AI SDK 和 Cloudflare provider 核过：不整理时历史里的思考块会带着签名发出去，整理后没有。
 - 交接信门槛和保留范围（`node test/fold.mjs`）12 项：中文和全角标点约 1 token，历史思考不算，图片和工具调用、结果算；默认门槛 30000、无效 Worker 值退回默认、等于门槛也算达到、旧信计入当前携带量；固定留近期约 8000，整轮保留，不额外保留开头三条，短回复不会多带上一整条大段提问；最近一轮本身超限也整轮留下；连发消息和工具链不拆，聊得少时不写，旧信不用作压缩端点，空信不收。

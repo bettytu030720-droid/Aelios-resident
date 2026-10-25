@@ -245,7 +245,7 @@ curl -sS -X POST <住户地址>/web/model -H "x-web-key: <网页钥匙>" -H "con
   -d '{"text":"anthropic/claude-sonnet-4.6"}'
 ```
 
-返回里 `"model"` 是你填的名字就换好了。模型名照仓库里 `public/models.json` 的 `id` 写（Cloudflare 的写法，版本号用点）；中转的写 `custom/<那家的模型名>`。用户什么 key 都没有就不用换，留空就是免费的 `@cf/zai-org/glm-4.7-flash`。
+返回里 `"model"` 是你填的名字就换好了。模型名：接了 Aelios 就用 Aelios 那边模型清单里的名字（`GET <Aelios 地址>/<身份>/v1/models`，或网页门选模型弹出来的那份；Anthropic 的版本号用横杠）；没接就照仓库里 `public/models.json` 的 `id` 写（Cloudflare 的写法，版本号用点），中转的写 `custom/<那家的模型名>`。Anthropic 的名字点和横杠两种写法住户都认，发给 Aelios 前会改成横杠。用户什么 key 都没有就不用换，留空就是免费的 `@cf/zai-org/glm-4.7-flash`。
 
 常见报错：
 

@@ -264,6 +264,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .option .desc { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .option .tag { font-size: 11px; color: var(--text-3); border: 1px solid var(--panel-border); border-radius: 999px; padding: 0 7px; }
   .option .state { flex: none; font-size: 12px; color: var(--coral); margin-top: 2px; }
+  .option.dim .title, .option.dim .id, .option.dim .desc { opacity: .55; }
+  .option .tag.off { color: var(--coral); border-color: var(--mine-border); }
+  .sheet .note { margin: 0; padding: 8px 12px 2px; font-size: 12px; line-height: 1.5; color: var(--text-4); }
   .sheet .foot { padding: 8px 14px 12px; border-top: 1px solid var(--panel-border); font-size: 12px; color: var(--text-4); }
   .sheet .foot .warn { margin-bottom: 4px; }
 
@@ -640,23 +643,26 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </button>
       </div>
       <div class="list" role="listbox">
+        <p class="note" x-show="pickerNote()" x-text="pickerNote()"></p>
         <template x-for="group in pickerGroups()" :key="group.title">
           <div>
             <div class="group" x-text="group.title"></div>
             <template x-for="item in group.items" :key="group.title + item.id">
-              <button class="option" type="button" role="option" :class="item.index === picker.active ? 'active' : ''" :disabled="Boolean(picker.busy)"
-                @click="chooseModel(item.id)" @mouseenter="picker.active = item.index" :aria-selected="item.id === currentModel()">
+              <button class="option" type="button" role="option" :class="[item.index === picker.active ? 'active' : '', item.main === false ? 'dim' : '']" :disabled="Boolean(picker.busy)"
+                @click="chooseModel(item.id)" @mouseenter="picker.active = item.index" :aria-selected="same(item.id, currentModel())"
+                :title="item.main === false ? '在 Aelios 里不是这个身份的主模型：从它过不会想起旧事，也不会记下来' : ''">
                 <span class="dot" :class="dotFor(item.id)"></span>
                 <span class="body">
                   <span class="title">
                     <span x-text="item.custom ? '直接用这个 id' : item.name"></span>
                     <span class="tag" x-show="item.provider" x-text="item.provider"></span>
                     <span class="tag" x-text="tagFor(item.id)"></span>
+                    <span class="tag off" x-show="item.main === false">记不住</span>
                   </span>
                   <span class="id" x-text="item.id"></span>
                   <span class="desc" x-show="item.desc" x-text="item.desc"></span>
                 </span>
-                <span class="state" x-text="picker.busy === item.id ? '试调中…' : (item.id === currentModel() ? '正在用' : '')"></span>
+                <span class="state" x-text="picker.busy === item.id ? '试调中…' : (same(item.id, currentModel()) ? '正在用' : '')"></span>
               </button>
             </template>
           </div>
@@ -665,7 +671,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </div>
       <div class="foot">
         <p class="warn" x-show="picker.error" x-text="picker.error"></p>
-        <span x-text="'换之前先让它说一个字试试，调不通就不换。' + (aelios ? '接了 Aelios，都从 Aelios 过，用它那边配的供应商和 key；要在它的主模型里才记得住。' : '紫点是 Cloudflare 自己跑的，橙点走 AI Gateway 的额度。') + '目录 ' + catalog.length + ' 个文字模型（' + (catalogUpdated || '没取到') + '）。'"></span>
+        <span x-text="'换之前先让它说一个字试试，调不通就不换。' + (aelios ? '接了 Aelios，都从 Aelios 过，用它那边配的供应商和 key；要在它的主模型里才记得住。' : '紫点是 Cloudflare 自己跑的，橙点走 AI Gateway 的额度。') + (pickerMode() === 'catalog' ? '目录 ' + catalog.length + ' 个文字模型（' + (catalogUpdated || '没取到') + '）。' : '')"></span>
       </div>
     </div>
   </div>
@@ -682,6 +688,8 @@ function resident() {
   var POLL_MS = 5000;
   var PERSONA_MAX = 30000;
   var RESULTS_MAX = 60;
+  // A model list longer than this is not browsed, only searched: it is the upstream's whole catalog, not a chosen list.
+  var BROWSE_MAX = 150;
   // Shown first in the picker, under the ones used recently.
   var FAVORITES = ['anthropic/claude-opus-5.5', 'anthropic/claude-sonnet-5.5', 'anthropic/claude-fable-5.1', 'anthropic/claude-haiku-5.5', '@cf/zai-org/glm-4.7-flash'];
   // The settings page: a list of sections (CONFIG_MENU), each opened on its own. A field marked `more` waits behind
@@ -897,6 +905,8 @@ function resident() {
     model: { model: '', at: null, fallback: '', recent: [], lastUsage: null, memoryOff: false },
     catalog: [],
     catalogUpdated: '',
+    // Aelios' own model list (GET /web/models), the one the picker browses while Aelios is connected.
+    aeliosModels: { loaded: false, items: [], curated: false, error: '' },
     picker: { open: false, q: '', active: 0, busy: '', error: '' },
     personaLoaded: false,
     personaDraft: '',
@@ -1290,9 +1300,62 @@ function resident() {
       var parts = id.split('/');
       return parts[parts.length - 1];
     },
+    // The model name as Aelios takes it (the same rewrites as aeliosName in src/via-aelios.ts), so one model written two
+    // ways (Cloudflare's anthropic/claude-opus-5.5, Aelios' anthropic/claude-opus-5-5) counts as one.
+    canon(id) {
+      if (id.indexOf('@cf/') === 0) return 'workers-ai/' + id;
+      var anthropic = id.match(/^anthropic\/(.+)$/i);
+      return anthropic ? 'anthropic/' + anthropic[1].replace(/\./g, '-') : id;
+    },
+    same(a, b) { return Boolean(a) && Boolean(b) && this.canon(a) === this.canon(b); },
+    aeliosEntry(id) {
+      var items = this.aeliosModels.items;
+      for (var i = 0; i < items.length; i++) if (this.same(items[i].id, id)) return items[i];
+      return null;
+    },
+    // A name and a line of description from the shipped catalog, when it knows the model.
+    describe(item) {
+      for (var i = 0; i < this.catalog.length; i++) {
+        if (this.same(this.catalog[i].id, item.id)) return Object.assign({}, item, { name: this.catalog[i].name, desc: this.catalog[i].desc });
+      }
+      return item;
+    },
+    listed(model) {
+      var item = { id: model.id, name: this.shortName(model.id), provider: model.owner || '', desc: '' };
+      if (model.main !== undefined) item.main = model.main;
+      return item;
+    },
     entry(id) {
-      for (var i = 0; i < this.catalog.length; i++) if (this.catalog[i].id === id) return this.catalog[i];
-      return { id: id, name: this.shortName(id), provider: '', desc: '' };
+      var listed = this.aeliosEntry(id);
+      var item = this.describe(listed ? this.listed(listed) : { id: id, name: this.shortName(id), provider: '', desc: '' });
+      // The catalog may spell it another way; the picker keeps the spelling it was given.
+      item.id = id;
+      return item;
+    },
+    // Where the picker's browse list comes from: Aelios' own list once it is connected and has answered, else the catalog.
+    pickerMode() {
+      if (!this.aelios) return 'catalog';
+      if (!this.aeliosModels.loaded) return 'loading';
+      return this.aeliosModels.items.length ? 'aelios' : 'catalog';
+    },
+    pickerNote() {
+      if (!this.aelios) return '';
+      var list = this.aeliosModels;
+      if (!list.loaded) return '正在取 Aelios 的模型清单…';
+      if (list.error) return 'Aelios 的模型清单没取到（' + list.error + '），先用自带的目录。';
+      if (!list.items.length) return '';
+      if (list.curated) return '这是你在 Aelios 里存的模型清单。要加新的，去 Aelios 设置 → 供应商 → 模型清单，或者上面直接填完整 id。';
+      if (list.items.length > BROWSE_MAX) return 'Aelios 上游一共 ' + list.items.length + ' 个模型，不一一列出，搜一下。想只看常用的，在 Aelios 设置 → 供应商 → 模型清单里选好。';
+      return '';
+    },
+    async loadAeliosModels() {
+      if (!this.aelios) return;
+      try {
+        var data = await this.api('/web/models');
+        this.aeliosModels = { loaded: true, items: data.models || [], curated: Boolean(data.curated), error: data.error || '' };
+      } catch (error) {
+        this.aeliosModels = { loaded: true, items: [], curated: false, error: error.message };
+      }
     },
     pickerGroups() {
       var self = this;
@@ -1300,30 +1363,47 @@ function resident() {
       var used = {};
       var index = 0;
       function group(title, items) {
-        var fresh = items.filter(function (item) { return item && !used[item.id] && (used[item.id] = true); });
+        var fresh = items.filter(function (item) { return item && !used[self.canon(item.id)] && (used[self.canon(item.id)] = true); });
         if (!fresh.length) return;
         groups.push({ title: title, items: fresh.map(function (item) { return Object.assign({}, item, { index: index++ }); }) });
       }
+      function byProvider(items, label) {
+        var names = [];
+        var by = {};
+        items.forEach(function (item) {
+          var name = label(item);
+          if (!by[name]) { by[name] = []; names.push(name); }
+          by[name].push(item);
+        });
+        names.forEach(function (name) { group(name, by[name]); });
+      }
+      var mode = this.pickerMode();
       var q = this.picker.q.trim().toLowerCase();
       if (!q) {
         group('正在用', [this.entry(this.currentModel())]);
         group('最近用过', (this.model.recent || []).map(function (id) { return self.entry(id); }));
-        group('常用', FAVORITES.map(function (id) { return self.entry(id); }));
-        var providers = [];
-        var byProvider = {};
-        this.catalog.forEach(function (item) {
-          var name = item.hosted ? 'Workers AI · ' + item.provider : item.provider;
-          if (!byProvider[name]) { byProvider[name] = []; providers.push(name); }
-          byProvider[name].push(item);
-        });
-        providers.forEach(function (name) { group(name, byProvider[name]); });
+        if (mode === 'aelios') {
+          group('常用', FAVORITES.filter(function (id) { return self.aeliosEntry(id); }).map(function (id) { return self.entry(id); }));
+          var list = this.aeliosModels;
+          if (list.curated || list.items.length <= BROWSE_MAX) {
+            byProvider(list.items.map(function (model) { return self.describe(self.listed(model)); }), function (item) { return item.provider || '其他'; });
+          }
+        } else if (mode === 'catalog') {
+          group('常用', FAVORITES.map(function (id) { return self.entry(id); }));
+          byProvider(this.catalog, function (item) { return item.hosted ? 'Workers AI · ' + item.provider : item.provider; });
+        }
         return groups;
       }
       var words = q.split(/\s+/);
-      var pool = this.catalog.concat((this.model.recent || []).map(function (id) { return self.entry(id); }));
+      // The same model is written with dots or dashes in its version; a search written either way finds it.
+      var haystack = function (item) { return (item.id + ' ' + item.id.replace(/-/g, '.') + ' ' + item.name + ' ' + item.provider).toLowerCase(); };
+      var recent = (this.model.recent || []).map(function (id) { return self.entry(id); });
+      var pool = mode === 'aelios'
+        ? this.aeliosModels.items.map(function (model) { return self.listed(model); }).concat(recent)
+        : this.catalog.concat(recent);
       var hits = pool.filter(function (item) {
-        var hay = (item.id + ' ' + item.name + ' ' + item.provider).toLowerCase();
-        return words.every(function (word) { return hay.indexOf(word) >= 0; });
+        var hay = haystack(item);
+        return words.every(function (word) { return hay.indexOf(word) >= 0 || hay.indexOf(word.replace(/\./g, '-')) >= 0; });
       });
       function rank(item) {
         var id = item.id.toLowerCase();
@@ -1334,9 +1414,9 @@ function resident() {
       }
       hits.sort(function (a, b) { return rank(a) - rank(b); });
       var raw = this.picker.q.trim();
-      var exact = hits.some(function (item) { return item.id === raw; });
+      var exact = hits.some(function (item) { return self.same(item.id, raw); });
       if (!exact && /^\S+\/\S+$/.test(raw)) group('目录里没有', [{ id: raw, name: raw, provider: '', desc: '', custom: true }]);
-      group('搜到的', hits.slice(0, RESULTS_MAX));
+      group('搜到的', hits.slice(0, RESULTS_MAX).map(function (item) { return mode === 'aelios' ? self.describe(item) : item; }));
       return groups;
     },
     flatPicker() {
@@ -1362,6 +1442,7 @@ function resident() {
       this.picker.open = true;
       this.$nextTick(function () { if (matchMedia('(pointer: fine)').matches) document.querySelector('.sheet input').focus(); });
       this.loadModel().catch(function () {});
+      this.loadAeliosModels();
     },
     closePicker() {
       if (this.picker.busy) return;
@@ -1369,7 +1450,7 @@ function resident() {
     },
     async chooseModel(id) {
       if (this.picker.busy) return;
-      if (id === this.currentModel()) { this.picker.open = false; return; }
+      if (this.same(id, this.currentModel())) { this.picker.open = false; return; }
       this.picker.busy = id;
       this.picker.error = '';
       try {

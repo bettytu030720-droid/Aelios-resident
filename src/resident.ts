@@ -135,7 +135,7 @@ import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { SiteKeyStore } from "./web/site-keys";
 import { searchEngines, searchSource } from "./web/search";
-import { MEMORY_HEADER, aeliosModel, onMessages, type Thinking } from "./via-aelios";
+import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
@@ -242,6 +242,16 @@ export type WebModel = {
   recent: string[];
   lastUsage: LastUsage | null;
   memoryOff: boolean;
+};
+
+/** The models the picker offers when Aelios is connected: its own list (via-aelios.ts listModels). */
+export type WebModels = {
+  /** Aelios is connected. When it is not, the picker keeps to the catalog the page ships with. */
+  aelios: boolean;
+  models: AeliosModel[];
+  curated: boolean;
+  /** Why Aelios' list could not be had: the picker falls back to the shipped catalog and says so. */
+  error?: string;
 };
 
 /** The persona as the web page edits it. An empty text means the default line is in use. */
@@ -2242,6 +2252,21 @@ export class Resident extends Think<Env> {
       lastUsage: await this.lastUsage(),
       memoryOff: await this.memoryOff()
     };
+  }
+
+  /**
+   * What the model picker lists. With Aelios connected, every model goes out through Aelios, so what it lists is
+   * what can be picked: the owner's model list, or the upstream's whole catalog when none is saved. It can be down
+   * or refuse the key; the picker then falls back to the catalog it ships with, and is told why.
+   */
+  async webModels(): Promise<WebModels> {
+    const memory = aeliosConfig(this.cfg);
+    if (!memory) return { aelios: false, models: [], curated: false };
+    try {
+      return { aelios: true, ...(await listModels(memory, AbortSignal.timeout(8_000))) };
+    } catch (error) {
+      return { aelios: true, models: [], curated: false, error: hideUrls(error instanceof Error ? error.message : String(error)).slice(0, 200) };
+    }
   }
 
   /** Models that passed their trial call here, newest first. */
