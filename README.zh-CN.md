@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-**住在你自己 Cloudflare 账号里的 AI 伴侣。** 在 Telegram 和网页上跟它聊，两边是同一段对话。接上 [Aelios](https://github.com/wusaki0723/Aelios) 后，它记得以前的事。
+**住在你自己 Cloudflare 账号里的 AI 伴侣。** 在网页上跟它聊；想的话再接 Telegram 或企业微信（微信里也能聊），在哪儿聊都是同一段对话。接上 [Aelios](https://github.com/wusaki0723/Aelios) 后，它记得以前的事。
 
 - **不用租服务器**：整个住户就是一个 Cloudflare Worker 加一个 Durable Object，免费档就能跑。
 - **不用另建数据库**：聊天记录、交接信、人设、表情包都存在 Durable Object 自带的 SQLite 里。
@@ -12,7 +12,7 @@
 
 ## 它能做什么
 
-- **两扇门，一段对话**：Telegram 私聊和网页门（也能在 Telegram 里当 Mini App 打开）。一边说的话，另一边也看得到。
+- **一段对话，门随你选**：网页门一定有。Telegram（私聊，网页门也能在里面当 Mini App 打开）和企业微信（开了微信插件，普通微信里也能聊）都是选装的，装一个、两个都装、都不装都行。在哪扇门说的话，网页上都看得到。
 - **记得旧事**：接上 Aelios 后，聊天从 Aelios 过。Aelios 帮它想起相关的旧事，也把每一轮记下来，夜里照常整理。
 - **交接信**：聊天攒多了、你又停下来一阵，它给之后的自己写一封信，把旧聊天收起来，只留最近一段原文。
 - **主动找你**：按你定的时间想想要不要找你；你一阵子没动静时，也会问它一句要不要找你（心跳）；打开闹钟后，它还能自己定时回来。
@@ -25,22 +25,26 @@
 ## 怎么运作
 
 ```
-Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
-网页门 / Mini App ──────────────▶ Worker /web/* ──┤
+网页门 / Mini App ──────────────▶ Worker /web/* ──┐
+Telegram（选装）──▶ Worker（验 secret、白名单、命令）──┤
+企业微信（选装）──▶ Worker（验签名、解密、白名单）──┤
                                                 ▼
                     Resident（一个 Durable Object，一段对话）
        人设 + 聊天规矩 + Aelios 开机包
        工具：记忆、搜网、读网页、表情包、语音、闹钟、别的 MCP、云端 Claude Code
+                                                │
+             回企业微信的消息 ──▶ 有固定 IP 的转发机 ──▶ 企业微信接口
 ```
 
 - 接了 Aelios 时，每一轮都经过 Aelios 的模型接口，由它补上相关的旧事并记下这一轮。
+- 企业微信只认固定 IP 发来的接口调用，所以回企业微信的消息要经过你自己一台机器上的小转发机（见「企业微信」）。Telegram 和网页门不用别的东西。
 - 你停下来 55 分钟后：聊天够长就写交接信；还不够长就走心跳，问它要不要找你。
 
 ## 上线
 
 ### 让 AI 帮你装（推荐）
 
-用 Claude Code、Codex 这类能跑命令的 AI 的话，把下面这段话发给它。部署、接 Telegram、接 Aelios、选模型都交给它，你只要建个 bot、在浏览器里点几下：
+用 Claude Code、Codex 这类能跑命令的 AI 的话，把下面这段话发给它。部署、接 Aelios（要 Telegram 的话也接上）、选模型都交给它，你只要在浏览器里点几下；要 Telegram 的再建个 bot：
 
 ```text
 帮我装好、配好 Aelios-resident（住在我 Cloudflare 账号里的 AI 伴侣）。先读 https://raw.githubusercontent.com/wusaki0723/Aelios-resident/main/docs/setup-with-ai.md ，照着做。需要我在浏览器里点、或者需要我自己填 key 的时候，停下来告诉我去哪儿填。
@@ -48,31 +52,30 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 ### 自己在后台点着装
 
-要准备：一个 Cloudflare 账号（免费档就行）、一个 Telegram bot。想要长期记忆的话，再准备一个已经部署好的 Aelios。
+要准备：一个 Cloudflare 账号（免费档就行）。想要长期记忆的话，再准备一个已经部署好的 Aelios。Telegram 和企业微信都是选装的：不要 Telegram 就跳过第 1、4 步和 Telegram 的两个 Secret；企业微信装好以后再接，见「企业微信」。
 
-1. **建 bot**：在 Telegram 里找 @BotFather，发 `/newbot`，起好名字，记下 token。
+1. **建 bot**（只有 Telegram 要）：在 Telegram 里找 @BotFather，发 `/newbot`，起好名字，记下 token。
 2. **部署**：Cloudflare 后台 → Workers & Pages → Create → Import a repository，选这个仓库（或者你 fork 的）。项目名填 `aelios-resident`，要跟 `wrangler.jsonc` 里的 `name` 一样，其余用默认。以后推到 main 就自动更新。
-3. **填三个 Secret**：Worker → Settings → Variables and Secrets。只有这三个在这里填，别的都在网页上填。
-   - `TG_BOT_TOKEN`：第 1 步的 token。
-   - `TG_WEBHOOK_SECRET`：自己编一串长的，字母、数字、`_`、`-` 都行。
-   - `WEB_KEY`：网页门的钥匙，也自己编一串长的。拿到它的人能看全部对话、改所有设置，别截图、别外发；怀疑漏了就在这里换一个。不填的话，普通浏览器进不去，只能从 Telegram 的 Mini App 进。
-4. **接上 Telegram**：用浏览器打开一次下面这个网址，几项都返回 `"ok":true` 就接好了。它会顺便登记三个命令，并把 bot 左下角的菜单按钮设成「打开网页」。
+3. **填 Secret**：Worker → Settings → Variables and Secrets。只有这几个在这里填，别的都在网页上填。
+   - `WEB_KEY`：网页门的钥匙，自己编一串长的。拿到它的人能看全部对话、改所有设置，别截图、别外发；怀疑漏了就在这里换一个。不填的话，普通浏览器进不去，只能从 Telegram 的 Mini App 进。
+   - 要 Telegram 的再填两个：`TG_BOT_TOKEN` 是第 1 步的 token；`TG_WEBHOOK_SECRET` 也自己编一串长的，字母、数字、`_`、`-` 都行。
+4. **接上 Telegram**（只有 Telegram 要）：用浏览器打开一次下面这个网址，几项都返回 `"ok":true` 就接好了。它会顺便登记三个命令，并把 bot 左下角的菜单按钮设成「打开网页」。
 
    ```
    https://aelios-resident.<你的子域>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>
    ```
 
 5. **在网页上填设置**：打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进门，点右上角的齿轮：
-   - 「聊天」→「谁能在 Telegram 上跟它说话」：填你的 Telegram 用户名，比如 `@your_name`。不填的话它谁都不回。
+   - 接了 Telegram 的：「聊天」→「谁能在 Telegram 上跟它说话」：填你的 Telegram 用户名，比如 `@your_name`。不填的话它在 Telegram 上谁都不回。
    - 「长期记忆」：填 Aelios 的地址和 key。key 跟你 Aelios 那边的 `CHATBOX_API_KEY`、`IM_API_KEY`、`MEMORY_MCP_API_KEY` 任意一把相同即可。再到 Aelios 后台给住户建一个身份，把要用的模型放进这个身份的主模型；身份名填在「更多设置」→「身份」里（不填就用这把 key 的第一个身份）。
    - 回到聊天：点左上角的模型名选模型；点右上角的铅笔，贴上人设、保存。
-6. 给 bot 发条消息试试。
+6. 在网页门说一句，或者给 bot 发条消息试试。
 
 ## 用起来
 
 ### 网页门
 
-打开 Worker 的网址，填 `WEB_KEY` 进门。它跟 Telegram 是同一段对话：Telegram 上说的话 5 秒内出现在这里；在网页上说的话只在网页上回，不发到 Telegram。
+打开 Worker 的网址，填 `WEB_KEY` 进门。它跟 Telegram、企业微信是同一段对话：那边说的话 5 秒内出现在这里；在网页上说的话只在网页上回，不发到别的门。
 
 - 每条消息下面有时间和来源，还有一个心形按钮，点了存进 Aelios 的「珍贵」。
 - 它想的内容收在「想了一下」里，用过的工具收在「忙活了 X 回」里，点开能看。
@@ -98,6 +101,31 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | `/letter` | 看最近一封交接信 |
 | `/handoff` | 现在就写一封交接信，不受 token 门槛限制，但要有旧内容可收（见「交接信」） |
 
+### 企业微信
+
+选装。企业微信是腾讯的办公聊天软件，自己建一个免费的小企业就够；开了「微信插件」，同一个聊天在普通微信里也能收发。住户用这个企业里的一个「自建应用」跟你聊。
+
+企业微信只接受应用「企业可信 IP」发来的接口调用，而 Worker 没有固定 IP。所以住户回你的消息要经过你自己一台有固定 IP 的 Linux 机器（比如 VPS）上的小转发机。转发机不开端口：只听 `127.0.0.1`，经 Cloudflare Tunnel 出来。企业微信推给住户的消息直接到 Worker，不经过它。转发机和怎么装，见 [relay/wecom](relay/wecom/README.md)。
+
+**按这个顺序装**：
+
+1. **转发机**：在那台机器上跑 `sudo relay/wecom/install.sh`（要语音条和动态表情加 `--media`，会装 ffmpeg），再用 Cloudflare Tunnel 给它一个网址，指到 `http://127.0.0.1:8787`。细节见 [relay/wecom](relay/wecom/README.md)。
+2. **建应用**：企业微信管理后台（work.weixin.qq.com）→「应用管理」→「创建应用」。「可见范围」里要有你自己。
+3. **设置页 →「企业微信」**：填「谁能在企业微信上跟它说话」（你在通讯录里的「账号」）、「企业 ID」（「我的企业」页面最下面）、应用的 AgentId 和 Secret、转发地址和转发钥匙，保存。
+4. **接收消息**：应用页「接收消息」→「设置 API 接收」。URL 填设置页「企业微信」一栏里写的那个（`https://<住户地址>/messengers/wecom/webhook`）；Token 和 EncodingAESKey 都点「随机获取」，**先复制到住户设置页存好**，再回企业微信点保存。企业微信保存时会来验一次地址，住户要有这两样才答得上。
+5. **可信 IP**：同一个应用页，「企业可信 IP」填转发机出去时的 IP（在那台机器上 `curl -s https://ifconfig.me`）。企业微信要先设好接收消息的 URL 才让填。
+6. 在企业微信里给它发一句。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码，之后微信里就能跟这个应用聊。
+
+`/status` 的「企业微信」一行和设置页那一栏，会写着还差什么、转发机连不连得上、能不能发语音。
+
+**能做的**：
+
+- 文字来回；你发的图片；它的表情包（GIF、PNG、JPG 直接发；Telegram 包里的 WebP、WebM 要转发机装了 `--media`）；装了 `--media` 后语音条来回都行。没装的话，它的语音回复改成文字，你发的语音它可能听不了。
+- `/status`、`/letter`、`/handoff`，跟 Telegram 一样。
+- 定时找你、心跳、闹钟、云端干完活的回报，都发到你最后说话的那扇门：最后在企业微信说的话，就发到企业微信。
+
+**限制**：企业微信只显示纯文字，Markdown 会去掉（链接变成文字加网址）；超过 2048 字节的回复会拆开；没有「正在输入」；语音条最长 60 秒；企业微信每分钟给同一个人最多发 30 条左右。GIF 表情在微信（不是企业微信）里会不会动，还没试过。
+
 ### 换模型
 
 点网页门左上角的模型名，弹出一个搜索框：上面是正在用的、最近用过的和常用的，往下是可选的模型。输入 `opus`、`kimi`、`qwen` 就能筛；目录里没有的，直接填完整 id 也行。
@@ -121,7 +149,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 ### 设置页
 
-点网页门右上角的齿轮。先是一张目录：长期记忆、聊天、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
+点网页门右上角的齿轮。先是一张目录：长期记忆、聊天、企业微信、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
 
 - 改完点「保存」，下一句就生效。
 - 取值顺序：这里存的优先；没存的用 Cloudflare 里同名的变量；那边也没有就用默认值，默认值用灰字写在输入框里。
@@ -214,7 +242,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 **定时找你**：设置页「聊天」→「主动找你」填时间，比如 `every day at 09:00`、`every weekday at 21:30`、`every 3 hours`。到点它自己想想要不要找你，不合适就不发。
 
-**心跳**（`HEARTBEAT`，默认一段沉默最多问 3 次）：你 55 分钟没说话，而当前聊天还没达到写信门槛（或没有旧内容可收）时，它会被问一句要不要找你；想说就发到 Telegram，不想就不发。之后每 55 分钟再问一次，问满次数为止。你一说话，或一次闹钟回合成功完成，就从第 1 次重新数。
+**心跳**（`HEARTBEAT`，默认一段沉默最多问 3 次）：你 55 分钟没说话，而当前聊天还没达到写信门槛（或没有旧内容可收）时，它会被问一句要不要找你；想说就发到你最后说话的那扇门（Telegram 或企业微信，网页上也看得到），不想就不发。之后每 55 分钟再问一次，问满次数为止。你一说话，或一次闹钟回合成功完成，就从第 1 次重新数。
 
 - 正常情况下，每次心跳都赶在上一次缓存的 1 小时有效期内，所以接近你发一条消息的价钱；但调度延迟、前缀变化、供应商缓存失效都可能让缓存重建，心跳并不免费。
 - 达到门槛、安静到点、又有旧内容可收时，只写信，不问心跳：信写完对话变了，缓存要整段重写，那时再问就贵了。
@@ -245,7 +273,7 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 
 ### 语音条
 
-**听**：一直开着。你在 Telegram 上发的语音条（或音频文件）先转成文字，模型看到的是 `[voice 0:12] 说的话`；听不清时它会请你再说一遍。默认用 Workers AI 的 Whisper；发语音选了 ElevenLabs 时换成它家的 Scribe，出错再退回 Whisper。网页上显示成「🎤 0:12 说的话」。
+**听**：一直开着。你在 Telegram 或企业微信上发的语音条（或音频文件）先转成文字，模型看到的是 `[voice 0:12] 说的话`；听不清时它会请你再说一遍。默认用 Workers AI 的 Whisper；发语音选了 ElevenLabs 时换成它家的 Scribe，出错再退回 Whisper。网页上显示成「🎤 0:12 说的话」。
 
 **说**：要在设置页「语音」里选一家服务商才开。没选就不发语音，提示词里也不会多一个字。
 
@@ -353,6 +381,10 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 | --- | --- | --- |
 | `TG_ALLOWED` | 空（谁都不回） | 谁能在 Telegram 上跟它说话：@用户名或 chat id，逗号隔开 |
 | `TG_BOT_USERNAME` | 空 | bot 的用户名 |
+| `WECOM_ALLOWED` | 空（谁都不回） | 谁能在企业微信上跟它说话：成员的「账号」，逗号隔开 |
+| `WECOM_CORP_ID` / `WECOM_AGENT_ID` / `WECOM_SECRET` | 空 | 企业 ID，自建应用的 AgentId 和 Secret。企业微信这几项全空就是没接 |
+| `WECOM_TOKEN` / `WECOM_AES_KEY` | 空 | 应用「接收消息」的 Token 和 EncodingAESKey（43 位）；先存在这里，再去企业微信保存 URL |
+| `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | 空 | [转发机](relay/wecom/README.md)经 Cloudflare Tunnel 出来的网址，和它的钥匙（至少 32 位） |
 | `TIME_ZONE` | `Asia/Singapore` | 消息前的时间、定时用哪个时区 |
 | `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
 | `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |
@@ -405,6 +437,17 @@ Telegram ──▶ Worker（验 secret、白名单、斜杠命令）──┐
 **Telegram 上它不回**
 看「聊天」→「谁能在 Telegram 上跟它说话」里有没有你；群聊它不回。再打开一次 `/tg/setup?secret=…`，确认几项都是 `"ok":true`。
 
+**企业微信保存接收消息的 URL 时不通过**（「回调地址请求不通过」之类）
+先在住户设置页存好 Token 和 EncodingAESKey，再去企业微信点保存；「企业 ID」也要填。再对一下 URL 是不是跟设置页上写的一字不差。
+
+**企业微信上它不回**
+看设置页「企业微信」那一栏，或 `/status` 的「企业微信」一行，上面写着缺什么。常见的：
+- **60020**：转发机的 IP 不在应用的「企业可信 IP」里，或者那台机器出去的 IP 变了。
+- **转发机不认这把钥匙**：设置页的转发钥匙跟 `/etc/wecom-relay/env` 里的不一样，比如转发机那边跑过 `--new-key`。
+- **转发机连不上**：先 `curl https://<转发地址>/ping -H "x-relay-key: …"` 看 Tunnel 通不通，再在那台机器上看 `systemctl status wecom-relay`。
+- **有人被挡下**：那一栏会写出被挡的账号；是你的话，填进「谁能在企业微信上跟它说话」。
+- **81013**：你不在这个应用的「可见范围」里。
+
 **语音发不出去，报 401，说没收到 key**（`Neither authorization header nor xi-api-key received`）
 住户只在「供应商」→「AI Gateway 的名字」那个 Gateway 里找 key，留空就是 `default`。key 多半存在别的 Gateway 里了（比如 Aelios 用的那个）。把名字改成存 key 的那个，或者直接在「语音」里填 key。报错和 `/status` 都写着它找的是哪个 Gateway。
 
@@ -425,12 +468,12 @@ AI Gateway 后台建的「自定义供应商」（`custom-xxx/…`）Cloudflare 
 
 ## 开发
 
-- 本地测试和测过什么，见 [docs/testing.md](docs/testing.md)。服务商、Telegram、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
+- 本地测试和测过什么，见 [docs/testing.md](docs/testing.md)。服务商、Telegram、企业微信、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
 - `wrangler.jsonc` 故意不写 `vars`：写在文件里的值每次推送都会冲掉后台的设置。
 - 换模型用的自带目录在 `public/models.json`。没接 Aelios、或 Aelios 的清单取不到时用它；接了 Aelios 时，也用它给清单里认识的模型补上名字和说明。Cloudflare 上了新模型，跑一次 `node scripts/update-models.mjs` 再推上来；不跑也行，搜索框里直接填完整 id 照样能换。
 - README 有两份：英文的 `README.md` 和中文的 `README.zh-CN.md`，改的时候两份一起改。
 
-**还没做**：网页门发图、发语音；打电话（实时语音）；真正逐 token 推送（现在等回复时是短轮询）。
+**还没做**：网页门发图、发语音；企业微信群聊；打电话（实时语音）；真正逐 token 推送（现在等回复时是短轮询）。
 
 **用到的现成东西**（放在 `public/vendor/` 和 `src/web/`，各自保留 MIT 许可）：
 

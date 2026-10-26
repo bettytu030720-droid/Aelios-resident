@@ -1,12 +1,12 @@
 # 测试
 
-住户的测试分两种：要起本地 Worker 的（`test/run.mjs`，按阶段跑），和不用起 Worker、直接测某一块代码的（`test/*.mjs`）。服务商、Telegram、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
+住户的测试分两种：要起本地 Worker 的（`test/run.mjs`，按阶段跑），和不用起 Worker、直接测某一块代码的（`test/*.mjs`）。服务商、Telegram、企业微信、Aelios 全是假的，不花钱，也不用登录 Cloudflare。
 
 ## 怎么跑
 
 ```sh
 npm install
-node test/mock-server.mjs &                                    # 假 Telegram 和假 Aelios，端口 9999
+node test/mock-server.mjs &                                    # 假 Telegram、假企业微信转发机和假 Aelios，端口 9999
 NO_PROXY=127.0.0.1 npx wrangler dev --config wrangler.test.jsonc --port 8787 &
 NO_PROXY=127.0.0.1 node test/run.mjs main
 ```
@@ -31,6 +31,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `sites` | 带钥匙的网站 |
 | `heartbeat` | 未达写信门槛时仍走心跳，夜里别问的时段里不问（带 `--var LETTER_IDLE_MINUTES:0.05 --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05`） |
 | `alarms` | 它自己定的闹钟（带 `--var ALARM_MINUTE_SECONDS:0.05`，一分钟只算 3 秒） |
+| `wecom` | 企业微信门：没接时 404、填错的值、只填三项就能过地址验证、陌生人被挡并显示、验签和解密、回复和去重、长回复按 2048 字节拆、token 过期重拿、图片、表情包、语音条来回、转发机不转码时改发文字、钥匙不对时报错、主动消息和云端回报发到最后说话的那扇门 |
 
 不用起 Worker 的，直接 `node test/<名字>.mjs`：
 
@@ -52,6 +53,8 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `mcp-servers.mjs` | 接别的 MCP |
 | `stickers.mjs` | 表情包 |
 | `voice.mjs` | 语音条 |
+| `wecom.mjs` | 企业微信门的零件：解密（拿 Node 自己的 AES 对照，每种补位都试）、签名、地址验证、XML、她发来的各种消息、去 Markdown、按字节拆、设置缺什么、报错说成人话 |
+| `wecom-relay.mjs` | 转发机 `relay/wecom/wecom-relay.py`（要 python3）：没钥匙一律 403、原样转发和不转的、日志不带 token；本机 ffmpeg 能做的转码（AMR、MP3、GIF、PNG）也试一遍 |
 | `cloud-tasks.mjs` | 云端 Claude Code 的单子、回报和记录 |
 | `site-keys.mjs` | 带钥匙的网站：网站和钥匙怎么认、哪个地址带哪把 |
 | `web-ui.mjs` | 网页门和设置页，含新门槛字段、旧字段移除、双条件和固定保留量的说明，以及独立写信/送达状态、缺省容错、文本绑定、读取和重试接口 |

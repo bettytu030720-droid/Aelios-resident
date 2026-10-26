@@ -1,5 +1,7 @@
 // The Worker in front of the resident:
 //   POST /messengers/telegram/webhook   Telegram → secret check, allowlist, slash commands → the resident
+//   GET|POST /messengers/wecom/webhook  WeCom: GET checks the address once; POST is a message, opened and checked by
+//                                       the resident (wecom.ts) with the settings in effect
 //   GET  /tg/setup?secret=…             points the bot's webhook here (open once after deploy; POST with the
 //                                       x-tg-setup-secret header works too, for scripts); opened over https,
 //                                       also makes the bot's menu button open the web page as a Mini App
@@ -23,6 +25,9 @@ export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { Resident } from "./resident";
 
 const WEBHOOK_PATH = "/messengers/telegram/webhook";
+const WECOM_PATH = "/messengers/wecom/webhook";
+// A WeCom push is a few kilobytes of XML.
+const WECOM_MAX_BYTES = 64 * 1024;
 // Telegram and the web page both talk to this one agent.
 const AGENT_NAME = "default";
 
@@ -69,6 +74,21 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
     return new Response("ok");
   }
   return agent.fetch(new Request(request.url, { method: "POST", headers: request.headers, body }));
+}
+
+/** WeCom: its address check (GET) answered by the resident, a message (POST) handed to it as it came. */
+async function handleWecom(request: Request, env: Env, url: URL): Promise<Response> {
+  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  if (request.method === "GET") {
+    const answer = await agent.wecomVerify(url.search);
+    return new Response(answer.body, { status: answer.status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+  }
+  if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (Number(request.headers.get("content-length") ?? 0) > WECOM_MAX_BYTES) return new Response("too large", { status: 413 });
+  const body = await request.text();
+  if (body.length > WECOM_MAX_BYTES) return new Response("too large", { status: 413 });
+  // Only the address and the body go in, never the caller's other headers.
+  return agent.fetch(new Request(url.href, { method: "POST", headers: { "content-type": "text/xml" }, body }));
 }
 
 async function handleSetup(request: Request, env: Env, url: URL): Promise<Response> {
@@ -243,6 +263,7 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
+      if (url.pathname === WECOM_PATH) return await handleWecom(request, env, url);
       if (url.pathname === "/tg/setup") return await handleSetup(request, env, url);
       if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);
       const sticker = url.pathname.match(/^\/stickers\/([0-9a-f]{24})$/);

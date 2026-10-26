@@ -55,7 +55,7 @@ export class WebDraft {
   readonly parts: HistoryPart[] = [];
   private reasoningId: string | null = null;
   private textId: string | null = null;
-  constructor(readonly id: string, readonly at: number, readonly via: "telegram" | "web" | "checkin") {}
+  constructor(readonly id: string, readonly at: number, readonly via: "telegram" | "wecom" | "web" | "checkin") {}
 
   chunk(chunk: { type: string; [key: string]: unknown }): void {
     if (chunk.type === "reasoning-delta" || chunk.type === "text-delta") {

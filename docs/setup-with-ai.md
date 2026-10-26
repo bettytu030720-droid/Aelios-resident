@@ -8,20 +8,22 @@
 
 从零开始也行，已经装过、只想配好的也行。装完你会有：
 
-- 一个 Telegram bot，私聊它就是在跟住户说话；
-- 一个网页门（地址加一把网页钥匙），在 Telegram 里也能当 Mini App 打开，跟 Telegram 是同一段对话；
+- 一个网页门（地址加一把网页钥匙），一定有；
+- 想要的话，一个 Telegram bot，私聊它就是在跟住户说话，网页门在 Telegram 里也能当 Mini App 打开；
+- 想要的话，企业微信（开了微信插件，微信里也能聊）。要一台有固定 IP 的 Linux 机器当转发机；
+- 不管从哪扇门聊，都是同一段对话；
 - 接了 Aelios 的话，它记得以前的事，跟你在别处用 Aelios 的 AI 用同一份记忆。
 
-你要准备的：一个 Cloudflare 账号（免费的就够），一个 Telegram 账号。想要长期记忆的话，再要一个 Aelios，没有也没关系，AI 会先帮你装。想用 Claude 聊的话，要一把 Anthropic 的 API key；什么 key 都没有也能先用免费的默认模型聊。
+你要准备的：一个 Cloudflare 账号（免费的就够）；要 Telegram 的，一个 Telegram 账号。想要长期记忆的话，再要一个 Aelios，没有也没关系，AI 会先帮你装。想用 Claude 聊的话，要一把 Anthropic 的 API key；什么 key 都没有也能先用免费的默认模型聊。
 
-你自己要动手的只有这几件：在 Telegram 里找 @BotFather 建一个 bot；把 bot 的 token 填进 Cloudflare 后台，token 不经过 AI；在浏览器里点「允许」，让 AI 登录 Cloudflare。用自己的模型 key 的话，key 也是你自己存进 Cloudflare 后台。其余的，包括部署、生成钥匙、接 Telegram、接 Aelios、选模型、填设置，都交给 AI。
+你自己要动手的只有这几件：在浏览器里点「允许」，让 AI 登录 Cloudflare；要 Telegram 的，在 Telegram 里找 @BotFather 建一个 bot，把 bot 的 token 填进 Cloudflare 后台，token 不经过 AI。用自己的模型 key 的话，key 也是你自己存进 Cloudflare 后台。其余的，包括部署、生成钥匙、接 Telegram、接 Aelios、选模型、填设置，都交给 AI。
 
 ---
 
 ## 给 AI：先守这几条
 
 - 用用户的语言跟用户说话。每一步先用一句话说你要做什么。
-- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Cloudflare 的令牌、GitHub 的令牌都不行。bot token 由用户自己存进 Cloudflare（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
+- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Cloudflare 的令牌、GitHub 的令牌、企业微信应用的 Secret、转发机的钥匙都不行。bot token 由用户自己存进 Cloudflare（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
 - **你手上已经有用户的 key 的**（在环境变量里，或者在你自己的配置里，比如搜索、语音那几家的），用户同意用在住户上，就照第 10 步的写法从那里直接填，别把值打印出来、别写进文件。没有的就请用户自己在网页设置页填。
 - **你生成的 `TG_WEBHOOK_SECRET` 别打印、别写进文件**，用管道直接存进 Worker（第 4 步的命令就是这么写的）。
 - **没经用户同意，别删、别换已有的东西**：已经在跑的住户 Worker 和它的 Secret（聊天记录、人设、表情包都存在 Worker 里）、Aelios 里已配好的身份、AI Gateway、存好的厂商 key 都不行。换 `WEB_KEY` 也要先问，换了以后旧钥匙就进不去了。
@@ -38,7 +40,7 @@
 
 1. **以前装过住户吗？**
    - 没装过：从第 1 步往下全做。
-   - 装过：要住户的地址和网页钥匙。用 `curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"` 试一下，返回 `"ok":true` 就跳过第 2、3 步；还没设 Telegram 的从第 4 步做，都设好了的从第 5 步做。用户忘了网页钥匙：先说清楚换了以后旧的就进不去，用户同意了再照第 3 步生成一把新的。
+   - 装过：要住户的地址和网页钥匙。用 `curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"` 试一下，返回 `"ok":true` 就跳过第 2、3 步；要 Telegram 又还没设的从第 4 步做，其余的从第 5 步做。用户忘了网页钥匙：先说清楚换了以后旧的就进不去，用户同意了再照第 3 步生成一把新的。
 2. **有 Cloudflare 账号吗？** 没有就请用户先去 <https://dash.cloudflare.com/sign-up> 注册。有 GitHub 账号更好，用来 fork，以后更新点一下就行；没有也能装。
 3. **要不要长期记忆（Aelios）？**
    - 已经有 Aelios：要 Aelios 地址，钥匙第 6 步再说。
@@ -54,13 +56,16 @@
    | 什么 key 都没有 | 先用默认的 `@cf/zai-org/glm-4.7-flash`，免费档就能用，以后再换 |
    | 只有 Claude 订阅（Pro、Max），没有 API key | 订阅变不成聊天用的 API。聊天先用免费模型或别家的 key；订阅可以给住户当手脚用（README.zh-CN.md「叫云端 Claude Code 干活」），装完再配 |
 
-5. **用户的 Telegram 用户名**（`@` 开头），住户只回白名单里的人。用户没设用户名的话，第 9 步用日志查数字 id。
+5. **要哪几扇门？** 网页门一定有。Telegram 和企业微信都是选装的：
+   - 要 Telegram：问用户的 Telegram 用户名（`@` 开头），住户只回白名单里的人。用户没设用户名的话，第 9 步用日志查数字 id。
+   - 不要 Telegram：跳过第 4 步和第 5 步的 `TG_ALLOWED`，第 9 步在网页门上试。
+   - 要企业微信：先把别的装好、能聊了，再在第 10 步「企业微信」接。
 6. **用户在哪个时区？** 问城市就行，你换成 IANA 时区名，比如北京、上海写 `Asia/Shanghai`，香港写 `Asia/Hong_Kong`，东京写 `Asia/Tokyo`。不填默认是 `Asia/Singapore`。
 7. **要它主动找你吗？** 要的话问什么时候，比如每天早上 9 点就是 `every day at 09:00`，工作日晚上就是 `every weekday at 21:30`。不要就不填。
 8. **接了 Aelios 的：住户跟你在别处用 Aelios 聊的，是同一个 AI 吗？** 是：第 6 步用那个助手的身份。不是：第 6 步给住户新建一个身份，问这个 AI 叫什么名字、用户希望被怎么称呼。
 9. **有没有现成的人设？** 有的话请用户给你（存成一个文件最方便），第 8 步你帮着填；不想给你就装完自己在网页上贴。
 
-搜网、读网页、语音条、表情包、叫云端 Claude Code 干活这些，先不用问，装好能聊以后在第 10 步一项一项问。
+搜网、读网页、语音条、表情包、叫云端 Claude Code 干活、企业微信这些，先不用问，装好能聊以后在第 10 步一项一项问。
 
 ## 1. 准备工具，登录 Cloudflare
 
@@ -130,7 +135,7 @@ curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"
 
 返回 `{"ok":true,...}` 就对了。还是 `unauthorized` 的话等十几秒再试，新的 Secret 生效要一会儿。
 
-## 4. 接上 Telegram
+## 4. 接上 Telegram（不要 Telegram 就跳过）
 
 1. **用户建 bot**：请用户在 Telegram 里找 @BotFather，发 `/newbot`，照提示起名字和用户名，最后它会给一串 token。告诉用户：**这串 token 别发给你**。
 2. **用户存 token**。两种办法，用户挑一个：
@@ -170,7 +175,7 @@ curl -sS -X POST <住户地址>/web/config -H "x-web-key: <网页钥匙>" -H "co
 
 | `key` | `text` |
 |---|---|
-| `TG_ALLOWED` | 第 0 步问到的 Telegram 用户名，比如 `@your_name`；几个人用逗号隔开。不填它谁都不回 |
+| `TG_ALLOWED` | 要 Telegram 的才填：第 0 步问到的 Telegram 用户名，比如 `@your_name`；几个人用逗号隔开。不填它在 Telegram 上谁都不回 |
 | `TIME_ZONE` | 第 0 步换好的时区，比如 `Asia/Shanghai` |
 | `CHECKIN_SCHEDULE` | 要主动找的话，比如 `every day at 09:00`；不要就别填 |
 
@@ -266,6 +271,8 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 填完把 `persona.txt` 删掉，或者交还给用户，别提交进仓库。用户不想给你的话，告诉用户：打开网页门，点右上角的铅笔，贴上、保存。没有人设也能聊，用的是一段很短的默认人设。
 
 ## 9. 试一句，再打开 Mini App
+
+**没接 Telegram 的**：请用户打开网页门（`<住户地址>`，填网页钥匙），说一句话，有回复就通了；跳过下面的 Mini App。
 
 **Telegram**：请用户在 Telegram 里给 bot 发一句话，有回复就通了。再发 `/status`，看模型和 Aelios 那两行对不对。
 
@@ -387,6 +394,18 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 
 `routine-prompt.txt` 交给用户以后删掉。
 
+### 企业微信
+
+用户要在企业微信（或开了微信插件的微信）里聊才配。要准备：一个企业微信企业（自己建一个免费的就行），和一台有固定公网 IP、能跑 systemd 的 Linux 机器当转发机。转发机不开端口，经 Cloudflare Tunnel 出来。整套顺序照 README.zh-CN.md「企业微信」，转发机照 [relay/wecom/README.md](../relay/wecom/README.md)。
+
+1. **转发机**：你能连上那台机器的话（用户同意），在那里 clone 这个仓库，跑 `sudo relay/wecom/install.sh`；用户要语音条和动态表情就加 `--media`。连不上的话，把 relay/wecom/README.md 交给用户，或者交给那台机器上的 AI。
+2. **Tunnel**：请用户在 Cloudflare 后台 → Zero Trust → Networks → Tunnels 给转发机加一个 Public Hostname，指到 `http://127.0.0.1:8787`。那台机器还没有 Tunnel 的，装 cloudflared 的命令里带着 token，让用户在自己的终端里粘贴，别经过你。通了以后用 `curl -s https://<转发地址>/ping -H "x-relay-key: …"` 试（钥匙在转发机上，别打印到对话里；连不上那台机器就请用户自己试）。
+3. **建应用**：请用户在企业微信管理后台「应用管理」→「创建应用」，「可见范围」里要有自己。
+4. **填设置**：照第 5 步的命令填 `WECOM_CORP_ID`（「我的企业」页面最下面）、`WECOM_AGENT_ID`、`WECOM_RELAY_URL`（`https://<转发地址>`）、`WECOM_ALLOWED`（用户在通讯录里的「账号」，不知道就先空着，第 7 小步看被挡下的是谁）。`WECOM_SECRET` 和 `WECOM_RELAY_KEY` 请用户自己在设置页「企业微信」那一栏填：Secret 在应用页点「查看」会发到用户的企业微信里，转发钥匙在转发机上用 `sudo sed -n 's/^WECOM_RELAY_KEY=//p' /etc/wecom-relay/env` 看。
+5. **接收消息**：请用户在应用页「接收消息」→「设置 API 接收」，URL 填 `<住户地址>/messengers/wecom/webhook`；Token 和 EncodingAESKey 点「随机获取」，**先在住户设置页存好这两项**（`WECOM_TOKEN`、`WECOM_AES_KEY`），再回企业微信点保存。保存不通过就是这两项或企业 ID 没存上、或者抄错了。
+6. **可信 IP**：请用户在同一个应用页「企业可信 IP」填转发机出去时的 IP（那台机器上 `curl -s https://ifconfig.me`）。
+7. **试**：请用户在企业微信里给应用发一句，再发 `/status`，看「企业微信」那一行。不回的话看设置页「企业微信」那一栏：有被挡下的账号就照第 5 步的命令填进 `WECOM_ALLOWED`；报 60020 是可信 IP 不对。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码。
+
 ### 接别的 MCP
 
 不用现在配。告诉用户：设置页「别的 MCP」填服务地址就能接；也可以在聊天里说「接上 https://…」，它自己接。带 key 的地址别在聊天里发，只在设置页接。
@@ -405,14 +424,15 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 最后用一小块话交给用户，照这个样子：
 
 ```text
-Telegram：@<bot 的用户名>，私聊它就行
 网页门：<住户地址>
 网页钥匙：<网页钥匙>
+Telegram：@<bot 的用户名>，私聊它就行（接了才写）
+企业微信：<应用名>，在企业微信里找它（接了才写）
 ```
 
 再补几句：
 
-- 网页门和 Telegram 是同一段对话。在 Telegram 里点 bot 左下角的「打开网页」，就是 Mini App，不用再填钥匙。
+- 网页门和 Telegram、企业微信是同一段对话。接了 Telegram 的：在 Telegram 里点 bot 左下角的「打开网页」，就是 Mini App，不用再填钥匙。
 - 换模型点网页门左上角的模型名，改人设点右上角的铅笔，别的设置点齿轮。改完下一句就生效。
 - 第 10 步配了什么、没配什么，一句话说清楚；没配的以后在设置页里开，README 有说明。
 - 网页钥匙怀疑漏了：照第 3 步再生成一把，旧的就作废了。

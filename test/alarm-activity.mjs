@@ -136,7 +136,7 @@ function fixture(cfg = {}) {
     return row;
   };
   h.cancelSchedule = async (id) => { h.cancelled.push(id); return h.schedules.delete(id); };
-  h.toTelegram = async (reply) => { h.delivered.push(reply); return true; };
+  h.toHer = async (reply) => { h.delivered.push(reply); return true; };
   h.submitMessages = async (messages) => {
     h.submitted.push(...messages);
     h.messages.push(...messages);

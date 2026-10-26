@@ -386,6 +386,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <div class="card" x-show="configSection === group.id">
         <p class="hint" x-show="groupHint(group)" x-text="groupHint(group)"></p>
         <p class="status" x-show="group.id === 'voice'" :class="sectionNeeds('voice') ? 'needs' : ''" x-text="voiceStatus()"></p>
+        <p class="status" x-show="group.id === 'wecom'" :class="sectionNeeds('wecom') ? 'needs' : ''" x-text="wecomStatus()"></p>
         <template x-if="group.id === 'thinking'">
           <div class="tasks-extra letter-state" aria-live="polite">
             <div class="field">
@@ -735,6 +736,16 @@ function resident() {
         help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
     ] },
+    { id: 'wecom', title: '企业微信', hint: '用自己建的企业里的一个自建应用跟它聊，开了「微信插件」在微信里也能聊。企业微信只认固定 IP 发来的请求，所以回消息要经过一台有固定 IP 的机器转发：在那台机器上装好仓库里的 relay/wecom（说明在那个文件夹的 README）。这一栏全空着就是没接。', fields: [
+      { key: 'WECOM_ALLOWED', label: '谁能在企业微信上跟它说话', help: '成员的账号（通讯录里点开成员看「账号」），逗号隔开。空着谁都不回；有人被挡下，上面会显示那个账号。', placeholder: 'ZhangSan' },
+      { key: 'WECOM_CORP_ID', label: '企业 ID', help: '管理后台「我的企业」页面最下面。', placeholder: 'ww…' },
+      { key: 'WECOM_AGENT_ID', label: 'AgentId', help: '应用管理里点开这个自建应用就能看到。' },
+      { key: 'WECOM_SECRET', label: 'Secret', help: '同一页，点「查看」，它会发到企业微信里。' },
+      { key: 'WECOM_RELAY_URL', label: '转发地址', help: '装了 relay/wecom 的那台机器经 Cloudflare Tunnel 出来的网址。', placeholder: 'https://wecom-relay.…' },
+      { key: 'WECOM_RELAY_KEY', label: '转发钥匙', help: '在转发机上运行 sudo sed -n \'s/^WECOM_RELAY_KEY=//p\' /etc/wecom-relay/env 看到的那串。别发在聊天里。' },
+      { key: 'WECOM_TOKEN', label: 'Token', help: '应用页「接收消息」→「设置 API 接收」，点「随机获取」，复制过来。先在这里存好，再回企业微信点保存。' },
+      { key: 'WECOM_AES_KEY', label: 'EncodingAESKey', help: '同一处，也点「随机获取」。' }
+    ] },
     { id: 'voice', title: '语音', fields: [
       { key: 'VOICE_PROVIDER', label: '发语音用哪家', def: 'off',
         labels: { off: '不发', elevenlabs: 'ElevenLabs', cartesia: 'Cartesia', openrouter: 'OpenRouter' },
@@ -788,7 +799,7 @@ function resident() {
     ] }
   ];
   // The rows of the settings page, in order: the groups above, and the two sections with their own cards.
-  var CONFIG_MENU = ['aelios', 'chat', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom'].map(function (id) {
+  var CONFIG_MENU = ['aelios', 'chat', 'wecom', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom'].map(function (id) {
     var group = CONFIG_GROUPS.find(function (g) { return g.id === id; });
     return { id: id, title: group ? group.title : { stickers: '表情包', mcp: '别的 MCP' }[id] };
   });
@@ -894,7 +905,7 @@ function resident() {
     PERSONA_MAX: PERSONA_MAX,
     CONFIG_GROUPS: CONFIG_GROUPS,
     CONFIG_MENU: CONFIG_MENU,
-    config: { fields: [], voice: { hears: null, gap: 'off', keyFrom: null } },
+    config: { fields: [], voice: { hears: null, gap: 'off', keyFrom: null }, wecom: { gap: 'off', allowed: [], relay: null, error: null, refused: null } },
     configSection: '',
     configMore: false,
     configDraft: {},
@@ -1660,7 +1671,22 @@ function resident() {
       return group.fields.some(function (meta) { return meta.more && self.field(meta.key) && self.shown(meta); });
     },
     groupHint(group) {
+      if (group.id === 'wecom') return group.hint + ' 「接收消息」里的 URL 填：' + location.origin + '/messengers/wecom/webhook';
       return group.hint || '';
+    },
+    // How WeCom stands: what is still missing, the relay, the last error, who was shut out.
+    wecomStatus() {
+      var w = this.config.wecom || {};
+      var labels = { WECOM_CORP_ID: '企业 ID', WECOM_AGENT_ID: 'AgentId', WECOM_SECRET: 'Secret', WECOM_RELAY_URL: '转发地址', WECOM_RELAY_KEY: '转发钥匙', WECOM_TOKEN: 'Token', WECOM_AES_KEY: 'EncodingAESKey' };
+      if (w.gap === 'off') return '没接。';
+      var bits = [];
+      if (w.gap) bits.push('还差' + (labels[w.gap] || w.gap) + '。');
+      else if (!w.relay) bits.push('转发机连不上：看看转发地址、钥匙，和转发机上的 Tunnel。');
+      else bits.push(w.relay.amr ? '接好了，能收发文字、图片、语音和表情包。' : '接好了，能收发文字和图片；转发机没装转码（--media），语音回复改发文字，WebM 表情包发不了。');
+      if (!w.gap && !(w.allowed || []).length) bits.push('还没放行任何人，填下面第一格。');
+      if (w.error) bits.push(this.fmt(w.error.at) + ' 出错：' + w.error.reason);
+      if (w.refused) bits.push(this.fmt(w.refused.at) + ' 挡下了账号 ' + w.refused.user + '，是你的话填进下面第一格。');
+      return bits.join(' ');
     },
     // Only what is worth a glance: saved here, set in Cloudflare (and as which variable), or still to be filled in.
     tagText(meta) {
@@ -1694,6 +1720,10 @@ function resident() {
       if (id === 'thinking') return Boolean(this.letterError || (this.letter.write && this.letter.write.state === 'failed') || this.letterCanRetry());
       var voice = this.config.voice || {};
       if (id === 'tasks') return this.inEffect(this.metaOf('CLOUD_TASKS')) === 'on' && !this.cloud.configured;
+      if (id === 'wecom') {
+        var w = this.config.wecom || {};
+        return w.gap !== 'off' && Boolean(w.gap || !w.relay || w.error || w.refused || !(w.allowed || []).length);
+      }
       return id === 'voice' && Boolean(voice.gap) && voice.gap !== 'off';
     },
     // The one line under each row of the list.
@@ -1710,6 +1740,13 @@ function resident() {
         case 'chat':
           return (text('TG_ALLOWED') || '谁都不回') + ' · ' + (text('CHECKIN_SCHEDULE') || '不主动找')
             + (this.inEffect(this.metaOf('ALARMS')) === 'on' ? ' · 闹钟 ' + this.alarms.alarms.length + ' 个' : '');
+        case 'wecom': {
+          var w = this.config.wecom || {};
+          if (w.gap === 'off') return '没接';
+          if (w.gap) return '还差' + w.gap.replace('WECOM_', '');
+          if (!w.relay) return '转发机连不上';
+          return ((w.allowed || []).join('、') || '谁都不回') + (w.relay.amr ? ' · 能发语音' : ' · 不发语音');
+        }
         case 'voice': {
           var voice = this.config.voice || {};
           if (voice.gap === 'off') return '只听，不发语音';
@@ -2090,7 +2127,7 @@ function resident() {
 
     // ---- small things ----
     viaLabel(via) {
-      return { telegram: 'Telegram', web: '网页', checkin: '主动找你', task: '云端交回' }[via] || '';
+      return { telegram: 'Telegram', wecom: '企业微信', web: '网页', checkin: '主动找你', task: '云端交回' }[via] || '';
     },
     fmt(at) {
       var date = new Date(at);

@@ -1,5 +1,5 @@
-// The resident: one Think agent in one Durable Object. Telegram and the web page
-// are two doors into the same conversation.
+// The resident: one Think agent in one Durable Object. The web page, Telegram and WeCom (the last two only when
+// they are set up) are doors into the same conversation.
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -20,15 +20,18 @@ import {
   type TurnContext
 } from "@cloudflare/think";
 import {
+  chatSdkMessenger,
   defaultChatSdkEvent,
   toMessengerUserMessage,
   type MessengerConcurrency,
   type MessengerContext,
+  type MessengerDefinition,
   type MessengerEvent,
   type NormalizedMessengerDefinition,
   type ThinkMessengers
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
+import type { Adapter } from "chat";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { generateText, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
@@ -80,6 +83,17 @@ import {
   type VoiceOut
 } from "./telegram";
 import { StickerStore, type PackView, type RemoteSticker } from "./sticker-store";
+import {
+  WecomAdapter,
+  WecomApi,
+  canSend,
+  userOf,
+  wecomConfig,
+  wecomGap,
+  wecomProblem,
+  wecomVerify,
+  type Abilities
+} from "./wecom";
 import {
   CLOUD_TASK_DESCRIPTION,
   FIRE_URL,
@@ -133,7 +147,9 @@ import {
   speaker,
   speakingGap,
   unmarked,
-  voiceRules
+  voiceRules,
+  byWhatItIs,
+  type Spoken
 } from "./voice";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
@@ -212,7 +228,7 @@ export type WebLine = {
   kind: "chat" | "letter";
   text: string;
   at: number | null;
-  via: "telegram" | "web" | "checkin" | "task" | null;
+  via: "telegram" | "wecom" | "web" | "checkin" | "task" | null;
   activity?: Activity[];
   /** Stickers sent in this reply, shown after its words. */
   stickers?: { url: string; video: boolean }[];
@@ -536,10 +552,22 @@ export class Resident extends Think<Env> {
     return this.sql<{ at: number; text: string }>`SELECT at, text FROM res_persona ORDER BY rowid DESC LIMIT ${limit}`;
   }
 
+  /**
+   * Telegram, when its bot is set up in Cloudflare (read once, at start). WeCom always: its settings are on the
+   * settings page and read as each message comes, and while they are empty it answers nothing.
+   */
   override getMessengers(): ThinkMessengers {
+    const messengers: ThinkMessengers = {};
+    const telegram = this.telegramMessenger();
+    if (telegram) messengers.telegram = telegram;
+    messengers.wecom = this.wecomMessenger();
+    return messengers;
+  }
+
+  private telegramMessenger(): MessengerDefinition | null {
     const token = this.env.TG_BOT_TOKEN?.trim();
     const secretToken = this.env.TG_WEBHOOK_SECRET?.trim();
-    if (!token || !secretToken) return {};
+    if (!token || !secretToken) return null;
     const definition = telegramMessenger({
       token,
       secretToken,
@@ -558,16 +586,91 @@ export class Resident extends Think<Env> {
         noteVoiceLengths(stampEvent(defaultChatSdkEvent({ ...definition, id: "telegram" } as NormalizedMessengerDefinition, input), this.tz))
     });
     const adapter = definition.adapter as unknown as BubbleAdapter & { downloadFile: Download };
+    this.bubbles(adapter);
+    this.#telegramFile = (fileId) => adapter.downloadFile(fileId);
+    return definition;
+  }
+
+  /** How a door posts a reply: a paragraph at a time, with its sticker after it, or as one voice message. */
+  private bubbles(adapter: BubbleAdapter): void {
     useBubbles(adapter, {
       // A reply that is only a sticker: the sticker is the reply, not "I said nothing".
-      keepLast: (thread, text) => !(text.trim() === EMPTY_REPLY && this.#outbox.get(`tg:${thread}`)?.length),
-      after: (thread) => this.flushStickers(`tg:${thread}`, chatIdOf(thread)),
+      keepLast: (thread, text) => !(text.trim() === EMPTY_REPLY && this.#outbox.get(`chat:${thread}`)?.length),
+      after: (thread) => this.flushStickers(`chat:${thread}`, thread),
       voice: (thread) => this.voiceReply(thread),
       // send_voice said it all and the model wrote nothing more: no "I said nothing" line after it.
       instead: (_thread, text) => (text.trim() === EMPTY_REPLY ? this.#spoke : null)
     });
-    this.#telegramFile = (fileId) => adapter.downloadFile(fileId);
-    return { telegram: definition };
+  }
+
+  /** WeCom's door (wecom.ts). The adapter checks each push against the settings in effect. */
+  private wecomMessenger(): MessengerDefinition {
+    const adapter = new WecomAdapter({
+      config: () => wecomConfig(this.cfg),
+      api: this.wecomApi(),
+      userName: "resident",
+      waitUntil: (work) => this.ctx.waitUntil(work),
+      command: (name) => this.command(name),
+      refused: (user) => this.ctx.storage.put("wecom_refused", { user, at: Date.now() })
+    });
+    const definition = chatSdkMessenger({
+      adapter: adapter as unknown as Adapter,
+      provider: "wecom",
+      userName: "resident",
+      // The same one conversation as Telegram and the web page.
+      conversation: "self",
+      respondTo: ["direct-message"],
+      // WeCom's signature is checked by the adapter, which opens the push with the same keys.
+      verifyWebhook: false,
+      delivery: {
+        splitText: splitIntoBubbles,
+        emptyResponseText: EMPTY_REPLY,
+        errorResponseText: "我这边出错了，没能回你。再发一次试试？",
+        interruptedResponseText: "刚才回到一半断了，再发一次好吗？"
+      },
+      toEvent: (input) => stampEvent(defaultChatSdkEvent({ ...definition, id: "wecom" } as NormalizedMessengerDefinition, input), this.tz)
+    });
+    this.bubbles(adapter as unknown as BubbleAdapter);
+    return definition;
+  }
+
+  #wecomApi: WecomApi | null = null;
+  #wecomTrouble = false;
+
+  /** WeCom's API through the relay. What last went wrong is kept for /status and the settings page. */
+  private wecomApi(): WecomApi {
+    this.#wecomApi ??= new WecomApi(
+      () => wecomConfig(this.cfg),
+      { get: (key) => this.ctx.storage.get(key), put: (key, value) => this.ctx.storage.put(key, value) },
+      (problem) => {
+        if (problem) {
+          this.#wecomTrouble = true;
+          console.error("wecom: call failed", { problem });
+          void this.ctx.storage.put("wecom_error", { at: Date.now(), reason: problem });
+        } else if (this.#wecomTrouble) {
+          this.#wecomTrouble = false;
+          void this.ctx.storage.delete("wecom_error");
+        }
+      }
+    );
+    return this.#wecomApi;
+  }
+
+  /** WeCom checking the app's message URL (a GET), for the Worker. */
+  async wecomVerify(search: string): Promise<{ status: number; body: string }> {
+    return wecomVerify(wecomConfig(this.cfg), new URLSearchParams(search));
+  }
+
+  /** A file she sent on WeCom. A voice message comes as AMR, which nothing here hears: the relay makes it MP3. */
+  private async wecomFile(mediaId: string): Promise<Uint8Array> {
+    const api = this.wecomApi();
+    const bytes = await api.download(mediaId);
+    if (String.fromCharCode(...bytes.subarray(0, 5)) !== "#!AMR") return bytes;
+    if (!(await api.abilities())?.mp3) return bytes;
+    return api.convert("mp3", bytes).catch((error) => {
+      console.error("wecom: voice message not converted", { error: String(error) });
+      return bytes;
+    });
   }
 
   /** Downloads a file she sent on Telegram (set by getMessengers). */
@@ -588,12 +691,13 @@ export class Resident extends Think<Env> {
     context: MessengerContext,
     options?: ChatOptions
   ): Promise<void> {
-    if (!this.#telegramFile) this.getMessengers();
-    const download = this.#telegramFile;
+    const wecom = context.messengerId === "wecom";
+    if (!wecom && !this.#telegramFile) this.getMessengers();
+    const download: Download | null = wecom ? (fileId) => this.wecomFile(fileId) : this.#telegramFile;
     this.#heardVoice = false;
     let message = userMessage;
     if (typeof message !== "string" && download) {
-      const listened = await heard(context, download, hearing(this.cfg));
+      const listened = await heard(context, download, wecom ? byWhatItIs(hearing(this.cfg)) : hearing(this.cfg));
       if (listened) {
         this.#heardVoice = true;
         message = { ...message, parts: toMessengerUserMessage(listened).parts };
@@ -603,10 +707,12 @@ export class Resident extends Think<Env> {
     return super.chatWithMessengerContext(message, callback, context, options);
   }
 
-  /** Her Telegram chat, once she has written from there. */
-  private async herChat(): Promise<string | null> {
-    const thread = await this.ctx.storage.get<string>("tg_thread");
-    return thread ? chatIdOf(thread) : null;
+  /**
+   * The chat she last wrote from (Telegram or WeCom), where messages outside a turn go. Kept as tg_thread before
+   * WeCom came, which is still read.
+   */
+  private async herThread(): Promise<string | null> {
+    return (await this.ctx.storage.get<string>("door_thread")) ?? (await this.ctx.storage.get<string>("tg_thread")) ?? null;
   }
 
   /** How this reply goes out as a voice message, or null to post it as text (VOICE_REPLY, voice.ts). */
@@ -614,30 +720,47 @@ export class Resident extends Think<Env> {
     const mode = replyOf(this.cfg);
     if (mode === "tool" || (mode === "mirror" && !this.#heardVoice)) return null;
     const chat = chatIdOf(threadId);
-    if (!chat || !speaker(this.cfg)) return null;
+    if ((!chat && !userOf(threadId)) || !speaker(this.cfg)) return null;
+    // A relay that is known not to make AMR: text, without paying for a voice that cannot be sent.
+    if (!chat && this.wecomApi().knownAbilities()?.amr === false) return null;
     return {
-      recording: () => chatAction(this.telegramConfig(), chat, "record_voice"),
+      recording: async () => {
+        if (chat) await chatAction(this.telegramConfig(), chat, "record_voice");
+      },
       send: async (text) => {
         const asText = unmarked(text, dialectOf(this.cfg));
-        const sent = await this.speakTo(chat, text);
+        const sent = await this.speakTo(threadId, text);
         if ("error" in sent) return { posted: null, text: asText };
-        return { posted: { id: `${chat}:${sent.id}`, threadId }, text: needsText(text) ? asText : "" };
+        return { posted: { id: sent.id, threadId }, text: needsText(text) ? asText : "" };
       }
     };
   }
 
+  /** A voice message to a chat: as it is to Telegram; to WeCom made AMR by the relay first. Returns its message id. */
+  private async sendVoiceTo(threadId: string, voice: Spoken): Promise<string> {
+    const chat = chatIdOf(threadId);
+    if (chat) return `${chat}:${await sendVoice(this.telegramConfig(), chat, voice)}`;
+    const user = userOf(threadId);
+    if (!user) throw new Error("this chat takes no voice messages");
+    if (voice.seconds > 60) throw new Error(`too long for a WeCom voice message (${Math.round(voice.seconds)} seconds; at most 60)`);
+    const api = this.wecomApi();
+    if ((await api.abilities())?.amr === false) throw new Error("the WeCom relay was installed without --media, so it cannot make voice messages");
+    const amr = await api.convert("amr", voice.audio);
+    return api.sendFile(user, "voice", { bytes: amr, type: "audio/amr", name: "voice.amr" });
+  }
+
   /**
-   * Say a reply in the voice set up on the settings page and send it to a Telegram chat. Why it was not sent comes
-   * back instead, and is kept for /status.
+   * Say a reply in the voice set up on the settings page and send it to her chat. Why it was not sent comes back
+   * instead, and is kept for /status.
    */
-  private async speakTo(chat: string, text: string, style?: string): Promise<{ id: string } | { error: string }> {
+  private async speakTo(threadId: string, text: string, style?: string): Promise<{ id: string } | { error: string }> {
     const speak = speaker(this.cfg);
     const said = speakable(text);
     if (!speak) return { error: "voice messages are not set up" };
     if (!said) return { error: "nothing to say aloud" };
     if (said.length > SPEAK_MAX_CHARS) return { error: `too long for a voice message (${said.length} characters; at most ${SPEAK_MAX_CHARS})` };
     try {
-      const id = await sendVoice(this.telegramConfig(), chat, await speak(said, { style }));
+      const id = await this.sendVoiceTo(threadId, await speak(said, { style }));
       await this.ctx.storage.delete("voice_error");
       return { id };
     } catch (error) {
@@ -659,15 +782,16 @@ export class Resident extends Think<Env> {
     return {
       send_voice: tool({
         description:
-          "Send them a voice message on Telegram, in your voice. It is not shown as text, so don't write the same words " +
-          "again; if there is nothing else to say, end your turn without writing anything.",
+          "Send them a voice message in your voice, to the chat they last wrote from (Telegram or WeCom). It is not " +
+          "shown as text, so don't write the same words again; if there is nothing else to say, end your turn without " +
+          "writing anything.",
         inputSchema: inputSchema as z.ZodType<{ text: string; style?: string }>,
         execute: async ({ text, style: how }) => {
-          const chat = await this.herChat();
-          if (!chat) return "Not sent: they have not written to you on Telegram yet.";
-          const sent = await this.speakTo(chat, text, how);
+          const thread = await this.herThread();
+          if (!thread) return "Not sent: they have not written to you from Telegram or WeCom yet.";
+          const sent = await this.speakTo(thread, text, how);
           if ("error" in sent) return `Not sent (${sent.error}). Say it in text instead.`;
-          this.#spoke = { id: `${chat}:${sent.id}`, threadId: `telegram:${chat}` };
+          this.#spoke = { id: sent.id, threadId: thread };
           return "Sent as a voice message.";
         }
       })
@@ -1032,9 +1156,10 @@ export class Resident extends Think<Env> {
     return { token: this.env.TG_BOT_TOKEN ?? "", apiBase: this.env.TG_API_BASE };
   }
 
-  // Stickers waiting to go out after a reply's words: "tg:<thread>" for a Telegram turn, "req:<id>" for a check-in.
+  // Stickers waiting to go out after a reply's words: "chat:<thread>" for a Telegram or WeCom turn, "req:<id>" for a
+  // check-in.
   #outbox = new Map<string, string[]>();
-  // The Telegram thread each running turn answers, and the turns that have sent their one sticker.
+  // The chat thread each running turn answers, and the turns that have sent their one sticker.
   #turnThread = new Map<string, string>();
   #stickerSent = new Set<string>();
   // Pictures of Telegram-pack stickers being fetched now, and when one last could not be.
@@ -1080,14 +1205,14 @@ export class Resident extends Think<Env> {
     return null;
   }
 
-  /** A sticker goes out after this turn's words: on Telegram, or with a check-in. On the web page it shows by itself. */
+  /** A sticker goes out after this turn's words: in her chat, or with a check-in. On the web page it shows by itself. */
   private queueSticker(key: string): void {
     const id = this.activeTurn?.requestId;
     if (!id) return;
     this.#stickerSent.add(id);
     const thread = this.#turnThread.get(id);
     const trigger = this.activeTurn?.trigger;
-    const box = thread ? `tg:${thread}` : trigger === "scheduled" || trigger === "submission" ? `req:${id}` : null;
+    const box = thread ? `chat:${thread}` : trigger === "scheduled" || trigger === "submission" ? `req:${id}` : null;
     if (box) this.#outbox.set(box, [...(this.#outbox.get(box) ?? []), key]);
   }
 
@@ -1127,17 +1252,53 @@ export class Resident extends Think<Env> {
     };
   }
 
-  /** The stickers waiting in one box, to her chat. Returns the last one posted. */
-  private async flushStickers(box: string, chatId: string | null): Promise<{ id: string; threadId: string } | null> {
+  /** The stickers waiting in one box, to her chat (a Telegram or WeCom thread). Returns the last one posted. */
+  private async flushStickers(box: string, threadId: string | null): Promise<{ id: string; threadId: string } | null> {
     const keys = this.#outbox.get(box) ?? [];
     this.#outbox.delete(box);
     let last: { id: string; threadId: string } | null = null;
     for (const key of keys) {
-      if (!chatId) break;
-      const messageId = await this.deliverSticker(chatId, key);
-      if (messageId != null) last = { id: `${chatId}:${messageId}`, threadId: `telegram:${chatId}` };
+      if (!threadId) break;
+      const chatId = chatIdOf(threadId);
+      const user = userOf(threadId);
+      if (chatId) {
+        const messageId = await this.deliverSticker(chatId, key);
+        if (messageId != null) last = { id: `${chatId}:${messageId}`, threadId };
+      } else if (user) {
+        const messageId = await this.deliverWecomSticker(user, key);
+        if (messageId != null) last = { id: messageId, threadId };
+      }
     }
     return last;
+  }
+
+  /**
+   * One sticker to WeCom, as a picture: its web picture as it is when that is a GIF, PNG or JPEG; a WebM (a video
+   * sticker) made a GIF and a WebP made a PNG by the relay, when it was installed with --media. Null when it could
+   * not go out.
+   */
+  private async deliverWecomSticker(user: string, key: string): Promise<string | null> {
+    const file = await this.stickerFile(key);
+    if (!file) return null;
+    const api = this.wecomApi();
+    const into: Partial<Record<string, keyof Abilities>> = { "video/webm": "gif", "image/webp": "png" };
+    try {
+      let picture = file;
+      const to = into[file.type];
+      if (to) {
+        if (!(await api.abilities())?.[to]) {
+          console.log("wecom: sticker not sent: the relay does not convert it", { type: file.type });
+          return null;
+        }
+        picture = { bytes: await api.convert(to, file.bytes), type: `image/${to}` };
+      }
+      const ext = { "image/gif": "gif", "image/png": "png", "image/jpeg": "jpg" }[picture.type];
+      if (!ext) return null;
+      return await api.sendFile(user, "image", { bytes: picture.bytes, type: picture.type, name: `sticker.${ext}` });
+    } catch (error) {
+      console.error("wecom: sticker not sent", { error: wecomProblem(error) });
+      return null;
+    }
   }
 
   /**
@@ -1439,19 +1600,26 @@ export class Resident extends Think<Env> {
     this.#spoke = null;
     this.#draftActive = null;
     if (ctx.requestId && !this.#letterPromptId) {
-      const via = ctx.messenger ? "telegram" : ctx.trigger === "scheduled" || ctx.trigger === "submission" ? "checkin" : "web";
+      const via = ctx.messenger
+        ? ctx.messenger.messengerId === "wecom"
+          ? "wecom"
+          : "telegram"
+        : ctx.trigger === "scheduled" || ctx.trigger === "submission"
+          ? "checkin"
+          : "web";
       this.#drafts.set(ctx.requestId, new WebDraft(`live_${ctx.requestId}`, Date.now(), via));
       // activeTurn is async-context-local; a separate history RPC must check it inside the captured turn.
       const withinTurn = AsyncLocalStorage.snapshot();
       this.#draftActive = () => withinTurn(() => this.activeTurn?.requestId === ctx.requestId);
     }
     const thread = ctx.messenger?.thread;
-    if (thread?.isDirectMessage && (await this.ctx.storage.get("tg_thread")) !== thread.id) {
-      await this.ctx.storage.put("tg_thread", thread.id);
+    // Where she last wrote from is where messages outside a turn go.
+    if (thread?.isDirectMessage && (await this.herThread()) !== thread.id) {
+      await this.ctx.storage.put("door_thread", thread.id);
     }
     if (ctx.requestId && thread && !this.#letterPromptId) {
       // A sticker from a turn that failed before its words went out is not sent with this one.
-      this.#outbox.delete(`tg:${thread.id}`);
+      this.#outbox.delete(`chat:${thread.id}`);
       if (this.#turnThread.size > 20) this.#turnThread.clear();
       this.#turnThread.set(ctx.requestId, thread.id);
     }
@@ -2047,15 +2215,20 @@ export class Resident extends Think<Env> {
     return this.sql<{ at: number; text: string }>`SELECT at, text FROM res_letters ORDER BY at DESC LIMIT 1`;
   }
 
-  /** One message to her Telegram chat, outside any turn. False when she has not written from Telegram yet. */
-  private async toTelegram(text: string): Promise<boolean> {
-    const thread = await this.ctx.storage.get<string>("tg_thread");
-    if (!thread || !this.env.TG_BOT_TOKEN) return false;
+  /**
+   * One message to the chat she last wrote from (Telegram or WeCom), outside any turn. False when she has not
+   * written from either yet, or that door is no longer set up.
+   */
+  private async toHer(text: string): Promise<boolean> {
+    const thread = await this.herThread();
+    const channel = thread && (chatIdOf(thread) ? "telegram" : userOf(thread) ? "wecom" : null);
+    if (!thread || !channel) return false;
+    if (channel === "telegram" ? !this.env.TG_BOT_TOKEN : !canSend(wecomConfig(this.cfg))) return false;
     try {
-      await this.deliverNotice({ markdown: text }, { channel: "telegram", thread });
+      await this.deliverNotice({ markdown: text }, { channel, thread });
       return true;
     } catch (error) {
-      console.error("tg: notice failed", { error: String(error) });
+      console.error(`${channel === "telegram" ? "tg" : "wecom"}: notice failed`, { error: String(error) });
       return false;
     }
   }
@@ -2063,9 +2236,9 @@ export class Resident extends Think<Env> {
   /** With VOICE_REPLY=always, a check-in goes out as a voice message too. False when it was not sent as one. */
   private async checkinAsVoice(reply: string): Promise<boolean> {
     if (replyOf(this.cfg) !== "always" || !speaker(this.cfg)) return false;
-    const chat = await this.herChat();
-    if (!chat || "error" in (await this.speakTo(chat, reply))) return false;
-    if (needsText(reply)) for (const bubble of splitIntoBubbles(unmarked(reply, dialectOf(this.cfg)))) await this.toTelegram(bubble);
+    const thread = await this.herThread();
+    if (!thread || "error" in (await this.speakTo(thread, reply))) return false;
+    if (needsText(reply)) for (const bubble of splitIntoBubbles(unmarked(reply, dialectOf(this.cfg)))) await this.toHer(bubble);
     return true;
   }
 
@@ -2110,12 +2283,12 @@ export class Resident extends Think<Env> {
     const proactive =
       isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
     if (proactive && reply && reply !== SKIP && !(await this.checkinAsVoice(reply))) {
-      for (const bubble of splitIntoBubbles(reply)) await this.toTelegram(bubble);
+      for (const bubble of splitIntoBubbles(reply)) await this.toHer(bubble);
     }
     if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
-      const thread = await this.ctx.storage.get<string>("tg_thread");
+      const thread = await this.herThread();
       if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
-      else await this.flushStickers(`req:${result.requestId}`, chatIdOf(thread));
+      else await this.flushStickers(`req:${result.requestId}`, thread);
     }
     // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
     // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
@@ -2244,8 +2417,45 @@ export class Resident extends Think<Env> {
         this.webMcp()
           .servers.map((server) => `${server.name}（${server.state === "ready" ? `${server.tools} 个工具` : server.state === "authenticating" ? "等你授权" : "没连上"}）`)
           .join("、") || "没接"
-      }`
+      }`,
+      await this.wecomLine()
     ].join("\n");
+  }
+
+  /** How WeCom stands, for /status and the settings page. */
+  private async wecomState(): Promise<{
+    gap: string | null;
+    allowed: string[];
+    relay: Abilities | null;
+    error: { at: number; reason: string } | null;
+    refused: { at: number; user: string } | null;
+  }> {
+    const gap = wecomGap(this.cfg);
+    const config = wecomConfig(this.cfg);
+    const refused = (await this.ctx.storage.get<{ at: number; user: string }>("wecom_refused")) ?? null;
+    return {
+      gap,
+      allowed: config?.allowed ?? [],
+      relay: canSend(config) ? await this.wecomApi().abilities() : null,
+      error: config ? ((await this.ctx.storage.get<{ at: number; reason: string }>("wecom_error")) ?? null) : null,
+      // Only someone still shut out.
+      refused: refused && config && !config.allowed.includes(refused.user.toLowerCase()) ? refused : null
+    };
+  }
+
+  private async wecomLine(): Promise<string> {
+    const state = await this.wecomState();
+    if (state.gap === "off") return "企业微信：没接";
+    if (state.gap) return `企业微信：还差 ${state.gap}`;
+    const who = state.allowed.length ? `放行 ${state.allowed.join("、")}` : "谁都不回（WECOM_ALLOWED 空着）";
+    const relay = !state.relay
+      ? "转发机连不上"
+      : state.relay.amr
+        ? "转发机能转语音"
+        : "转发机没装转码，语音回复改发文字";
+    const error = state.error ? `；${stamp(new Date(state.error.at), this.tz)} 出错：${state.error.reason}` : "";
+    const refused = state.refused ? `；${stamp(new Date(state.refused.at), this.tz)} 挡下了 ${state.refused.user}` : "";
+    return `企业微信：${who}；${relay}${error}${refused}`;
   }
 
   /** /status: how voice messages are heard and sent, and why the latest one could not be sent. */
@@ -2271,7 +2481,7 @@ export class Resident extends Think<Env> {
     let about: string | null = null;
     for (const message of (await this.session.getRecentHistory(this.hydrationByteBudget)).messages) {
       const text = textOf(message).trim();
-      const meta = message.metadata as { at?: number; messenger?: { message?: { createdAt?: string } } } | undefined;
+      const meta = message.metadata as { at?: number; messenger?: { messengerId?: string; message?: { createdAt?: string } } } | undefined;
       const sentAt = meta?.messenger?.message?.createdAt;
       const at = meta?.at ?? (sentAt ? new Date(sentAt).getTime() : null);
       if (message.id.startsWith("compaction_")) {
@@ -2288,7 +2498,7 @@ export class Resident extends Think<Env> {
           via = "checkin";
           continue;
         }
-        via = meta?.messenger ? "telegram" : "web";
+        via = meta?.messenger ? (meta.messenger.messengerId === "wecom" ? "wecom" : "telegram") : "web";
         const pictures = message.parts.filter((part) => part.type === "file").length + (text.match(EVICTED_PICTURE)?.length ?? 0);
         const said = text
           .replace(EVICTED_PICTURE, "")
@@ -2452,17 +2662,25 @@ export class Resident extends Think<Env> {
   }
 
   /** The settings page: each setting, what is saved there and what the Worker has. Secrets only say whether they are set. */
-  webConfig(): { fields: ConfigField[]; voice: { hears: "scribe" | "whisper" | null; gap: string | null; keyFrom: string | null } } {
+  async webConfig(): Promise<{
+    fields: ConfigField[];
+    voice: { hears: "scribe" | "whisper" | null; gap: string | null; keyFrom: string | null };
+    wecom: Awaited<ReturnType<Resident["wecomState"]>>;
+  }> {
     // What the voice settings still need, which the page cannot tell by itself (whether there is an AI binding), and
-    // the AI Gateway whose stored key voice relies on.
-    return { fields: describe(this.env, this.savedConfig()), voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg), keyFrom: keyFromGateway(this.cfg) } };
+    // the AI Gateway whose stored key voice relies on; how WeCom stands (its relay, its last error).
+    return {
+      fields: describe(this.env, this.savedConfig()),
+      voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg), keyFrom: keyFromGateway(this.cfg) },
+      wecom: await this.wecomState()
+    };
   }
 
   /**
    * Save one setting from the settings page; empty goes back to the Worker's own value. It applies from the
    * next message. A check-in schedule or time zone is armed right away, and one that cannot be armed is not kept.
    */
-  async webSetConfig(key: string, raw: string): Promise<ReturnType<Resident["webConfig"]> | { error: string }> {
+  async webSetConfig(key: string, raw: string): Promise<Awaited<ReturnType<Resident["webConfig"]>> | { error: string }> {
     const field = fieldOf(key);
     if (!field) return { error: "没有这个设置" };
     const result = cleaned(field, raw);
@@ -2479,6 +2697,12 @@ export class Resident extends Think<Env> {
       }
     }
     if (key === "TIME_ZONE") await this.rearmAlarms();
+    // Another relay or app: ask the relay again what it does, and forget the last error.
+    if (key.startsWith("WECOM_")) {
+      this.#wecomApi = null;
+      this.#wecomTrouble = false;
+      await this.ctx.storage.delete("wecom_error");
+    }
     // A different Aelios has a different boot packet.
     if (key.startsWith("AELIOS_")) {
       await this.ctx.storage.delete("aelios_boot");

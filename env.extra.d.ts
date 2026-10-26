@@ -53,6 +53,16 @@ interface Env {
   // Local tests only: where the trigger is fired instead of api.anthropic.com, and how many minutes before a task is quiet.
   CLOUD_TASK_API_BASE?: string;
   CLOUD_TASK_QUIET_MINUTES?: string;
+  // WeCom (wecom.ts): the self-built app's CorpID, AgentId and Secret, its message URL's Token and EncodingAESKey,
+  // the relay on a machine with a fixed address (relay/wecom/) and its key, and the UserIDs that may talk to it.
+  WECOM_CORP_ID?: string;
+  WECOM_AGENT_ID?: string;
+  WECOM_SECRET?: string;
+  WECOM_TOKEN?: string;
+  WECOM_AES_KEY?: string;
+  WECOM_RELAY_URL?: string;
+  WECOM_RELAY_KEY?: string;
+  WECOM_ALLOWED?: string;
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
   TG_API_BASE?: string;
