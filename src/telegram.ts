@@ -122,18 +122,25 @@ export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
 
 export type TelegramConfig = { token: string; apiBase?: string };
 
+/** Where Telegram sends the bot's updates, on the resident's own address. */
+export const TELEGRAM_WEBHOOK_PATH = "/messengers/telegram/webhook";
+
 function apiBase(config: TelegramConfig): string {
   return config.apiBase?.trim() || DEFAULT_API_BASE;
 }
 
-async function call(config: TelegramConfig, method: string, payload: Record<string, unknown> | FormData): Promise<Response> {
+async function call(config: TelegramConfig, method: string, payload: Record<string, unknown> | FormData, timeoutMs?: number): Promise<Response> {
   const form = payload instanceof FormData;
   return fetch(`${apiBase(config)}/bot${config.token}/${method}`, {
     method: "POST",
     headers: form ? undefined : { "content-type": "application/json" },
-    body: form ? payload : JSON.stringify(payload)
+    body: form ? payload : JSON.stringify(payload),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {})
   });
 }
+
+// What the settings page asks Telegram waits this long at most.
+const ASK_TIMEOUT_MS = 8000;
 
 type Answer<T> = { ok: boolean; result?: T; description?: string };
 
@@ -290,6 +297,33 @@ export async function setWebhook(
     result.setChatMenuButton = await menu.json().catch(() => ({ ok: false, status: menu.status }));
   }
   return result;
+}
+
+/** Who the token belongs to: the bot's @username, or what Telegram said was wrong with the token. */
+export async function getMe(config: TelegramConfig): Promise<{ username: string } | { error: string }> {
+  try {
+    const me = await answer<{ username?: string }>(await call(config, "getMe", {}, ASK_TIMEOUT_MS));
+    return me.ok && me.result?.username ? { username: me.result.username } : { error: me.description ?? "getMe failed" };
+  } catch (error) {
+    return { error: `Telegram could not be reached: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+/** Where the bot's updates go now, and the last error Telegram had delivering one. */
+export async function webhookInfo(config: TelegramConfig): Promise<{ url: string; lastError: string | null; lastErrorAt: number | null } | { error: string }> {
+  try {
+    const info = await answer<{ url?: string; last_error_message?: string; last_error_date?: number }>(await call(config, "getWebhookInfo", {}, ASK_TIMEOUT_MS));
+    if (!info.ok || !info.result) return { error: info.description ?? "getWebhookInfo failed" };
+    const at = info.result.last_error_date;
+    return { url: info.result.url ?? "", lastError: info.result.last_error_message ?? null, lastErrorAt: at ? at * 1000 : null };
+  } catch (error) {
+    return { error: `Telegram could not be reached: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+/** The bot stops sending updates here (its token is being taken off). */
+export async function deleteWebhook(config: TelegramConfig): Promise<void> {
+  await call(config, "deleteWebhook", {}).catch(() => undefined);
 }
 
 /** The parts of a Telegram update the Worker reads before handing it to the resident. */

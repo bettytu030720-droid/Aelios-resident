@@ -20,6 +20,9 @@
 //   alarms   alarms the resident sets itself (start wrangler with --var ALARM_MINUTE_SECONDS:0.05)
 //   wecom    the WeCom door: its address check, pushes opened and checked, replies, stickers and voice messages
 //            through the fake relay, a relay without --media, a wrong relay key, out-of-turn messages
+//   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
+//            --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:): connected, the resident started again, the Mini App
+//            and commands with that token, connecting again, a token Telegram refuses, taking it off
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -30,7 +33,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -509,7 +512,9 @@ if (phase === "main") {
     assert.equal(field("LETTER_TOKEN_THRESHOLD").value, "50000");
     config = await (await web("/web/config", "test-web-key", { key: "LETTER_TOKEN_THRESHOLD", text: "" })).json();
     assert.equal(field("LETTER_TOKEN_THRESHOLD").value, "");
-    assert.ok(!config.fields.some((f) => ["TG_BOT_TOKEN", "TG_WEBHOOK_SECRET", "WEB_KEY"].includes(f.key)));
+    assert.ok(!config.fields.some((f) => ["TG_WEBHOOK_SECRET", "WEB_KEY"].includes(f.key)), "the webhook secret and the web key are never on the page");
+    assert.deepEqual(field("TG_BOT_TOKEN"), { key: "TG_BOT_TOKEN", kind: "secret", value: "", fromWorker: "", saved: false, workerHas: true });
+    assert.ok(!JSON.stringify(config).includes("test-token") && !JSON.stringify(config).includes(SECRET));
     for (const [key, text, problem] of [
       ["TIME_ZONE", "Mars/Olympus", /时区/],
       ["LETTER_TOKEN_THRESHOLD", "abc", /大于 8000 的整数/],
@@ -1914,7 +1919,7 @@ if (phase === "wecom") {
     assert.ok((await ofKind("wecom.get")).some((e) => e.id === "pic-1"));
   });
 
-  await step("a sticker goes out after the words, as a picture uploaded to WeCom", async () => {
+  await step("stickers are off on WeCom unless turned on: the model is told, nothing is uploaded", async () => {
     const body = zip([
       { name: "pack.json", data: JSON.stringify({ format: "resident-stickers/1", name: "Test", stickers: [{ id: "wave", file: "wave.gif", emoji: "👋", when: "Say hi.", telegram: "wave.webm" }] }) },
       { name: "wave.gif", data: GIF },
@@ -1922,6 +1927,17 @@ if (phase === "wecom") {
     ]);
     const imported = await fetch(`${WORKER}/web/stickers/import?name=test.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body });
     assert.equal(imported.status, 200, await imported.clone().text());
+    const uploads = (await ofKind("wecom.upload")).length;
+    const said = (await texts()).length;
+    await push({ MsgType: "text", Content: "发表情" });
+    const out = await waitFor(texts, said, 1);
+    assert.match(out.join("\n"), /stickers do not show in this chat/);
+    await sleep(1000);
+    assert.equal((await ofKind("wecom.upload")).length, uploads, "nothing uploaded");
+  });
+
+  await step("turned on, a sticker goes out after the words, as a picture uploaded to WeCom", async () => {
+    await set({ WECOM_STICKERS: "on" });
     const before = (await wecomSent()).length;
     await push({ MsgType: "text", Content: "发表情" });
     const out = await waitFor(wecomSent, before, 1);
@@ -2019,6 +2035,126 @@ if (phase === "wecom") {
     await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code }, body: JSON.stringify({ status: "done", summary: "又改好了。" }) });
     assert.match((await waitForSends(tg, 1)).join("\n"), /云端回来了/);
     assert.equal((await texts()).length, wecom, "not to WeCom");
+  });
+}
+
+if (phase === "telegram") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const TOKEN = `654321:${"A".repeat(35)}`;
+  const HOOK = `${WORKER}/messengers/telegram/webhook`;
+  const config = async () => (await web("/web/config", KEY)).json();
+  const save = (key, text) => web("/web/config", KEY, { key, text });
+  const ofKind = async (kind) => (await log()).filter((e) => e.kind === kind);
+  // The resident starts again about a second after a new token or webhook secret; wait until it answers again.
+  const restarted = async () => {
+    await sleep(2500);
+    for (let i = 0; i < 50; i += 1) {
+      if ((await web("/web/check", KEY).catch(() => null))?.status === 200) return;
+      await sleep(200);
+    }
+    throw new Error("the resident did not come back");
+  };
+  const initData = (token) => {
+    const fields = { auth_date: String(Math.floor(Date.now() / 1000)), query_id: "AAH-test", user: JSON.stringify({ id: 42, first_name: "Her", username: "her_test" }) };
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const key = crypto.createHmac("sha256", "WebAppData").update(token).digest();
+    return new URLSearchParams({ ...fields, hash: crypto.createHmac("sha256", key).update(check).digest("hex") }).toString();
+  };
+  let secret;
+
+  await step("no bot token: the webhook and /tg/setup turn everyone away, and the page says Telegram is not connected", async () => {
+    assert.equal((await post("在吗", { secret: "anything" })).status, 401);
+    const setup = await fetch(`${WORKER}/tg/setup?secret=anything`);
+    assert.equal(setup.status, 400);
+    assert.match(await setup.text(), /settings page \(IM → Telegram\)/);
+    assert.deepEqual((await config()).telegram, { from: null, bot: null, here: false, error: null, lastError: null });
+    assert.equal((await ofKind("tg.getMe")).length, 0, "nothing asked of Telegram without a token");
+  });
+
+  await step("something that is not a bot token is refused with what one looks like", async () => {
+    const response = await save("TG_BOT_TOKEN", "not-a-token");
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /bot token 长这样/);
+  });
+
+  await step("a token saved on the settings page connects the bot here, with a webhook secret the resident made itself", async () => {
+    const response = await save("TG_BOT_TOKEN", TOKEN);
+    assert.equal(response.status, 200, await response.clone().text());
+    const page = await response.json();
+    const hook = (await ofKind("tg.setWebhook")).at(-1);
+    assert.equal(hook.token, TOKEN);
+    assert.equal(hook.body.url, HOOK);
+    assert.match(hook.body.secret_token, /^[0-9a-f]{48}$/);
+    secret = hook.body.secret_token;
+    assert.equal((await ofKind("tg.getMe")).at(0).token, TOKEN);
+    assert.equal((await ofKind("tg.setMyCommands")).at(-1).token, TOKEN);
+    assert.equal((await ofKind("tg.setChatMenuButton")).length, 0, "no Mini App button over http");
+    assert.deepEqual(page.telegram, { from: "page", bot: "resident_test_bot", here: true, error: null, lastError: null });
+    const field = page.fields.find((f) => f.key === "TG_BOT_TOKEN");
+    assert.deepEqual([field.saved, field.value], [true, ""], "the token itself is never sent back");
+    assert.ok(!page.fields.some((f) => f.key === "TG_WEBHOOK_SECRET"), "the made secret is not a setting");
+    const text = JSON.stringify(page);
+    assert.ok(!text.includes(TOKEN) && !text.includes(secret), "neither the token nor the secret is on the page");
+  });
+
+  await step("after starting again it answers on Telegram with the new token, and only with the secret it made", async () => {
+    await restarted();
+    const before = (await sent()).length;
+    assert.equal((await post("你好", { secret: "test-secret" })).status, 401, "the old secret");
+    assert.equal((await post("你好", { secret })).status, 200);
+    await waitForSends(before, 1);
+    assert.equal((await ofKind("tg.sendMessage")).at(-1).token, TOKEN);
+  });
+
+  await step("commands and the Mini App go by the token on the page", async () => {
+    const before = (await sent()).length;
+    assert.equal((await post("/status", { secret })).status, 200);
+    assert.match((await waitForSends(before, 1)).join("\n"), /模型/);
+    assert.equal((await ofKind("tg.sendMessage")).at(-1).token, TOKEN);
+    const viaNew = await fetch(`${WORKER}/web/check`, { headers: { "x-telegram-init-data": initData(TOKEN) } });
+    assert.equal(viaNew.status, 200);
+    assert.equal((await viaNew.json()).via, "telegram");
+    const viaOld = await fetch(`${WORKER}/web/check`, { headers: { "x-telegram-init-data": initData("123456:test-token") } });
+    assert.equal(viaOld.status, 401, "signed with the Cloudflare token, which is not in effect");
+  });
+
+  await step("「重新接一次」 points the bot here again with the same secret, and does not start the resident again", async () => {
+    const hooks = (await ofKind("tg.setWebhook")).length;
+    const response = await web("/web/telegram/connect", KEY, {});
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal((await response.json()).telegram.here, true);
+    const hook = (await ofKind("tg.setWebhook")).slice(hooks);
+    assert.equal(hook.length, 1);
+    assert.equal(hook[0].body.secret_token, secret);
+    await sleep(2000);
+    const before = (await sent()).length;
+    assert.equal((await post("还在吗", { secret })).status, 200);
+    await waitForSends(before, 1);
+  });
+
+  await step("a token Telegram refuses shows up on the page, and the old bot is let go", async () => {
+    const bad = `654321:bad${"B".repeat(32)}`;
+    const response = await save("TG_BOT_TOKEN", bad);
+    assert.equal(response.status, 200);
+    const page = await response.json();
+    assert.equal(page.telegram.from, "page");
+    assert.match(page.telegram.error, /Telegram 不认这个 token/);
+    assert.equal((await ofKind("tg.deleteWebhook")).at(-1).token, TOKEN, "the bot before it stops sending here");
+    const connect = await web("/web/telegram/connect", KEY, {});
+    assert.equal(connect.status, 400);
+    assert.match((await connect.json()).error, /Telegram 不认这个 token/);
+    await restarted();
+  });
+
+  await step("taking the token off closes the Telegram door again", async () => {
+    const response = await save("TG_BOT_TOKEN", "");
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).telegram.from, null);
+    await restarted();
+    assert.equal((await post("在吗", { secret })).status, 401);
+    assert.equal((await fetch(`${WORKER}/web/check`, { headers: { "x-telegram-init-data": initData(TOKEN) } })).status, 401);
+    assert.equal((await web("/web/telegram/connect", KEY, {})).status, 400);
   });
 }
 

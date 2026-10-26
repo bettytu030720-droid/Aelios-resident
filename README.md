@@ -54,24 +54,19 @@ Set up and configure Aelios-resident for me (an AI companion that lives in my Cl
 
 ### Set it up yourself in the dashboard
 
-You need a Cloudflare account (the free plan is enough). For long-term memory, also have an Aelios already deployed. Telegram and WeCom are both optional: without Telegram, skip steps 1 and 4 and the Telegram secrets; WeCom is set up afterwards, see [WeCom (WeChat)](#wecom-wechat).
+You need a Cloudflare account (the free plan is enough). For long-term memory, also have an Aelios already deployed. Telegram and WeCom are both optional and both set up on the settings page: without Telegram, skip step 1; WeCom is set up afterwards, see [WeCom (WeChat)](#wecom-wechat).
 
 1. **Create the bot** (Telegram only): in Telegram, message @BotFather, send `/newbot`, choose a name and note the token.
 2. **Deploy**: Cloudflare dashboard → Workers & Pages → Create → Import a repository, and pick this repository (or your fork). Name the project `aelios-resident`, the same as `name` in `wrangler.jsonc`, and keep the other defaults. From then on, every push to main updates it.
-3. **Add the secrets**: Worker → Settings → Variables and Secrets. Only these go here; everything else is set on the web.
+3. **Add the secret**: Worker → Settings → Variables and Secrets. Only `WEB_KEY` goes here; everything else, the bot token included, is set on the web.
    - `WEB_KEY`: the key to the web door, a long string you make up. Whoever has it can read the whole conversation and change every setting, so don't screenshot or share it; if you think it leaked, replace it here. Without it, an ordinary browser cannot get in; only the Telegram Mini App can.
-   - For Telegram, two more: `TG_BOT_TOKEN`, the token from step 1, and `TG_WEBHOOK_SECRET`, another long string you make up, using letters, digits, `_` and `-`.
-4. **Connect Telegram** (Telegram only): open this address once in your browser. When every item returns `"ok":true`, it is connected. It also registers three commands and makes the bot's bottom-left menu button open the web door.
-
-   ```
-   https://aelios-resident.<your-subdomain>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>
-   ```
-
-5. **Fill in the settings on the web**: open `https://aelios-resident.<your-subdomain>.workers.dev/`, enter `WEB_KEY`, and click the gear at the top right:
-   - With Telegram: **Chat** (「聊天」) → **Who can talk to it on Telegram** (「谁能在 Telegram 上跟它说话」): your Telegram username, such as `@your_name`. Until this is filled in, it answers no one there.
+4. **Fill in the settings on the web**: open `https://aelios-resident.<your-subdomain>.workers.dev/`, enter `WEB_KEY`, and click the gear at the top right:
+   - With Telegram: **IM** → **bot token**: paste the token from step 1 and save. The resident checks it with Telegram and connects the bot to itself: the webhook, three commands, and the bot's bottom-left menu button that opens the web door. The IM section then says 「接好了：@your_bot」 ("connected"). Then fill in **Who can talk to it on Telegram** (「谁能在 Telegram 上跟它说话」) right below: your Telegram username, such as `@your_name`. Until this is filled in, it answers no one there.
    - **Long-term memory** (「长期记忆」): your Aelios address and key. The key can be any one of `CHATBOX_API_KEY`, `IM_API_KEY` or `MEMORY_MCP_API_KEY` from your Aelios. Then, in the Aelios admin, create an identity for the resident and add the models you will use to that identity's main models. Put the identity's name under **More settings** (「更多设置」) → **Identity** (「身份」); left empty, the key's first identity is used.
    - Back in the chat, click the model name at the top left to pick a model, and the pencil at the top right to paste in a persona and save it.
-6. Say something on the web door, or send the bot a message.
+5. Say something on the web door, or send the bot a message.
+
+Set up before the bot token moved to the settings page, with `TG_BOT_TOKEN` and `TG_WEBHOOK_SECRET` in Cloudflare? That keeps working as it is, and `/tg/setup?secret=<TG_WEBHOOK_SECRET>` still connects it. A token saved on the settings page takes precedence over the one in Cloudflare.
 
 ## Using it
 
@@ -93,7 +88,7 @@ Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Te
 - Each message carries your local time, so it knows what time it is.
 - It sees the pictures you send (photos, or images sent as files, up to 5 MB).
 
-**Mini App**: tap the bot's bottom-left menu button and the web door opens right inside Telegram, without `WEB_KEY`. It lets you in by your Telegram-signed identity and checks it against **Who can talk to it on Telegram** every time, so removing someone from the list locks them out. If you move to a custom domain, open `/tg/setup` once more from the new domain (Telegram only opens https Mini Apps). Details are in `src/mini-app.ts`.
+**Mini App**: tap the bot's bottom-left menu button and the web door opens right inside Telegram, without `WEB_KEY`. It lets you in by your Telegram-signed identity and checks it against **Who can talk to it on Telegram** every time, so removing someone from the list locks them out. If you move to a custom domain, open the settings page from the new domain and click **Connect again** (「重新接一次」) under IM → bot token (Telegram only opens https Mini Apps). Details are in `src/mini-app.ts`.
 
 **Commands**:
 
@@ -111,22 +106,23 @@ WeCom only accepts API calls from the app's trusted IPs (「企业可信 IP」),
 
 **Setting it up, in this order**:
 
-1. **The relay**: on that machine, `sudo relay/wecom/install.sh` (add `--media` for voice messages and video stickers; it installs ffmpeg), then give it a public hostname through a Cloudflare Tunnel, pointing at `http://127.0.0.1:8787`. Details in [relay/wecom](relay/wecom/README.md).
+1. **The relay**: on that machine, `sudo relay/wecom/install.sh` (add `--media` for voice messages; it installs ffmpeg), then give it a public hostname through a Cloudflare Tunnel, pointing at `http://127.0.0.1:8787`. Details in [relay/wecom](relay/wecom/README.md).
 2. **The app**: WeCom admin (work.weixin.qq.com) → App Management (「应用管理」) → Create an app (「创建应用」). Make sure you are in its visible range (「可见范围」).
-3. **The settings page** → **WeCom** (「企业微信」): fill in who can talk to it (your account (「账号」) in the WeCom contacts), the Corp ID (「企业 ID」, at the bottom of My Enterprise), the app's AgentId and Secret, and the relay address and relay key. Save.
-4. **Receiving messages**: on the app's page, Receive Messages (「接收消息」) → Set API Receiving (「设置 API 接收」). Paste the URL shown in the settings page's WeCom section (`https://<your resident>/messengers/wecom/webhook`), click Random (「随机获取」) for the Token and the EncodingAESKey, **save both on the resident's settings page first**, then click Save in WeCom. WeCom checks the address on that save, and the resident needs those two to answer it.
+3. **The settings page** → **IM**, the WeCom (「企业微信」) part: fill in who can talk to it (your account (「账号」) in the WeCom contacts), the Corp ID (「企业 ID」, at the bottom of My Enterprise), the app's AgentId and Secret, and the relay address and relay key. Save.
+4. **Receiving messages**: on the app's page, Receive Messages (「接收消息」) → Set API Receiving (「设置 API 接收」). Paste the URL shown in the WeCom part of IM on the settings page (`https://<your resident>/messengers/wecom/webhook`), click Random (「随机获取」) for the Token and the EncodingAESKey, **save both on the resident's settings page first**, then click Save in WeCom. WeCom checks the address on that save, and the resident needs those two to answer it.
 5. **Trusted IP**: on the same app page, add the relay machine's outgoing IP (`curl -s https://ifconfig.me` on it) under Trusted IPs (「企业可信 IP」). WeCom only lets you do this once the receiving URL is set.
 6. Send it a message in WeCom. For WeChat: My Enterprise → WeChat Plugin (「微信插件」), scan the invite QR code with WeChat, and the app's chat shows up there.
 
-The **WeCom** line of `/status`, and the section on the settings page, say what is still missing, whether the relay can be reached and whether it can do voice.
+The **WeCom** line of `/status`, and the WeCom part of IM on the settings page, say what is still missing, whether the relay can be reached and whether it can do voice.
 
 **What works**:
 
-- Text both ways; pictures you send; its stickers (GIF, PNG and JPEG as they are; Telegram's WebP and WebM stickers only with `--media`); voice messages both ways with `--media`. Without `--media` its voice replies go out as text, and it may not be able to hear yours.
+- Text both ways; pictures you send; voice messages both ways with `--media`. Without `--media` its voice replies go out as text, and it may not be able to hear yours.
+- Stickers, once you turn on **Send stickers on WeCom** (「在企业微信上发表情包」). It is off by default: WeCom takes only JPG and PNG, so a GIF shows as its first frame. When on: PNG and JPEG as they are, GIF as a still picture, Telegram's WebP and WebM stickers only with `--media`. When off, it knows not to send stickers there, and still sends them on the web and Telegram.
 - `/status`, `/letter` and `/handoff`, as on Telegram.
 - Check-ins, heartbeats, alarms and cloud jobs report to the chat you last wrote from, so if that was WeCom, they come to WeCom.
 
-**Limits**: WeCom shows plain text, so Markdown is taken off (a link becomes its text and address); a reply longer than 2048 bytes is split; there is no typing indicator; a voice message is at most 60 seconds; WeCom lets an app send about 30 messages a minute to one person. Whether a GIF sticker moves inside WeChat (rather than WeCom) has not been checked yet.
+**Limits**: WeCom shows plain text, so Markdown is taken off (a link becomes its text and address); a reply longer than 2048 bytes is split; there is no typing indicator; a voice message is at most 60 seconds; WeCom lets an app send about 30 messages a minute to one person; a GIF does not move.
 
 ### Choosing a model
 
@@ -151,7 +147,7 @@ Click the pencil at the top right of the web door. After you save, the next repl
 
 ### The settings page
 
-Click the gear at the top right of the web door. It opens on a list of sections: Long-term memory (「长期记忆」), Chat (「聊天」), WeCom (「企业微信」), Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Other MCP (「别的 MCP」), Cloud Claude Code (「云端 Claude Code」), Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line under each shows its current state. Open one to see only that section; settings you rarely change are under **More settings** (「更多设置」).
+Click the gear at the top right of the web door. It opens on a list of sections: Long-term memory (「长期记忆」), IM (Telegram and WeCom), Heartbeat & alarms (「心跳和闹钟」), Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Other MCP (「别的 MCP」), Cloud Claude Code (「云端 Claude Code」), Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line under each shows its current state. Open one to see only that section; settings you rarely change are under **More settings** (「更多设置」).
 
 - Click **Save** (「保存」) and the change applies from the next message.
 - Where a value comes from: a value saved here wins; otherwise the Cloudflare variable of the same name; otherwise the default, which is shown in grey in the input box.
@@ -242,19 +238,19 @@ Changing the persona, switching models, deleting or branching messages, deployin
 
 ### Reaching out to you
 
-**Check-ins**: under **Chat** → **Reach out** (「主动找你」), set times such as `every day at 09:00`, `every weekday at 21:30` or `every 3 hours`. At those times it considers whether to message you, and stays silent if it is not a good moment.
+**Check-ins**: under **Heartbeat & alarms** (「心跳和闹钟」) → **Reach out** (「主动找你」), set times such as `every day at 09:00`, `every weekday at 21:30` or `every 3 hours`. At those times it considers whether to message you, and stays silent if it is not a good moment.
 
 **Heartbeat** (`HEARTBEAT`, at most 3 per quiet period by default): when you have been quiet for 55 minutes and the chat is still below the letter threshold (or there is nothing to fold), it is asked whether it wants to reach out. If it does, the message goes to the chat you last wrote from, Telegram or WeCom (it always shows on the web page too); if not, nothing is sent. It is asked again every 55 minutes, up to the limit. Your next message, or an alarm turn that completes, starts the count again from 1.
 
 - Normally each heartbeat comes within the 1-hour lifetime of the previous cache, so it costs about as much as one of your messages. Delayed scheduling, a changed prefix or an expired provider cache can still force a rebuild, so heartbeats are not free.
 - When the threshold is reached, the quiet time is up and there is something to fold, it writes a letter and skips the heartbeat: after a letter the conversation has changed and the whole cache must be rewritten, so asking then would be expensive.
-- Set the number under **Chat**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
-- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Chat** with two hour pickers or a preset; `off` asks at night too. Check-ins, alarms and letters are not affected, since those run at a time someone chose.
+- Set the number under **Heartbeat & alarms**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
+- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Heartbeat & alarms** with two hour pickers or a preset; `off` asks at night too. Check-ins, alarms and letters are not affected, since those run at a time someone chose.
 
 **Alarms** (`ALARMS`, off by default): when on, it gets three tools — set an alarm, list alarms, cancel one. An alarm can ring in a few minutes, once at a set time, or on repeat, like `every day at 21:30`, `every weekday at 08:00`, `every week on sat,sun at 10:00` or `every 3 hours`. When it rings, it gets back the note it wrote and can message you or let it pass.
 
 - Ask it to remind you and it sets one. In its own turns (a heartbeat, or a ring), an alarm must be at least an hour ahead. The heartbeat does not suggest setting an alarm, since later heartbeats will ask again anyway.
-- Its alarms are listed under **Chat**; click **Delete** (「删掉」) to remove one. When you change the time zone, daily alarms follow the new zone.
+- Its alarms are listed under **Heartbeat & alarms**; click **Delete** (「删掉」) to remove one. When you change the time zone, daily alarms follow the new zone.
 - At most 10 alarms; a repeat at most once an hour; at most 24 rings a day for all alarms together.
 - An alarm turn that completes (even with a `SKIP` reply) counts as new activity: it restarts the quiet timer and stops the old heartbeats; when the quiet time is up, it writes a letter if one is due, or starts the heartbeat. A failed alarm does not count. The ring is still a system note: it never poses as your words and does not change when you last spoke. Heartbeats and check-ins do not count as activity.
 
@@ -377,16 +373,18 @@ With Aelios connected, the chat's models and keys are configured in the Aelios a
 
 ## All settings
 
-Everything is changed on the settings page. Only `TG_BOT_USERNAME` and `DEBOUNCE_SECONDS` are not there; set those in Cloudflare.
+Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secret) and `TG_BOT_USERNAME` and `DEBOUNCE_SECONDS`, which are set in Cloudflare if at all.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
+| `TG_BOT_TOKEN` | empty (no Telegram) | The bot token from @BotFather. Saved on the settings page, it connects the bot by itself; one in Cloudflare (with `TG_WEBHOOK_SECRET`) is connected with `/tg/setup` |
 | `TG_ALLOWED` | empty (answers no one) | Who can talk to it on Telegram: @usernames or chat ids, comma-separated |
-| `TG_BOT_USERNAME` | empty | The bot's username |
+| `TG_BOT_USERNAME` | empty | The bot's username; not needed, the resident asks Telegram |
 | `WECOM_ALLOWED` | empty (answers no one) | Who can talk to it on WeCom: members' accounts (「账号」), comma-separated |
 | `WECOM_CORP_ID` / `WECOM_AGENT_ID` / `WECOM_SECRET` | empty | The enterprise's Corp ID, and the self-built app's AgentId and Secret. All of WeCom empty means the WeCom door is off |
 | `WECOM_TOKEN` / `WECOM_AES_KEY` | empty | The app's Receive Messages Token and EncodingAESKey (43 characters); save them here before saving the URL in WeCom |
 | `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | empty | The address of the [relay](relay/wecom/README.md) through its Cloudflare Tunnel, and its key (at least 32 characters) |
+| `WECOM_STICKERS` | `off` | `on` sends stickers on WeCom too; a GIF shows only its first frame there |
 | `TIME_ZONE` | `Asia/Singapore` | The time zone for message times and schedules |
 | `DEBOUNCE_SECONDS` | `3` | Messages sent within this many seconds count as one turn |
 | `CHECKIN_SCHEDULE` | empty (no check-ins) | Times like `every day at 09:00`, `every weekday at 21:30`, `every 3 hours` |
@@ -437,13 +435,13 @@ Everything is changed on the settings page. Only `TG_BOT_USERNAME` and `DEBOUNCE
 ## Troubleshooting
 
 **It does not answer on Telegram**
-Check that you are listed under **Chat** → **Who can talk to it on Telegram**; it does not answer group chats. Open `/tg/setup?secret=…` again and check that every item is `"ok":true`.
+Look at **IM** on the settings page: it says whether the bot is connected here and the last error Telegram reported, and **Connect again** (「重新接一次」) points the bot here again. Check that you are listed under **Who can talk to it on Telegram**; it does not answer group chats. With the token in Cloudflare, opening `/tg/setup?secret=…` again does the same; every item should be `"ok":true`.
 
 **WeCom will not save the receiving URL** (「回调地址请求不通过」 or similar)
 Save the Token and EncodingAESKey on the resident's settings page first, then click Save in WeCom; the Corp ID must be filled in too. Check that the URL is exactly the one the settings page shows.
 
 **It does not answer on WeCom**
-Look at the **WeCom** section of the settings page, or the WeCom line of `/status`; it names what is missing. Common causes:
+Look at the WeCom part of **IM** on the settings page, or the WeCom line of `/status`; it names what is missing. Common causes:
 - **60020**: the relay machine's IP is not among the app's trusted IPs (「企业可信 IP」), or the machine's outgoing IP changed.
 - **The relay does not accept the key** (「转发机不认这把钥匙」): the relay key on the settings page differs from the one in `/etc/wecom-relay/env`, for example after `--new-key`.
 - **The relay cannot be reached** (「转发机连不上」): check the Tunnel with `curl https://<relay address>/ping -H "x-relay-key: …"`, then `systemctl status wecom-relay` on the machine.

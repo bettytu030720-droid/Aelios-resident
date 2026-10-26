@@ -16,16 +16,15 @@
 
 你要准备的：一个 Cloudflare 账号（免费的就够）；要 Telegram 的，一个 Telegram 账号。想要长期记忆的话，再要一个 Aelios，没有也没关系，AI 会先帮你装。想用 Claude 聊的话，要一把 Anthropic 的 API key；什么 key 都没有也能先用免费的默认模型聊。
 
-你自己要动手的只有这几件：在浏览器里点「允许」，让 AI 登录 Cloudflare；要 Telegram 的，在 Telegram 里找 @BotFather 建一个 bot，把 bot 的 token 填进 Cloudflare 后台，token 不经过 AI。用自己的模型 key 的话，key 也是你自己存进 Cloudflare 后台。其余的，包括部署、生成钥匙、接 Telegram、接 Aelios、选模型、填设置，都交给 AI。
+你自己要动手的只有这几件：在浏览器里点「允许」，让 AI 登录 Cloudflare；要 Telegram 的，在 Telegram 里找 @BotFather 建一个 bot，把 bot 的 token 填进住户的网页设置页，token 不经过 AI。用自己的模型 key 的话，key 也是你自己存进 Cloudflare 后台。其余的，包括部署、生成钥匙、接 Telegram、接 Aelios、选模型、填设置，都交给 AI。
 
 ---
 
 ## 给 AI：先守这几条
 
 - 用用户的语言跟用户说话。每一步先用一句话说你要做什么。
-- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Cloudflare 的令牌、GitHub 的令牌、企业微信应用的 Secret、转发机的钥匙都不行。bot token 由用户自己存进 Cloudflare（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
+- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Cloudflare 的令牌、GitHub 的令牌、企业微信应用的 Secret、转发机的钥匙都不行。bot token 由用户自己填进网页设置页（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
 - **你手上已经有用户的 key 的**（在环境变量里，或者在你自己的配置里，比如搜索、语音那几家的），用户同意用在住户上，就照第 10 步的写法从那里直接填，别把值打印出来、别写进文件。没有的就请用户自己在网页设置页填。
-- **你生成的 `TG_WEBHOOK_SECRET` 别打印、别写进文件**，用管道直接存进 Worker（第 4 步的命令就是这么写的）。
 - **没经用户同意，别删、别换已有的东西**：已经在跑的住户 Worker 和它的 Secret（聊天记录、人设、表情包都存在 Worker 里）、Aelios 里已配好的身份、AI Gateway、存好的厂商 key 都不行。换 `WEB_KEY` 也要先问，换了以后旧钥匙就进不去了。
 - 部署只用 `npm run deploy`。**别改 `wrangler.jsonc` 的 `name`，别往里加 `vars`**：写在文件里的值每次部署都会冲掉网页上的设置。设置一律用第 5 步的接口填。
 - 卡住了别换着法子硬试。把报错原文和你的判断告诉用户，问下一步。
@@ -138,29 +137,24 @@ curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"
 ## 4. 接上 Telegram（不要 Telegram 就跳过）
 
 1. **用户建 bot**：请用户在 Telegram 里找 @BotFather，发 `/newbot`，照提示起名字和用户名，最后它会给一串 token。告诉用户：**这串 token 别发给你**。
-2. **用户存 token**。两种办法，用户挑一个：
-   - 在后台点：打开 <https://dash.cloudflare.com/?to=/:account/workers/services/view/aelios-resident/production/settings>（或者 **Workers & Pages** → `aelios-resident` → **Settings**）→ **Variables and Secrets** → **Add**，类型选 **Secret**，名字填 `TG_BOT_TOKEN`，值粘贴 token，**Deploy**。
-   - 在用户自己的终端里（不是在跟你的对话里）：进到这个仓库的目录，跑 `npx wrangler secret put TG_BOT_TOKEN`，提示输入时粘贴 token、回车。
-3. **你确认存上了**（只看名字，看不到值）：
+2. **用户在设置页填 token**：请用户打开 `<住户地址>`（就用这个地址，住户会把 bot 指到设置页所在的网址），填网页钥匙进门，点右上角的齿轮 →「IM」→「bot token」，粘贴 token，保存。住户会先找 Telegram 核对，再自己接好：webhook 和它的暗号、三个命令，还有 bot 左下角打开网页门的菜单按钮。接好了「IM」里写着「接好了：@bot 的用户名」。
+3. **你确认接好了**（只看状态，看不到 token）：
 
    ```bash
-   npx wrangler secret list
+   curl -s <住户地址>/web/config -H "x-web-key: <网页钥匙>" \
+     | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).telegram))"
    ```
 
-   里面有 `TG_BOT_TOKEN` 就往下做。
-4. **你生成 webhook 的暗号、存进 Worker、接上 Telegram**，一条命令做完，暗号不打印：
+   `from` 是 `'page'`、`bot` 是 bot 的用户名、`here` 是 `true`、`error` 是 `null`，就接好了。
+   - `from` 是 `null`：token 没存上，回到第 2 小步。
+   - `error` 写着「Telegram 不认这个 token」：token 抄错了，请用户在 @BotFather 里重新拿一次（发 `/token`），再照第 2 小步存。
+   - `here` 是 `false`：重新接一次，返回里 `here` 应该变成 `true`：
 
-   ```bash
-   S="$(node -e "process.stdout.write(require('node:crypto').randomBytes(24).toString('base64url'))")" \
-     && printf %s "$S" | npx wrangler secret put TG_WEBHOOK_SECRET >/dev/null \
-     && for i in 1 2 3 4 5 6; do sleep 5; R="$(curl -s -X POST <住户地址>/tg/setup -H "x-tg-setup-secret: $S")"; case "$R" in *setWebhook*) break;; esac; done; \
-     echo "$R"; unset S R
-   ```
+     ```bash
+     curl -s -X POST <住户地址>/web/telegram/connect -H "x-web-key: <网页钥匙>" -H "content-type: application/json" -d '{}'
+     ```
 
-   返回里 `setWebhook`、`setMyCommands`、`setChatMenuButton` 都是 `"ok":true` 就接好了：bot 有了三个命令，左下角的菜单按钮会打开网页门。
-   - 返回 `unauthorized`：新的暗号还没生效，整条命令再跑一次就行（会换一个新暗号，没关系）。
-   - 返回 `set TG_BOT_TOKEN and TG_WEBHOOK_SECRET first`：token 没存上，回到第 2 小步。
-   - `setWebhook` 报 `Unauthorized` 或 `Not Found`：bot token 不对，请用户在 @BotFather 里重新拿一次，再照第 2 小步存。
+以前装的、`TG_BOT_TOKEN` 和 `TG_WEBHOOK_SECRET` 已经在 Cloudflare 里的：不用动，照样能用。`from` 会是 `'cloudflare'`。
 
 ## 5. 填设置
 
@@ -276,7 +270,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 
 **Telegram**：请用户在 Telegram 里给 bot 发一句话，有回复就通了。再发 `/status`，看模型和 Aelios 那两行对不对。
 
-- **bot 不回**：多半是白名单不对。跑 `npx wrangler tail aelios-resident`，请用户再发一句，日志里出现 `dropped message from a chat not in TG_ALLOWED` 的话，后面带着这个人的 `chatId` 和 `username`：把 `@username` 或数字 `chatId` 照第 5 步填进 `TG_ALLOWED`（没有用户名的就填数字）。什么日志都没有的话，看第 4 步的返回是不是都是 `"ok":true`。
+- **bot 不回**：多半是白名单不对。跑 `npx wrangler tail aelios-resident`，请用户再发一句，日志里出现 `dropped message from a chat not in TG_ALLOWED` 的话，后面带着这个人的 `chatId` 和 `username`：把 `@username` 或数字 `chatId` 照第 5 步填进 `TG_ALLOWED`（没有用户名的就填数字）。什么日志都没有的话，照第 4 步第 3 小步看 `telegram` 的状态。
 - **回了但说调不了模型**：回第 7 步。
 
 **Mini App**：第 4 步已经把 bot 左下角的菜单按钮设成了「打开网页」，点它网页门就在 Telegram 里打开，凭 Telegram 签过名的身份进门，不用填网页钥匙。请用户：
@@ -287,8 +281,8 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 打不开或者一片空白：
 
 - 跑 `npx wrangler tail aelios-resident`，请用户再点一次按钮。日志里有 `web: Mini App user not in TG_ALLOWED` 的话，后面是这个人的 `id` 和 `username`，照第 5 步把它加进 `TG_ALLOWED`。
-- 按钮还是旧的，或者没有按钮：再跑一次第 4 步第 4 小步那条命令，看 `setChatMenuButton` 是不是 `"ok":true`。Mini App 只认 https 的地址。
-- 用户以后给住户绑了自己的域名：从新域名再跑一次第 4 步第 4 小步（把命令里的 `<住户地址>` 换成新域名），按钮就指到新域名。
+- 按钮还是旧的，或者没有按钮：跑一次第 4 步第 3 小步里「重新接一次」那条命令。Mini App 只认 https 的地址。
+- 用户以后给住户绑了自己的域名：从新域名再跑一次那条「重新接一次」（把命令里的 `<住户地址>` 换成新域名），或者请用户从新域名打开设置页，在「IM」里点「重新接一次」，按钮就指到新域名。
 
 ## 10. 别的功能：一项一项问
 
@@ -398,13 +392,13 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 
 用户要在企业微信（或开了微信插件的微信）里聊才配。要准备：一个企业微信企业（自己建一个免费的就行），和一台有固定公网 IP、能跑 systemd 的 Linux 机器当转发机。转发机不开端口，经 Cloudflare Tunnel 出来。整套顺序照 README.zh-CN.md「企业微信」，转发机照 [relay/wecom/README.md](../relay/wecom/README.md)。
 
-1. **转发机**：你能连上那台机器的话（用户同意），在那里 clone 这个仓库，跑 `sudo relay/wecom/install.sh`；用户要语音条和动态表情就加 `--media`。连不上的话，把 relay/wecom/README.md 交给用户，或者交给那台机器上的 AI。
+1. **转发机**：你能连上那台机器的话（用户同意），在那里 clone 这个仓库，跑 `sudo relay/wecom/install.sh`；用户要语音条就加 `--media`（表情包在企业微信上默认不发，GIF 在那里只显示第一帧）。连不上的话，把 relay/wecom/README.md 交给用户，或者交给那台机器上的 AI。
 2. **Tunnel**：请用户在 Cloudflare 后台 → Zero Trust → Networks → Tunnels 给转发机加一个 Public Hostname，指到 `http://127.0.0.1:8787`。那台机器还没有 Tunnel 的，装 cloudflared 的命令里带着 token，让用户在自己的终端里粘贴，别经过你。通了以后用 `curl -s https://<转发地址>/ping -H "x-relay-key: …"` 试（钥匙在转发机上，别打印到对话里；连不上那台机器就请用户自己试）。
 3. **建应用**：请用户在企业微信管理后台「应用管理」→「创建应用」，「可见范围」里要有自己。
-4. **填设置**：照第 5 步的命令填 `WECOM_CORP_ID`（「我的企业」页面最下面）、`WECOM_AGENT_ID`、`WECOM_RELAY_URL`（`https://<转发地址>`）、`WECOM_ALLOWED`（用户在通讯录里的「账号」，不知道就先空着，第 7 小步看被挡下的是谁）。`WECOM_SECRET` 和 `WECOM_RELAY_KEY` 请用户自己在设置页「企业微信」那一栏填：Secret 在应用页点「查看」会发到用户的企业微信里，转发钥匙在转发机上用 `sudo sed -n 's/^WECOM_RELAY_KEY=//p' /etc/wecom-relay/env` 看。
+4. **填设置**：照第 5 步的命令填 `WECOM_CORP_ID`（「我的企业」页面最下面）、`WECOM_AGENT_ID`、`WECOM_RELAY_URL`（`https://<转发地址>`）、`WECOM_ALLOWED`（用户在通讯录里的「账号」，不知道就先空着，第 7 小步看被挡下的是谁）。`WECOM_SECRET` 和 `WECOM_RELAY_KEY` 请用户自己在设置页「IM」里企业微信那部分填：Secret 在应用页点「查看」会发到用户的企业微信里，转发钥匙在转发机上用 `sudo sed -n 's/^WECOM_RELAY_KEY=//p' /etc/wecom-relay/env` 看。
 5. **接收消息**：请用户在应用页「接收消息」→「设置 API 接收」，URL 填 `<住户地址>/messengers/wecom/webhook`；Token 和 EncodingAESKey 点「随机获取」，**先在住户设置页存好这两项**（`WECOM_TOKEN`、`WECOM_AES_KEY`），再回企业微信点保存。保存不通过就是这两项或企业 ID 没存上、或者抄错了。
 6. **可信 IP**：请用户在同一个应用页「企业可信 IP」填转发机出去时的 IP（那台机器上 `curl -s https://ifconfig.me`）。
-7. **试**：请用户在企业微信里给应用发一句，再发 `/status`，看「企业微信」那一行。不回的话看设置页「企业微信」那一栏：有被挡下的账号就照第 5 步的命令填进 `WECOM_ALLOWED`；报 60020 是可信 IP 不对。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码。
+7. **试**：请用户在企业微信里给应用发一句，再发 `/status`，看「企业微信」那一行。不回的话看设置页「IM」里企业微信那部分：有被挡下的账号就照第 5 步的命令填进 `WECOM_ALLOWED`；报 60020 是可信 IP 不对。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码。
 
 ### 接别的 MCP
 

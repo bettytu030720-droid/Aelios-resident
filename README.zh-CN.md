@@ -52,24 +52,19 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 ### 自己在后台点着装
 
-要准备：一个 Cloudflare 账号（免费档就行）。想要长期记忆的话，再准备一个已经部署好的 Aelios。Telegram 和企业微信都是选装的：不要 Telegram 就跳过第 1、4 步和 Telegram 的两个 Secret；企业微信装好以后再接，见「企业微信」。
+要准备：一个 Cloudflare 账号（免费档就行）。想要长期记忆的话，再准备一个已经部署好的 Aelios。Telegram 和企业微信都是选装的，都在设置页里接：不要 Telegram 就跳过第 1 步；企业微信装好以后再接，见「企业微信」。
 
 1. **建 bot**（只有 Telegram 要）：在 Telegram 里找 @BotFather，发 `/newbot`，起好名字，记下 token。
 2. **部署**：Cloudflare 后台 → Workers & Pages → Create → Import a repository，选这个仓库（或者你 fork 的）。项目名填 `aelios-resident`，要跟 `wrangler.jsonc` 里的 `name` 一样，其余用默认。以后推到 main 就自动更新。
-3. **填 Secret**：Worker → Settings → Variables and Secrets。只有这几个在这里填，别的都在网页上填。
+3. **填 Secret**：Worker → Settings → Variables and Secrets。只有 `WEB_KEY` 在这里填，别的（连 bot token 在内）都在网页上填。
    - `WEB_KEY`：网页门的钥匙，自己编一串长的。拿到它的人能看全部对话、改所有设置，别截图、别外发；怀疑漏了就在这里换一个。不填的话，普通浏览器进不去，只能从 Telegram 的 Mini App 进。
-   - 要 Telegram 的再填两个：`TG_BOT_TOKEN` 是第 1 步的 token；`TG_WEBHOOK_SECRET` 也自己编一串长的，字母、数字、`_`、`-` 都行。
-4. **接上 Telegram**（只有 Telegram 要）：用浏览器打开一次下面这个网址，几项都返回 `"ok":true` 就接好了。它会顺便登记三个命令，并把 bot 左下角的菜单按钮设成「打开网页」。
-
-   ```
-   https://aelios-resident.<你的子域>.workers.dev/tg/setup?secret=<TG_WEBHOOK_SECRET>
-   ```
-
-5. **在网页上填设置**：打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进门，点右上角的齿轮：
-   - 接了 Telegram 的：「聊天」→「谁能在 Telegram 上跟它说话」：填你的 Telegram 用户名，比如 `@your_name`。不填的话它在 Telegram 上谁都不回。
+4. **在网页上填设置**：打开 `https://aelios-resident.<你的子域>.workers.dev/`，填 `WEB_KEY` 进门，点右上角的齿轮：
+   - 接了 Telegram 的：「IM」→「bot token」：贴上第 1 步的 token，保存。住户会先找 Telegram 核对，再自己接好：webhook、三个命令，还有 bot 左下角打开网页的菜单按钮。接好了「IM」里会写「接好了：@你的bot」。再填下面的「谁能在 Telegram 上跟它说话」：你的 Telegram 用户名，比如 `@your_name`。不填的话它在 Telegram 上谁都不回。
    - 「长期记忆」：填 Aelios 的地址和 key。key 跟你 Aelios 那边的 `CHATBOX_API_KEY`、`IM_API_KEY`、`MEMORY_MCP_API_KEY` 任意一把相同即可。再到 Aelios 后台给住户建一个身份，把要用的模型放进这个身份的主模型；身份名填在「更多设置」→「身份」里（不填就用这把 key 的第一个身份）。
    - 回到聊天：点左上角的模型名选模型；点右上角的铅笔，贴上人设、保存。
-6. 在网页门说一句，或者给 bot 发条消息试试。
+5. 在网页门说一句，或者给 bot 发条消息试试。
+
+以前装的、`TG_BOT_TOKEN` 和 `TG_WEBHOOK_SECRET` 放在 Cloudflare 里的：照样能用，`/tg/setup?secret=<TG_WEBHOOK_SECRET>` 也照样能接。设置页存了 token 的话，用设置页的。
 
 ## 用起来
 
@@ -91,7 +86,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 - 每条消息前面带着你那边的时间，它知道现在几点。
 - 你发的图它看得到（照片，或当文件发的图，5 MB 以内）。
 
-**Mini App**：点 bot 左下角的菜单按钮，网页门直接在 Telegram 里打开，不用填 `WEB_KEY`。它凭 Telegram 签过名的身份进门，每次都按「谁能在 Telegram 上跟它说话」重新查一遍，把人从名单里拿掉就进不来了。换了自定义域名的话，从新域名再打开一次 `/tg/setup`（Telegram 只开 https 的 Mini App）。细节见 `src/mini-app.ts`。
+**Mini App**：点 bot 左下角的菜单按钮，网页门直接在 Telegram 里打开，不用填 `WEB_KEY`。它凭 Telegram 签过名的身份进门，每次都按「谁能在 Telegram 上跟它说话」重新查一遍，把人从名单里拿掉就进不来了。换了自定义域名的话，从新域名打开设置页，在「IM」→「bot token」下面点「重新接一次」（Telegram 只开 https 的 Mini App）。细节见 `src/mini-app.ts`。
 
 **命令**：
 
@@ -109,22 +104,23 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 **按这个顺序装**：
 
-1. **转发机**：在那台机器上跑 `sudo relay/wecom/install.sh`（要语音条和动态表情加 `--media`，会装 ffmpeg），再用 Cloudflare Tunnel 给它一个网址，指到 `http://127.0.0.1:8787`。细节见 [relay/wecom](relay/wecom/README.md)。
+1. **转发机**：在那台机器上跑 `sudo relay/wecom/install.sh`（要语音条加 `--media`，会装 ffmpeg），再用 Cloudflare Tunnel 给它一个网址，指到 `http://127.0.0.1:8787`。细节见 [relay/wecom](relay/wecom/README.md)。
 2. **建应用**：企业微信管理后台（work.weixin.qq.com）→「应用管理」→「创建应用」。「可见范围」里要有你自己。
-3. **设置页 →「企业微信」**：填「谁能在企业微信上跟它说话」（你在通讯录里的「账号」）、「企业 ID」（「我的企业」页面最下面）、应用的 AgentId 和 Secret、转发地址和转发钥匙，保存。
-4. **接收消息**：应用页「接收消息」→「设置 API 接收」。URL 填设置页「企业微信」一栏里写的那个（`https://<住户地址>/messengers/wecom/webhook`）；Token 和 EncodingAESKey 都点「随机获取」，**先复制到住户设置页存好**，再回企业微信点保存。企业微信保存时会来验一次地址，住户要有这两样才答得上。
+3. **设置页 →「IM」的企业微信那部分**：填「谁能在企业微信上跟它说话」（你在通讯录里的「账号」）、「企业 ID」（「我的企业」页面最下面）、应用的 AgentId 和 Secret、转发地址和转发钥匙，保存。
+4. **接收消息**：应用页「接收消息」→「设置 API 接收」。URL 填设置页「IM」里企业微信那部分写的那个（`https://<住户地址>/messengers/wecom/webhook`）；Token 和 EncodingAESKey 都点「随机获取」，**先复制到住户设置页存好**，再回企业微信点保存。企业微信保存时会来验一次地址，住户要有这两样才答得上。
 5. **可信 IP**：同一个应用页，「企业可信 IP」填转发机出去时的 IP（在那台机器上 `curl -s https://ifconfig.me`）。企业微信要先设好接收消息的 URL 才让填。
 6. 在企业微信里给它发一句。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码，之后微信里就能跟这个应用聊。
 
-`/status` 的「企业微信」一行和设置页那一栏，会写着还差什么、转发机连不连得上、能不能发语音。
+`/status` 的「企业微信」一行和设置页「IM」里企业微信那部分，会写着还差什么、转发机连不连得上、能不能发语音。
 
 **能做的**：
 
-- 文字来回；你发的图片；它的表情包（GIF、PNG、JPG 直接发；Telegram 包里的 WebP、WebM 要转发机装了 `--media`）；装了 `--media` 后语音条来回都行。没装的话，它的语音回复改成文字，你发的语音它可能听不了。
+- 文字来回；你发的图片；装了 `--media` 后语音条来回都行。没装的话，它的语音回复改成文字，你发的语音它可能听不了。
+- 表情包要在「IM」里打开「在企业微信上发表情包」。默认关：企业微信只认 JPG 和 PNG，GIF 发过去只显示第一帧。打开后 PNG、JPG 直接发，GIF 成了静图，Telegram 包里的 WebP、WebM 要转发机装了 `--media`。关着时它知道这里发不了表情，网页和 Telegram 上照发。
 - `/status`、`/letter`、`/handoff`，跟 Telegram 一样。
 - 定时找你、心跳、闹钟、云端干完活的回报，都发到你最后说话的那扇门：最后在企业微信说的话，就发到企业微信。
 
-**限制**：企业微信只显示纯文字，Markdown 会去掉（链接变成文字加网址）；超过 2048 字节的回复会拆开；没有「正在输入」；语音条最长 60 秒；企业微信每分钟给同一个人最多发 30 条左右。GIF 表情在微信（不是企业微信）里会不会动，还没试过。
+**限制**：企业微信只显示纯文字，Markdown 会去掉（链接变成文字加网址）；超过 2048 字节的回复会拆开；没有「正在输入」；语音条最长 60 秒；企业微信每分钟给同一个人最多发 30 条左右；GIF 不会动。
 
 ### 换模型
 
@@ -149,7 +145,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 ### 设置页
 
-点网页门右上角的齿轮。先是一张目录：长期记忆、聊天、企业微信、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
+点网页门右上角的齿轮。先是一张目录：长期记忆、IM（Telegram 和企业微信）、心跳和闹钟、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
 
 - 改完点「保存」，下一句就生效。
 - 取值顺序：这里存的优先；没存的用 Cloudflare 里同名的变量；那边也没有就用默认值，默认值用灰字写在输入框里。
@@ -240,19 +236,19 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 ### 主动找你
 
-**定时找你**：设置页「聊天」→「主动找你」填时间，比如 `every day at 09:00`、`every weekday at 21:30`、`every 3 hours`。到点它自己想想要不要找你，不合适就不发。
+**定时找你**：设置页「心跳和闹钟」→「主动找你」填时间，比如 `every day at 09:00`、`every weekday at 21:30`、`every 3 hours`。到点它自己想想要不要找你，不合适就不发。
 
 **心跳**（`HEARTBEAT`，默认一段沉默最多问 3 次）：你 55 分钟没说话，而当前聊天还没达到写信门槛（或没有旧内容可收）时，它会被问一句要不要找你；想说就发到你最后说话的那扇门（Telegram 或企业微信，网页上也看得到），不想就不发。之后每 55 分钟再问一次，问满次数为止。你一说话，或一次闹钟回合成功完成，就从第 1 次重新数。
 
 - 正常情况下，每次心跳都赶在上一次缓存的 1 小时有效期内，所以接近你发一条消息的价钱；但调度延迟、前缀变化、供应商缓存失效都可能让缓存重建，心跳并不免费。
 - 达到门槛、安静到点、又有旧内容可收时，只写信，不问心跳：信写完对话变了，缓存要整段重写，那时再问就贵了。
-- 次数在设置页「聊天」里改：`0` 不问，最多 `10`。只有走 Anthropic Messages 缓存的模型才有心跳；缓存选了 5 分钟、或交接信设成 `off` 时也没有。
-- **夜里别问**（`QUIET_HOURS`，默认 `00:00-08:00`，按你的时区）：落在这段时间里的心跳不问，这段沉默剩下的次数作废。早上也不补问：那时缓存早凉了，补问要把整段对话重读一遍。你下次说话再从头数。在设置页「聊天」里用两个下拉选几点到几点，或点常用的；`off` 是夜里也问。「主动找你」、闹钟和交接信不受影响，它们是有人定好的时间。
+- 次数在设置页「心跳和闹钟」里改：`0` 不问，最多 `10`。只有走 Anthropic Messages 缓存的模型才有心跳；缓存选了 5 分钟、或交接信设成 `off` 时也没有。
+- **夜里别问**（`QUIET_HOURS`，默认 `00:00-08:00`，按你的时区）：落在这段时间里的心跳不问，这段沉默剩下的次数作废。早上也不补问：那时缓存早凉了，补问要把整段对话重读一遍。你下次说话再从头数。在设置页「心跳和闹钟」里用两个下拉选几点到几点，或点常用的；`off` 是夜里也问。「主动找你」、闹钟和交接信不受影响，它们是有人定好的时间。
 
 **闹钟**（`ALARMS`，默认关）：打开后它多三个工具——定闹钟、看定了哪些、取消。可以是几分钟后、某个时间响一次，也可以像 `every day at 21:30`、`every weekday at 08:00`、`every week on sat,sun at 10:00`、`every 3 hours` 这样重复。响的时候它收到自己当时写的备注，可以找你，也可以不发。
 
 - 你叫它提醒你，它就定一个。在它自己的回合里（比如心跳、闹钟响的那一轮）定的闹钟，至少要在一小时以后。心跳问它时不会提议定闹钟：后面的心跳本来就会再问。
-- 设置页「聊天」下面列着它定的闹钟，点「删掉」就没了。改时区时，每天几点响的闹钟跟着新时区走。
+- 设置页「心跳和闹钟」下面列着它定的闹钟，点「删掉」就没了。改时区时，每天几点响的闹钟跟着新时区走。
 - 最多 10 个；重复的最密一小时一次；所有闹钟加起来一天最多响 24 次。
 - 闹钟回合成功完成后（包括回复 `SKIP`），算作一次新的活动：重新开始闲置计时、停掉旧的心跳；到点后达到门槛就写信，否则走心跳。失败的闹钟不算。它仍然是系统备注，不会冒充你说的话，也不会更新“你最后说话”的时间。心跳和定时找你不算新活动。
 
@@ -375,16 +371,18 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 ## 设置一览
 
-都在网页设置页里改。只有 `TG_BOT_USERNAME` 和 `DEBOUNCE_SECONDS` 不在设置页，要改就在 Cloudflare 里填。
+都在网页设置页里改。不在设置页的只有 `WEB_KEY`（Cloudflare 的 Secret），和 `TG_BOT_USERNAME`、`DEBOUNCE_SECONDS`（要改就在 Cloudflare 里填）。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
+| `TG_BOT_TOKEN` | 空（不接 Telegram） | @BotFather 给的 bot token。存在设置页的，保存时自己接好；放在 Cloudflare 里的（连同 `TG_WEBHOOK_SECRET`）用 `/tg/setup` 接 |
 | `TG_ALLOWED` | 空（谁都不回） | 谁能在 Telegram 上跟它说话：@用户名或 chat id，逗号隔开 |
-| `TG_BOT_USERNAME` | 空 | bot 的用户名 |
+| `TG_BOT_USERNAME` | 空 | bot 的用户名；不用填，住户会问 Telegram |
 | `WECOM_ALLOWED` | 空（谁都不回） | 谁能在企业微信上跟它说话：成员的「账号」，逗号隔开 |
 | `WECOM_CORP_ID` / `WECOM_AGENT_ID` / `WECOM_SECRET` | 空 | 企业 ID，自建应用的 AgentId 和 Secret。企业微信这几项全空就是没接 |
 | `WECOM_TOKEN` / `WECOM_AES_KEY` | 空 | 应用「接收消息」的 Token 和 EncodingAESKey（43 位）；先存在这里，再去企业微信保存 URL |
 | `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | 空 | [转发机](relay/wecom/README.md)经 Cloudflare Tunnel 出来的网址，和它的钥匙（至少 32 位） |
+| `WECOM_STICKERS` | `off` | `on` 在企业微信上也发表情包；GIF 在那里只显示第一帧 |
 | `TIME_ZONE` | `Asia/Singapore` | 消息前的时间、定时用哪个时区 |
 | `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
 | `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |
@@ -435,17 +433,17 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 ## 遇到问题
 
 **Telegram 上它不回**
-看「聊天」→「谁能在 Telegram 上跟它说话」里有没有你；群聊它不回。再打开一次 `/tg/setup?secret=…`，确认几项都是 `"ok":true`。
+看设置页「IM」：上面写着 bot 接没接到这里、Telegram 最近报的错；点「重新接一次」会把 bot 重新指到这里。再看「谁能在 Telegram 上跟它说话」里有没有你；群聊它不回。token 放在 Cloudflare 里的，再打开一次 `/tg/setup?secret=…` 也一样，几项都该是 `"ok":true`。
 
 **企业微信保存接收消息的 URL 时不通过**（「回调地址请求不通过」之类）
 先在住户设置页存好 Token 和 EncodingAESKey，再去企业微信点保存；「企业 ID」也要填。再对一下 URL 是不是跟设置页上写的一字不差。
 
 **企业微信上它不回**
-看设置页「企业微信」那一栏，或 `/status` 的「企业微信」一行，上面写着缺什么。常见的：
+看设置页「IM」里企业微信那部分，或 `/status` 的「企业微信」一行，上面写着缺什么。常见的：
 - **60020**：转发机的 IP 不在应用的「企业可信 IP」里，或者那台机器出去的 IP 变了。
 - **转发机不认这把钥匙**：设置页的转发钥匙跟 `/etc/wecom-relay/env` 里的不一样，比如转发机那边跑过 `--new-key`。
 - **转发机连不上**：先 `curl https://<转发地址>/ping -H "x-relay-key: …"` 看 Tunnel 通不通，再在那台机器上看 `systemctl status wecom-relay`。
-- **有人被挡下**：那一栏会写出被挡的账号；是你的话，填进「谁能在企业微信上跟它说话」。
+- **有人被挡下**：那里会写出被挡的账号；是你的话，填进「谁能在企业微信上跟它说话」。
 - **81013**：你不在这个应用的「可见范围」里。
 
 **语音发不出去，报 401，说没收到 key**（`Neither authorization header nor xi-api-key received`）

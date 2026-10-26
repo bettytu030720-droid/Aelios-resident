@@ -63,6 +63,9 @@ interface Env {
   WECOM_RELAY_URL?: string;
   WECOM_RELAY_KEY?: string;
   WECOM_ALLOWED?: string;
+  // Stickers on WeCom ("on"), where they arrive as still pictures; off by default.
+  WECOM_STICKERS?: string;
+  // The bot token can be saved on the settings page too; the webhook secret is then made by the resident.
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;
   TG_API_BASE?: string;

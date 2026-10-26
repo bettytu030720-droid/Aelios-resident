@@ -68,15 +68,22 @@ import { deliverLetter } from "./letter-delivery";
 import { letterDeliveryStatus, letterWriteStatus } from "./letter-status";
 import { withPictures, type Download } from "./pictures";
 import {
+  TELEGRAM_WEBHOOK_PATH,
   chatAction,
   chatIdOf,
+  deleteWebhook,
   downloadFile,
+  getMe,
   getStickerSet,
   mediaKindOf,
+  sendBubbles,
   sendMedia,
   sendVoice,
+  setWebhook,
   splitIntoBubbles,
+  timingSafeEqual,
   useBubbles,
+  webhookInfo,
   type BubbleAdapter,
   type MediaKind,
   type TelegramConfig,
@@ -239,6 +246,15 @@ export type WebLine = {
 
 /** Token use of the latest model call. Input includes the cached part. */
 export type LastUsage = { at: number; input: number; cacheRead: number; cacheWrite: number; output: number };
+
+/** Telegram as the settings page shows it: where the token is set, the bot, and whether its updates come here. */
+export type TelegramState = {
+  from: "page" | "cloudflare" | null;
+  bot: string | null;
+  here: boolean;
+  error: string | null;
+  lastError: { at: number; reason: string } | null;
+};
 
 type LetterOutcome = { status: "written" | "empty" | "failed" | "pending"; error?: string };
 
@@ -553,8 +569,9 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * Telegram, when its bot is set up in Cloudflare (read once, at start). WeCom always: its settings are on the
-   * settings page and read as each message comes, and while they are empty it answers nothing.
+   * Telegram, when its bot token is set (on the settings page or in Cloudflare; read once, at start, so a new token
+   * restarts the resident: restartForTelegram). WeCom always: its settings are read as each message comes, and
+   * while they are empty it answers nothing.
    */
   override getMessengers(): ThinkMessengers {
     const messengers: ThinkMessengers = {};
@@ -565,13 +582,13 @@ export class Resident extends Think<Env> {
   }
 
   private telegramMessenger(): MessengerDefinition | null {
-    const token = this.env.TG_BOT_TOKEN?.trim();
-    const secretToken = this.env.TG_WEBHOOK_SECRET?.trim();
+    const token = this.cfg.TG_BOT_TOKEN?.trim();
+    const secretToken = this.cfg.TG_WEBHOOK_SECRET?.trim();
     if (!token || !secretToken) return null;
     const definition = telegramMessenger({
       token,
       secretToken,
-      userName: this.env.TG_BOT_USERNAME?.trim().replace(/^@/, "") || "resident_bot",
+      userName: this.cfg.TG_BOT_USERNAME?.trim().replace(/^@/, "") || this.telegramBot()?.username || "resident_bot",
       apiBaseUrl: this.env.TG_API_BASE?.trim() || undefined,
       // Telegram and the web page share this agent's one conversation.
       conversation: "self",
@@ -1153,7 +1170,7 @@ export class Resident extends Think<Env> {
   }
 
   private telegramConfig(): TelegramConfig {
-    return { token: this.env.TG_BOT_TOKEN ?? "", apiBase: this.env.TG_API_BASE };
+    return { token: this.cfg.TG_BOT_TOKEN?.trim() ?? "", apiBase: this.env.TG_API_BASE };
   }
 
   // Stickers waiting to go out after a reply's words: "chat:<thread>" for a Telegram or WeCom turn, "req:<id>" for a
@@ -1198,11 +1215,20 @@ export class Resident extends Think<Env> {
   }
 
   /** Why no sticker can go out in this turn; null when one can. */
-  private stickerRefusal(): string | null {
+  private async stickerRefusal(): Promise<string | null> {
     const id = this.activeTurn?.requestId;
     if (!id || this.#letterPromptId) return "Not sent: no stickers here.";
     if (this.#stickerSent.has(id)) return "Not sent: one sticker per reply, and this reply already has one.";
+    // WeCom shows a GIF as its first frame only, so stickers are off there unless turned on.
+    const trigger = this.activeTurn?.trigger;
+    const thread = this.#turnThread.get(id) ?? (trigger === "scheduled" || trigger === "submission" ? await this.herThread() : null);
+    if (thread && userOf(thread) && !this.wecomStickersOn()) return "Not sent: stickers do not show in this chat. Say it in words.";
     return null;
+  }
+
+  /** Stickers on WeCom, where they arrive as still pictures: off unless WECOM_STICKERS is on. */
+  private wecomStickersOn(): boolean {
+    return this.cfg.WECOM_STICKERS?.trim().toLowerCase() === "on";
   }
 
   /** A sticker goes out after this turn's words: in her chat, or with a check-in. On the web page it shows by itself. */
@@ -1217,7 +1243,7 @@ export class Resident extends Think<Env> {
   }
 
   private async sendSticker(handle: string): Promise<{ sent: string } | { error: string }> {
-    const refused = this.stickerRefusal();
+    const refused = await this.stickerRefusal();
     if (refused) return { error: refused };
     const row = this.stickers().find(handle);
     if (!row) return { error: `No sticker called ${handle}: pick one from the list, as pack/name.` };
@@ -1227,7 +1253,7 @@ export class Resident extends Think<Env> {
 
   private async makeSticker(input: Drawing & { name: string; emoji: string; when: string; send?: boolean }): Promise<Record<string, unknown>> {
     const send = input.send !== false;
-    const refused = this.#letterPromptId ? "Not now." : send ? this.stickerRefusal() : null;
+    const refused = this.#letterPromptId ? "Not now." : send ? await this.stickerRefusal() : null;
     if (refused) return { error: refused };
     const drawn = drawSticker(input);
     if ("error" in drawn) return { error: drawn.error };
@@ -1264,7 +1290,7 @@ export class Resident extends Think<Env> {
       if (chatId) {
         const messageId = await this.deliverSticker(chatId, key);
         if (messageId != null) last = { id: `${chatId}:${messageId}`, threadId };
-      } else if (user) {
+      } else if (user && this.wecomStickersOn()) {
         const messageId = await this.deliverWecomSticker(user, key);
         if (messageId != null) last = { id: messageId, threadId };
       }
@@ -1309,7 +1335,7 @@ export class Resident extends Think<Env> {
   private async deliverSticker(chatId: string, key: string): Promise<number | null> {
     const store = this.stickers();
     const media = store.telegramMedia(key);
-    if (!media || !this.env.TG_BOT_TOKEN) return null;
+    if (!media || !this.cfg.TG_BOT_TOKEN?.trim()) return null;
     const config = this.telegramConfig();
     let used: { kind: MediaKind; fileId?: string; file?: StickerFile; emoji?: string } = media;
     let sent = await sendMedia(config, chatId, used);
@@ -2223,7 +2249,7 @@ export class Resident extends Think<Env> {
     const thread = await this.herThread();
     const channel = thread && (chatIdOf(thread) ? "telegram" : userOf(thread) ? "wecom" : null);
     if (!thread || !channel) return false;
-    if (channel === "telegram" ? !this.env.TG_BOT_TOKEN : !canSend(wecomConfig(this.cfg))) return false;
+    if (channel === "telegram" ? !this.cfg.TG_BOT_TOKEN?.trim() : !canSend(wecomConfig(this.cfg))) return false;
     try {
       await this.deliverNotice({ markdown: text }, { channel, thread });
       return true;
@@ -2665,14 +2691,17 @@ export class Resident extends Think<Env> {
   async webConfig(): Promise<{
     fields: ConfigField[];
     voice: { hears: "scribe" | "whisper" | null; gap: string | null; keyFrom: string | null };
+    telegram: TelegramState;
     wecom: Awaited<ReturnType<Resident["wecomState"]>>;
   }> {
     // What the voice settings still need, which the page cannot tell by itself (whether there is an AI binding), and
-    // the AI Gateway whose stored key voice relies on; how WeCom stands (its relay, its last error).
+    // the AI Gateway whose stored key voice relies on; how Telegram and WeCom stand.
+    const [telegram, wecom] = await Promise.all([this.telegramState(), this.wecomState()]);
     return {
       fields: describe(this.env, this.savedConfig()),
       voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg), keyFrom: keyFromGateway(this.cfg) },
-      wecom: await this.wecomState()
+      telegram,
+      wecom
     };
   }
 
@@ -2686,7 +2715,9 @@ export class Resident extends Think<Env> {
     const result = cleaned(field, raw);
     if ("error" in result) return result;
     const before = this.savedConfig()[key];
+    const tokenBefore = this.telegramConfig().token;
     this.storeConfig(key, result.value);
+    if (key === "TG_BOT_TOKEN") await this.telegramTokenChanged(tokenBefore);
     if (key === "CHECKIN_SCHEDULE" || key === "TIME_ZONE") {
       try {
         await this.internal_reconcileScheduledTasks();
@@ -2723,6 +2754,130 @@ export class Resident extends Think<Env> {
   telegramAllowed(): string {
     return this.cfg.TG_ALLOWED ?? "";
   }
+
+  /** For the Worker, before it reads an update: whether a bot is set up and the update carries its webhook secret. */
+  telegramGate(given: string): boolean {
+    const secret = this.cfg.TG_WEBHOOK_SECRET?.trim();
+    return Boolean(this.telegramConfig().token && secret && timingSafeEqual(given, secret));
+  }
+
+  /** The bot token in effect, for the Worker to check what the Mini App signed with it; "" when there is none. */
+  telegramToken(): string {
+    return this.telegramConfig().token;
+  }
+
+  /** A slash command from Telegram, answered there without a model turn. */
+  async telegramCommand(name: string, chatId: string): Promise<void> {
+    await sendBubbles(this.telegramConfig(), chatId, await this.command(name), { bubbles: false });
+  }
+
+  /** /tg/setup, for a webhook secret set in Cloudflare: the secret given must be that one. */
+  async telegramSetup(given: string, origin: string): Promise<{ status: number; text: string; json: boolean }> {
+    if (!this.telegramConfig().token) return { status: 400, text: "no bot token yet: fill it in on the settings page (IM → Telegram), which connects it", json: false };
+    const secret = this.cfg.TG_WEBHOOK_SECRET?.trim();
+    if (!secret) return { status: 400, text: "no TG_WEBHOOK_SECRET: connect from the settings page (IM → Telegram) instead, which makes one", json: false };
+    if (!timingSafeEqual(given, secret)) return { status: 401, text: "unauthorized", json: false };
+    // The address an MCP sign-in started from the chat comes back to.
+    await this.noteOrigin(origin);
+    return { status: 200, text: JSON.stringify((await this.connectTelegram(origin)).result), json: true };
+  }
+
+  /** The settings page's 「重新接一次」: the bot pointed at this address again. */
+  async webTelegramConnect(): Promise<{ telegram: TelegramState } | { error: string }> {
+    if (!this.telegramConfig().token) return { error: "还没填 bot token" };
+    const origin = await this.ctx.storage.get<string>("origin");
+    if (!origin) return { error: "不知道住户的网址：从住户自己的网址打开设置页再试" };
+    const done = await this.connectTelegram(origin);
+    if (done.error) return { error: done.error };
+    return { telegram: await this.telegramState() };
+  }
+
+  /**
+   * A new bot token from the settings page: the old bot stops sending here, the new one is pointed here, and the
+   * resident starts again, since Telegram's side of it is built once, at start.
+   */
+  private async telegramTokenChanged(before: string): Promise<void> {
+    const after = this.telegramConfig().token;
+    if (before === after) return;
+    if (before) await deleteWebhook({ ...this.telegramConfig(), token: before });
+    this.sql`DELETE FROM res_settings WHERE key = 'tg:bot'`;
+    const origin = await this.ctx.storage.get<string>("origin");
+    if (after && origin) await this.connectTelegram(origin);
+    this.restartSoon("the Telegram bot token changed");
+  }
+
+  /**
+   * Points the bot at this resident: the token checked with getMe, a webhook secret made when there is none, then
+   * the webhook, the commands and (over https) the menu button that opens the web page as a Mini App.
+   */
+  private async connectTelegram(origin: string): Promise<{ result: Record<string, unknown>; error?: string }> {
+    const config = this.telegramConfig();
+    const me = await getMe(config);
+    if ("error" in me) return { result: { getMe: { ok: false, description: me.error } }, error: `Telegram 不认这个 token：${me.error}` };
+    this.saveSetting("tg:bot", JSON.stringify({ username: me.username }));
+    let secret = this.cfg.TG_WEBHOOK_SECRET?.trim();
+    if (!secret) {
+      // Made here and kept with the settings, never shown: only Telegram and the Worker's check need it.
+      secret = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      this.storeConfig("TG_WEBHOOK_SECRET", secret);
+      this.restartSoon("a Telegram webhook secret was made");
+    }
+    // Telegram only opens Mini Apps from https; over http (local tests) the menu button is left alone.
+    const https = origin.startsWith("https:");
+    try {
+      const result = await setWebhook(config, `${origin}${TELEGRAM_WEBHOOK_PATH}`, secret, https ? { miniAppUrl: `${origin}/` } : {});
+      if (!https) result.setChatMenuButton = { skipped: "the Mini App needs https; open the settings page on the https address" };
+      const hook = result.setWebhook as { ok?: boolean; description?: string } | undefined;
+      return hook?.ok ? { result } : { result, error: `Telegram 没接受这个地址：${hook?.description ?? "setWebhook 失败"}` };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { result: { setWebhook: { ok: false, description: reason } }, error: `连不上 Telegram：${reason}` };
+    }
+  }
+
+  /** The bot the token belongs to, as Telegram last said. */
+  private telegramBot(): { username: string } | null {
+    try {
+      const row = this.settings("tg:bot");
+      return row ? (JSON.parse(row.value) as { username: string }) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Telegram on the settings page: whether a token is set and where, the bot, and whether its updates come here. */
+  private async telegramState(): Promise<TelegramState> {
+    const config = this.telegramConfig();
+    const from = this.savedConfig().TG_BOT_TOKEN ? "page" : config.token ? "cloudflare" : null;
+    if (!from) return { from, bot: null, here: false, error: null, lastError: null };
+    const [me, hook, origin] = await Promise.all([getMe(config), webhookInfo(config), this.ctx.storage.get<string>("origin")]);
+    if ("error" in me) return { from, bot: null, here: false, error: `Telegram 不认这个 token：${me.error}`, lastError: null };
+    if (this.telegramBot()?.username !== me.username) this.saveSetting("tg:bot", JSON.stringify({ username: me.username }));
+    if ("error" in hook) return { from, bot: me.username, here: false, error: hook.error, lastError: null };
+    const here = origin ? hook.url === `${origin}${TELEGRAM_WEBHOOK_PATH}` : Boolean(hook.url);
+    // An error from the last day is worth showing; an old one Telegram still remembers is not.
+    const lastError = hook.lastError && hook.lastErrorAt && Date.now() - hook.lastErrorAt < 86_400_000 ? { at: hook.lastErrorAt, reason: hook.lastError } : null;
+    return { from, bot: me.username, here, error: null, lastError };
+  }
+
+  /**
+   * Starts the resident again in a moment, after this request has answered: what was built at start (Telegram's
+   * messenger) is built again from the settings now in effect. A reply being written then is picked up again.
+   */
+  private restartSoon(reason: string): void {
+    if (this.#restarting) return;
+    this.#restarting = true;
+    this.ctx.waitUntil(
+      (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        console.log("resident: starting again", { reason });
+        // The runtime logs this as an uncaught error; the next request starts the resident afresh.
+        this.ctx.abort(`starting again: ${reason}`);
+      })()
+    );
+  }
+
+  #restarting = false;
 
   /** Whether long-term memory is set up, for the web page. */
   hasMemory(): boolean {
@@ -2870,7 +3025,7 @@ export class Resident extends Think<Env> {
   }
 
   private async importTelegramSet(name: string): Promise<{ on: boolean; packs: PackView[]; left: number; skipped?: string[] } | { error: string }> {
-    if (!this.env.TG_BOT_TOKEN) return { error: "要先接好 Telegram 机器人（TG_BOT_TOKEN），才能导 Telegram 的贴纸包" };
+    if (!this.cfg.TG_BOT_TOKEN?.trim()) return { error: "要先在设置页「IM」接好 Telegram 机器人，才能导 Telegram 的贴纸包" };
     const set = await getStickerSet(this.telegramConfig(), name).catch((error) => ({ error: String(error) }));
     if ("error" in set) return { error: `Telegram 说找不到这个贴纸包：${set.error.slice(0, 200)}` };
     if (set.sticker_type === "custom_emoji") return { error: "这是表情符号包，不是贴纸包，机器人发不了" };
@@ -2921,7 +3076,7 @@ export class Resident extends Think<Env> {
     const file = store.webFile(key);
     if (!file) return null;
     if ("bytes" in file) return file;
-    if (!this.env.TG_BOT_TOKEN || !file.remote) return null;
+    if (!this.cfg.TG_BOT_TOKEN?.trim() || !file.remote) return null;
     // Asked for by every page that shows it: fetched once at a time, and one that failed not again for 10 minutes.
     const failed = this.#stickerFailed.get(key);
     if (failed && Date.now() - failed < 10 * 60_000) return null;
