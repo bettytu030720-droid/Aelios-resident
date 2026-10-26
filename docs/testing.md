@@ -11,7 +11,7 @@ NO_PROXY=127.0.0.1 npx wrangler dev --config wrangler.test.jsonc --port 8787 &
 NO_PROXY=127.0.0.1 node test/run.mjs main
 ```
 
-`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），回什么由 `src/fake-model.ts` 按你发的话决定。
+`wrangler.test.jsonc` 用脚本模型（`FAKE_MODEL=true`），回什么由 `src/fake-model.ts` 按你发的话决定。测试什么钟点都可能跑，所以它把 `QUIET_HOURS` 设成 `off`，要测夜里别问的阶段自己在设置页填一段包住当前时间的时段。
 
 `test/run.mjs` 后面跟阶段名，每个阶段要一个刚起的 Worker（先删 `.wrangler/state`）。有的阶段要带变量起 Worker，见 `test/run.mjs` 开头：
 
@@ -29,7 +29,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `tasks` | 叫云端 Claude Code 干活 |
 | `tasks-quiet` | 云端的活没回音（带 `--var CLOUD_TASK_QUIET_MINUTES:0.05`） |
 | `sites` | 带钥匙的网站 |
-| `heartbeat` | 未达写信门槛时仍走心跳（带 `--var LETTER_IDLE_MINUTES:0.05 --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05`） |
+| `heartbeat` | 未达写信门槛时仍走心跳，夜里别问的时段里不问（带 `--var LETTER_IDLE_MINUTES:0.05 --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05`） |
 | `alarms` | 它自己定的闹钟（带 `--var ALARM_MINUTE_SECONDS:0.05`，一分钟只算 3 秒） |
 
 不用起 Worker 的，直接 `node test/<名字>.mjs`：
@@ -58,7 +58,8 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `cache-window.mjs` | 缓存窗口什么时候换、写信那一轮的缓存标记、开机包的文字 |
 | `cache-history.mjs` | 真实 SDK 年龄裁剪问题复现、固定历史视图、工具/媒体只读缩减、SQLite 窗口恢复与校验 |
 | `alarms.mjs` | 闹钟的写法、下次什么时候响、心跳和响铃那一轮的提示 |
-| `alarm-activity.mjs` | 实际响应钩子与闲置方法：成功闹钟含 SKIP 重启周期，失败和普通心跳不重置，身份和用户时间不混淆 |
+| `alarm-activity.mjs` | 实际响应钩子与闲置方法：成功闹钟含 SKIP 重启周期，失败和普通心跳不重置，身份和用户时间不混淆；夜里别问的时段里心跳不问、剩下的次数作废 |
+| `quiet-hours.mjs` | 夜里别问（`QUIET_HOURS`）：写法和校验、默认值、跨午夜、别的时区和夏令时、`/status` 的说法 |
 | `startup-recovery.mjs` | 启动恢复各步骤和各闹钟分别失败时，其他恢复仍继续，持久任务不被删除 |
 | `via-aelios-redirects.mjs` | 实际 loopback HTTP 服务器的 3xx 拒绝：模型清单、记忆检索、开机包、写入、置顶和模型代理，凡是带 Bearer key 的 Aelios 请求都不跟随跳转 |
 | `history-path.mjs` | 只读 SQLite 元数据检查完整分支、缺失父行、跨 session、循环和 SDK 路径深度上限 |

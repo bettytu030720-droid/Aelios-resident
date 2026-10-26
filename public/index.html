@@ -190,6 +190,10 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .field input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--panel-border);
     background: var(--bg-deep); outline: none; font-size: 15px; }
   .field input:focus { border-color: var(--coral); }
+  .field .hours-row { align-items: center; font-size: 14px; color: var(--text-2); }
+  .field select { height: 40px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--panel-border);
+    background: var(--bg-deep); color: var(--text-1); outline: none; font-size: 15px; }
+  .field select:focus { border-color: var(--coral); }
   .field .btn { flex: none; }
   .field .now { font-size: 12px; color: var(--text-4); word-break: break-all; }
   .field .error { margin: 0; }
@@ -419,7 +423,22 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                 </template>
               </div>
             </template>
-            <template x-if="field(meta.key) && field(meta.key).kind !== 'choice'">
+            <template x-if="field(meta.key) && meta.hours">
+              <div class="row hours-row">
+                <span>从</span>
+                <select :value="hoursPart(meta, 'start')" @change="setHours(meta, 'start', $event.target.value)" :disabled="Boolean(configBusy)" aria-label="从几点">
+                  <template x-for="h in 24" :key="h"><option :value="h - 1" :selected="h - 1 === hoursPart(meta, 'start')" x-text="(h - 1) + ' 点'"></option></template>
+                </select>
+                <span>到</span>
+                <select :value="hoursPart(meta, 'end')" @change="setHours(meta, 'end', $event.target.value)" :disabled="Boolean(configBusy)" aria-label="到几点">
+                  <template x-for="h in 24" :key="h"><option :value="h - 1" :selected="h - 1 === hoursPart(meta, 'end')" x-text="(h - 1) + ' 点'"></option></template>
+                </select>
+                <div class="spacer"></div>
+                <button class="btn primary" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)"
+                  @click="saveHours(meta)">保存</button>
+              </div>
+            </template>
+            <template x-if="field(meta.key) && field(meta.key).kind !== 'choice' && !meta.hours">
               <div class="row">
                 <input x-model="configDraft[meta.key]" :type="field(meta.key).kind === 'secret' ? 'password' : 'text'"
                   :placeholder="placeholderFor(meta)" autocomplete="off" autocapitalize="off" spellcheck="false" :aria-label="meta.label"
@@ -433,7 +452,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             <div class="choices" x-show="picksFor(meta).length">
               <template x-for="pick in picksFor(meta)" :key="pick">
                 <button class="choice small" type="button" :class="textInEffect(meta) === pick ? 'on' : ''" :disabled="Boolean(configBusy)"
-                  @click="pickText(meta, pick)" x-text="pick"></button>
+                  @click="pickText(meta, pick)" x-text="pickLabel(meta, pick)"></button>
               </template>
             </div>
             <p class="error" x-show="configError[meta.key]" x-text="configError[meta.key]"></p>
@@ -708,6 +727,10 @@ function resident() {
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
       { key: 'HEARTBEAT', label: '没动静时问它几次要不要找你', def: '3', picks: ['0', '1', '3', '5', '10'],
         help: '默认 55 分钟没人说话，当前携带的聊天还没达到写信门槛，或没有旧内容可收，就问它一句要不要找你，它不想就不发；之后每 55 分钟再问一次，问满这么多次或者你说话为止。每次都读热着的缓存，花的跟你发一条差不多，还把缓存续一小时。0 不问，最多 10。缓存选 5 分钟时不问。' },
+      { key: 'QUIET_HOURS', label: '夜里别问', def: '00:00-08:00', hours: true,
+        picks: ['00:00-08:00', '23:00-07:00', '01:00-09:00', 'off'],
+        pickLabels: { '00:00-08:00': '0 点到 8 点', '23:00-07:00': '23 点到 7 点', '01:00-09:00': '1 点到 9 点', off: '关，夜里也问' },
+        help: '这段时间里没动静也不问它要不要找你，这段沉默剩下的次数作废，你下次说话再从头数。按下面的时区算。你定的「主动找你」、它的闹钟和交接信照常。' },
       { key: 'ALARMS', label: '让它自己定闹钟', def: 'off', labels: ON_OFF,
         help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
@@ -1562,6 +1585,28 @@ function resident() {
       var f = this.field(meta.key);
       if (!f || pick === this.textInEffect(meta)) return;
       this.saveConfig(meta.key, pick === (f.fromWorker || this.defFor(meta)) ? '' : pick);
+    },
+    pickLabel(meta, pick) {
+      return (meta.pickLabels && meta.pickLabels[pick]) || pick;
+    },
+    // Quiet hours are picked as two whole hours; the box behind them holds "00:00-08:00". Off shows the default.
+    hoursPart(meta, which) {
+      var text = (this.configDraft[meta.key] || '').trim() || this.textInEffect(meta);
+      var match = /^(\d{1,2})(?::\d{2})?\s*[-–—~到]\s*(\d{1,2})/.exec(text) || /^(\d{1,2})(?::\d{2})?\s*[-–—~到]\s*(\d{1,2})/.exec(meta.def);
+      return Number(which === 'start' ? match[1] : match[2]) % 24;
+    },
+    setHours(meta, which, value) {
+      var pad = function (h) { return (h < 10 ? '0' : '') + h + ':00'; };
+      var start = which === 'start' ? Number(value) : this.hoursPart(meta, 'start');
+      var end = which === 'end' ? Number(value) : this.hoursPart(meta, 'end');
+      this.configDraft[meta.key] = pad(start) + '-' + pad(end);
+    },
+    // Like pickText: hours that match what the Worker or the default gives save nothing.
+    saveHours(meta) {
+      var f = this.field(meta.key);
+      var value = (this.configDraft[meta.key] || '').trim();
+      if (!f) return;
+      this.saveConfig(meta.key, value === (f.fromWorker || meta.def) ? '' : value);
     },
     placeholderFor(meta) {
       var f = this.field(meta.key);

@@ -221,6 +221,7 @@ Changing the persona, switching models, deleting or branching messages, deployin
 - Normally each heartbeat comes within the 1-hour lifetime of the previous cache, so it costs about as much as one of your messages. Delayed scheduling, a changed prefix or an expired provider cache can still force a rebuild, so heartbeats are not free.
 - When the threshold is reached, the quiet time is up and there is something to fold, it writes a letter and skips the heartbeat: after a letter the conversation has changed and the whole cache must be rewritten, so asking then would be expensive.
 - Set the number under **Chat**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
+- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Chat** with two hour pickers or a preset; `off` asks at night too. Check-ins, alarms and letters are not affected, since those run at a time someone chose.
 
 **Alarms** (`ALARMS`, off by default): when on, it gets three tools — set an alarm, list alarms, cancel one. An alarm can ring in a few minutes, once at a set time, or on repeat, like `every day at 21:30`, `every weekday at 08:00`, `every week on sat,sun at 10:00` or `every 3 hours`. When it rings, it gets back the note it wrote and can message you or let it pass.
 
@@ -358,6 +359,7 @@ Everything is changed on the settings page. Only `TG_BOT_USERNAME` and `DEBOUNCE
 | `DEBOUNCE_SECONDS` | `3` | Messages sent within this many seconds count as one turn |
 | `CHECKIN_SCHEDULE` | empty (no check-ins) | Times like `every day at 09:00`, `every weekday at 21:30`, `every 3 hours` |
 | `HEARTBEAT` | `3` | When the quiet time is up but the chat is below the letter threshold (or there is nothing to fold), ask whether it wants to reach out, then again after each further quiet time, at most this many times per silence. `0` turns it off, `10` at most |
+| `QUIET_HOURS` | `00:00-08:00` | Hours in `TIME_ZONE` when the heartbeat does not ask; hours past midnight such as `23:00-07:00` work. `off` for none |
 | `ALARMS` | `off` | `on` lets it set its own alarms to come back to you, at most 10 |
 | `AELIOS_URL` / `AELIOS_API_KEY` | empty | Long-term memory; when empty, Aelios is not used and the chat does not go through it |
 | `AELIOS_NAMESPACE` | `default` | The memory space for the memory tools, boot packet and letters; it must match the identity's space in Aelios. All three keys read and write `default`; only `CHATBOX_API_KEY` can use another |

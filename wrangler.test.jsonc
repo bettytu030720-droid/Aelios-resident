@@ -17,6 +17,8 @@
     "TIME_ZONE": "Asia/Shanghai",
     "DEBOUNCE_SECONDS": "1",
     "LETTER_IDLE_MINUTES": "off",
+    // Tests run at any hour of the day: no quiet hours unless a test sets them.
+    "QUIET_HOURS": "off",
     "AELIOS_URL": "http://127.0.0.1:9999",
     "AELIOS_NAMESPACE": "test-space",
     "WEB_SEARCH": "off",

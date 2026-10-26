@@ -28,6 +28,7 @@ const built = await build({
       import { taskOfNote } from "./src/cloud-tasks.ts";
       import { onMessages } from "./src/via-aelios.ts";
       import { reachesLetterThreshold, letterTokenThreshold } from "./src/fold.ts";
+      import { inQuietHours, quietHoursInWords, quietHoursOf } from "./src/quiet-hours.ts";
       export { ALARM_PREFIX, SKIP };
       export { checkinPrompt, heartbeatPrompt, letterPrompt } from "./src/prompts.ts";
       export { alarmNote } from "./src/alarms.ts";
@@ -310,6 +311,31 @@ test("below threshold: an alarm starts one bounded heartbeat cycle, not an indef
   idleAt(h, h.now + 55 * MIN);
   await h.runTo(h.now + 55 * MIN);
   assert.match(h.submitted[3].parts[0].text, /heartbeat 1 of 3/);
+});
+
+test("quiet hours: a heartbeat due in them is not asked, and the rest of that quiet time's count is dropped", async () => {
+  // The harness clock is UTC; START is 12:00. Heartbeat 1 at 12:55 asks, heartbeat 2 at 13:50 falls in 13:00-14:00.
+  const h = fixture({ QUIET_HOURS: "13:00-14:00" });
+  await respond(h, alarm(), { reply: SKIP });
+  await h.runTo(START + 55 * MIN);
+  assert.equal(h.submitted.length, 1);
+  assert.match(h.submitted[0].parts[0].text, /heartbeat 1 of 3/);
+  await h.runTo(START + 4 * 55 * MIN);
+  assert.equal(h.submitted.length, 1, "heartbeat 2 fell in the quiet hours, and heartbeat 3 was never planned");
+  assert.equal(h.schedules.size, 0);
+  assert.equal(h.storage.values.has("heartbeat"), false);
+  unchangedUserTime(h);
+  // Already quiet when the first one is due: nothing is asked at all.
+  const night = fixture({ QUIET_HOURS: "12:30-13:00" });
+  await respond(night, alarm(), { reply: SKIP });
+  await night.runTo(START + 4 * 55 * MIN);
+  assert.equal(night.submitted.length, 0);
+  assert.equal(night.schedules.size, 0);
+  // Off asks all three, as before.
+  const off = fixture({ QUIET_HOURS: "off" });
+  await respond(off, alarm(), { reply: SKIP });
+  await off.runTo(START + 4 * 55 * MIN);
+  assert.equal(off.submitted.length, 3);
 });
 
 test("at token threshold: the real idle/write methods compact instead of starting heartbeat 1", async () => {
