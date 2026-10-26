@@ -172,6 +172,10 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   .tag.needs { color: var(--coral); border-color: var(--mine-border); }
   .config .status { margin: 2px 0 6px; padding: 8px 10px; border-radius: 12px; background: var(--bg-deep); font-size: 13px; color: var(--text-2); }
   .config .status.needs { color: var(--coral); }
+  /* A door's heading inside the IM section, with how it stands. */
+  .door-head { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; }
+  .door-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-1); }
+  .door-head .status { margin: 0; }
   .more-toggle { margin-top: 2px; padding: 8px 0 2px; border: 0; background: transparent; color: var(--text-3); font-size: 13px; cursor: pointer; }
   .more-toggle:hover { color: var(--text-1); }
   /* The list the settings page opens on. */
@@ -374,7 +378,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             </button>
           </template>
         </div>
-        <p class="hint">这里存的优先，空着的用 Cloudflare 里同名的变量，再没有就用默认。key 只能填不能看。TG_BOT_TOKEN、TG_WEBHOOK_SECRET、WEB_KEY 只能在 Cloudflare 里填。</p>
+        <p class="hint">这里存的优先，空着的用 Cloudflare 里同名的变量，再没有就用默认。key 和 bot token 只能填不能看。只有 WEB_KEY 必须在 Cloudflare 里填。</p>
         <div class="bar">
           <div class="spacer"></div>
           <button class="btn" type="button" @click="logout()">锁上网页门</button>
@@ -386,7 +390,6 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <div class="card" x-show="configSection === group.id">
         <p class="hint" x-show="groupHint(group)" x-text="groupHint(group)"></p>
         <p class="status" x-show="group.id === 'voice'" :class="sectionNeeds('voice') ? 'needs' : ''" x-text="voiceStatus()"></p>
-        <p class="status" x-show="group.id === 'wecom'" :class="sectionNeeds('wecom') ? 'needs' : ''" x-text="wecomStatus()"></p>
         <template x-if="group.id === 'thinking'">
           <div class="tasks-extra letter-state" aria-live="polite">
             <div class="field">
@@ -411,6 +414,13 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </template>
         <template x-for="meta in group.fields" :key="meta.key">
           <div class="field" x-show="field(meta.key) && shown(meta) && (!meta.more || configMore)">
+            <template x-if="meta.door">
+              <div class="door-head">
+                <h3 x-text="meta.door === 'telegram' ? 'Telegram' : '企业微信'"></h3>
+                <p class="hint" x-text="doorHint(meta.door)"></p>
+                <p class="status" :class="doorNeeds(meta.door) ? 'needs' : ''" x-text="meta.door === 'telegram' ? telegramStatus() : wecomStatus()"></p>
+              </div>
+            </template>
             <div class="name">
               <span x-text="meta.label"></span>
               <span class="tag" :class="tagClass(meta)" x-text="tagText(meta)"></span>
@@ -448,6 +458,13 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   @click="saveConfig(meta.key, configDraft[meta.key])">保存</button>
                 <button class="btn" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)"
                   @click="saveConfig(meta.key, '')">清掉</button>
+              </div>
+            </template>
+            <template x-if="meta.key === 'TG_BOT_TOKEN' && config.telegram && config.telegram.from">
+              <div class="row">
+                <span class="hint">换了域名，或者 bot 不回了，点一下重新接。</span>
+                <div class="spacer"></div>
+                <button class="btn" type="button" :disabled="Boolean(configBusy)" @click="reconnectTelegram()" x-text="configBusy === 'telegram' ? '接着呢…' : '重新接一次'"></button>
               </div>
             </template>
             <div class="choices" x-show="picksFor(meta).length">
@@ -499,7 +516,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             </div>
           </div>
         </template>
-        <template x-if="group.id === 'chat'">
+        <template x-if="group.id === 'heartbeat'">
           <div class="tasks-extra" x-show="alarms.alarms.length">
             <div class="field">
               <div class="name"><span>它定的闹钟</span><span class="tag" x-text="alarms.alarms.length + ' / ' + alarms.limit"></span></div>
@@ -723,8 +740,22 @@ function resident() {
       { key: 'AELIOS_IDENTITY', label: '身份', help: 'Aelios 里给住户建的身份，用的模型要在它的主模型里。', def: '这把 key 的第一个身份', more: true },
       { key: 'AELIOS_NAMESPACE', label: '记忆空间', help: '记忆工具、开机包、交接信用哪个空间，跟身份在 Aelios 里的设置对上。', def: 'default', more: true }
     ] },
-    { id: 'chat', title: '聊天', fields: [
+    { id: 'im', title: 'IM', hint: '网页门一直都在。Telegram 和企业微信装不装随你，一个都不填就只在网页上聊；装了的话，在哪儿说的话网页上都看得到。', fields: [
+      { key: 'TG_BOT_TOKEN', door: 'telegram', label: 'bot token', placeholder: '123456789:AA…',
+        help: '在 Telegram 里找 @BotFather，发 /newbot 建一个 bot，把它给的 token 填在这里。保存后住户自己接好，bot 左下角的菜单按钮也会打开这个网页。' },
       { key: 'TG_ALLOWED', label: '谁能在 Telegram 上跟它说话', help: '@用户名或 chat id，逗号隔开。空着谁都不回。', placeholder: '@your_name' },
+      { key: 'WECOM_ALLOWED', door: 'wecom', label: '谁能在企业微信上跟它说话', help: '成员的账号（通讯录里点开成员看「账号」），逗号隔开。空着谁都不回；有人被挡下，上面会显示那个账号。', placeholder: 'ZhangSan' },
+      { key: 'WECOM_CORP_ID', label: '企业 ID', help: '管理后台「我的企业」页面最下面。', placeholder: 'ww…' },
+      { key: 'WECOM_AGENT_ID', label: 'AgentId', help: '应用管理里点开这个自建应用就能看到。' },
+      { key: 'WECOM_SECRET', label: 'Secret', help: '同一页，点「查看」，它会发到企业微信里。' },
+      { key: 'WECOM_RELAY_URL', label: '转发地址', help: '装了 relay/wecom 的那台机器经 Cloudflare Tunnel 出来的网址。', placeholder: 'https://wecom-relay.…' },
+      { key: 'WECOM_RELAY_KEY', label: '转发钥匙', help: '在转发机上运行 sudo sed -n \'s/^WECOM_RELAY_KEY=//p\' /etc/wecom-relay/env 看到的那串。别发在聊天里。' },
+      { key: 'WECOM_TOKEN', label: 'Token', help: '应用页「接收消息」→「设置 API 接收」，点「随机获取」，复制过来。先在这里存好，再回企业微信点保存。' },
+      { key: 'WECOM_AES_KEY', label: 'EncodingAESKey', help: '同一处，也点「随机获取」。' },
+      { key: 'WECOM_STICKERS', label: '在企业微信上发表情包', def: 'off', labels: ON_OFF,
+        help: '企业微信只认 JPG 和 PNG，GIF 发过去只显示第一帧，动图都成了静图，所以默认关。关着时它在企业微信上不发表情，网页和 Telegram 照发。' }
+    ] },
+    { id: 'heartbeat', title: '心跳和闹钟', fields: [
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
       { key: 'HEARTBEAT', label: '没动静时问它几次要不要找你', def: '3', picks: ['0', '1', '3', '5', '10'],
         help: '默认 55 分钟没人说话，当前携带的聊天还没达到写信门槛，或没有旧内容可收，就问它一句要不要找你，它不想就不发；之后每 55 分钟再问一次，问满这么多次或者你说话为止。每次都读热着的缓存，花的跟你发一条差不多，还把缓存续一小时。0 不问，最多 10。缓存选 5 分钟时不问。' },
@@ -735,16 +766,6 @@ function resident() {
       { key: 'ALARMS', label: '让它自己定闹钟', def: 'off', labels: ON_OFF,
         help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
-    ] },
-    { id: 'wecom', title: '企业微信', hint: '用自己建的企业里的一个自建应用跟它聊，开了「微信插件」在微信里也能聊。企业微信只认固定 IP 发来的请求，所以回消息要经过一台有固定 IP 的机器转发：在那台机器上装好仓库里的 relay/wecom（说明在那个文件夹的 README）。这一栏全空着就是没接。', fields: [
-      { key: 'WECOM_ALLOWED', label: '谁能在企业微信上跟它说话', help: '成员的账号（通讯录里点开成员看「账号」），逗号隔开。空着谁都不回；有人被挡下，上面会显示那个账号。', placeholder: 'ZhangSan' },
-      { key: 'WECOM_CORP_ID', label: '企业 ID', help: '管理后台「我的企业」页面最下面。', placeholder: 'ww…' },
-      { key: 'WECOM_AGENT_ID', label: 'AgentId', help: '应用管理里点开这个自建应用就能看到。' },
-      { key: 'WECOM_SECRET', label: 'Secret', help: '同一页，点「查看」，它会发到企业微信里。' },
-      { key: 'WECOM_RELAY_URL', label: '转发地址', help: '装了 relay/wecom 的那台机器经 Cloudflare Tunnel 出来的网址。', placeholder: 'https://wecom-relay.…' },
-      { key: 'WECOM_RELAY_KEY', label: '转发钥匙', help: '在转发机上运行 sudo sed -n \'s/^WECOM_RELAY_KEY=//p\' /etc/wecom-relay/env 看到的那串。别发在聊天里。' },
-      { key: 'WECOM_TOKEN', label: 'Token', help: '应用页「接收消息」→「设置 API 接收」，点「随机获取」，复制过来。先在这里存好，再回企业微信点保存。' },
-      { key: 'WECOM_AES_KEY', label: 'EncodingAESKey', help: '同一处，也点「随机获取」。' }
     ] },
     { id: 'voice', title: '语音', fields: [
       { key: 'VOICE_PROVIDER', label: '发语音用哪家', def: 'off',
@@ -799,7 +820,7 @@ function resident() {
     ] }
   ];
   // The rows of the settings page, in order: the groups above, and the two sections with their own cards.
-  var CONFIG_MENU = ['aelios', 'chat', 'wecom', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom'].map(function (id) {
+  var CONFIG_MENU = ['aelios', 'im', 'heartbeat', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom'].map(function (id) {
     var group = CONFIG_GROUPS.find(function (g) { return g.id === id; });
     return { id: id, title: group ? group.title : { stickers: '表情包', mcp: '别的 MCP' }[id] };
   });
@@ -905,7 +926,8 @@ function resident() {
     PERSONA_MAX: PERSONA_MAX,
     CONFIG_GROUPS: CONFIG_GROUPS,
     CONFIG_MENU: CONFIG_MENU,
-    config: { fields: [], voice: { hears: null, gap: 'off', keyFrom: null }, wecom: { gap: 'off', allowed: [], relay: null, error: null, refused: null } },
+    config: { fields: [], voice: { hears: null, gap: 'off', keyFrom: null }, telegram: { from: null, bot: null, here: false, error: null, lastError: null },
+      wecom: { gap: 'off', allowed: [], relay: null, error: null, refused: null } },
     configSection: '',
     configMore: false,
     configDraft: {},
@@ -1671,8 +1693,45 @@ function resident() {
       return group.fields.some(function (meta) { return meta.more && self.field(meta.key) && self.shown(meta); });
     },
     groupHint(group) {
-      if (group.id === 'wecom') return group.hint + ' 「接收消息」里的 URL 填：' + location.origin + '/messengers/wecom/webhook';
       return group.hint || '';
+    },
+    // What each door in the IM section is, above its settings.
+    doorHint(door) {
+      if (door === 'telegram') return '用一个 Telegram bot 私聊它。不用就空着。';
+      return '用自己建的企业里的一个自建应用跟它聊，开了「微信插件」在微信里也能聊。企业微信只认固定 IP 发来的请求，所以回消息要经过一台有固定 IP 的机器转发：在那台机器上装好仓库里的 relay/wecom（说明在那个文件夹的 README）。不用就全空着。「接收消息」里的 URL 填：'
+        + location.origin + '/messengers/wecom/webhook';
+    },
+    doorNeeds(door) {
+      if (door === 'telegram') {
+        var t = this.config.telegram || {};
+        return Boolean(t.from && (t.error || !t.here || !this.textInEffect(this.metaOf('TG_ALLOWED'))));
+      }
+      var w = this.config.wecom || {};
+      return w.gap !== 'off' && Boolean(w.gap || !w.relay || w.error || w.refused || !(w.allowed || []).length);
+    },
+    // How Telegram stands: the bot, whether its messages come here, the last error Telegram had sending one.
+    telegramStatus() {
+      var t = this.config.telegram || {};
+      if (!t.from) return '没接。';
+      if (t.error) return t.error;
+      var bits = [];
+      if (!t.here) bits.push('填了 @' + t.bot + ' 的 token，但它的消息还没指到这里：点下面的「重新接一次」。');
+      else bits.push('接好了：@' + t.bot + (t.from === 'cloudflare' ? '（token 在 Cloudflare 里）' : '') + '。');
+      if (!this.textInEffect(this.metaOf('TG_ALLOWED'))) bits.push('还没放行任何人，填「谁能在 Telegram 上跟它说话」。');
+      if (t.lastError) bits.push(this.fmt(t.lastError.at) + ' Telegram 送消息出错：' + t.lastError.reason);
+      return bits.join(' ');
+    },
+    async reconnectTelegram() {
+      this.configBusy = 'telegram';
+      try {
+        var done = await this.api('/web/telegram/connect', { method: 'POST', body: {} });
+        this.config.telegram = done.telegram;
+        this.notify('接好了');
+      } catch (error) {
+        this.notify(error.message);
+      } finally {
+        this.configBusy = '';
+      }
     },
     // How WeCom stands: what is still missing, the relay, the last error, who was shut out.
     wecomStatus() {
@@ -1682,7 +1741,7 @@ function resident() {
       var bits = [];
       if (w.gap) bits.push('还差' + (labels[w.gap] || w.gap) + '。');
       else if (!w.relay) bits.push('转发机连不上：看看转发地址、钥匙，和转发机上的 Tunnel。');
-      else bits.push(w.relay.amr ? '接好了，能收发文字、图片、语音和表情包。' : '接好了，能收发文字和图片；转发机没装转码（--media），语音回复改发文字，WebM 表情包发不了。');
+      else bits.push(w.relay.amr ? '接好了，能收发文字、图片和语音。' : '接好了，能收发文字和图片；转发机没装转码（--media），语音回复改发文字。');
       if (!w.gap && !(w.allowed || []).length) bits.push('还没放行任何人，填下面第一格。');
       if (w.error) bits.push(this.fmt(w.error.at) + ' 出错：' + w.error.reason);
       if (w.refused) bits.push(this.fmt(w.refused.at) + ' 挡下了账号 ' + w.refused.user + '，是你的话填进下面第一格。');
@@ -1720,10 +1779,7 @@ function resident() {
       if (id === 'thinking') return Boolean(this.letterError || (this.letter.write && this.letter.write.state === 'failed') || this.letterCanRetry());
       var voice = this.config.voice || {};
       if (id === 'tasks') return this.inEffect(this.metaOf('CLOUD_TASKS')) === 'on' && !this.cloud.configured;
-      if (id === 'wecom') {
-        var w = this.config.wecom || {};
-        return w.gap !== 'off' && Boolean(w.gap || !w.relay || w.error || w.refused || !(w.allowed || []).length);
-      }
+      if (id === 'im') return this.doorNeeds('telegram') || this.doorNeeds('wecom');
       return id === 'voice' && Boolean(voice.gap) && voice.gap !== 'off';
     },
     // The one line under each row of the list.
@@ -1737,15 +1793,18 @@ function resident() {
         case 'aelios':
           if (!text('AELIOS_URL')) return '没接';
           return (this.aelios ? '接着 ' : '填了，还没连上 ') + host(text('AELIOS_URL'));
-        case 'chat':
-          return (text('TG_ALLOWED') || '谁都不回') + ' · ' + (text('CHECKIN_SCHEDULE') || '不主动找')
-            + (this.inEffect(this.metaOf('ALARMS')) === 'on' ? ' · 闹钟 ' + this.alarms.alarms.length + ' 个' : '');
-        case 'wecom': {
+        case 'im': {
+          var t = this.config.telegram || {};
           var w = this.config.wecom || {};
-          if (w.gap === 'off') return '没接';
-          if (w.gap) return '还差' + w.gap.replace('WECOM_', '');
-          if (!w.relay) return '转发机连不上';
-          return ((w.allowed || []).join('、') || '谁都不回') + (w.relay.amr ? ' · 能发语音' : ' · 不发语音');
+          var tg = !t.from ? '' : t.error ? 'Telegram 出错了' : !t.here ? 'Telegram 没接好' : 'Telegram @' + t.bot;
+          var wecom = w.gap === 'off' ? '' : w.gap ? '企业微信还差' + w.gap.replace('WECOM_', '') : !w.relay ? '企业微信转发机连不上'
+            : '企业微信 ' + ((w.allowed || []).join('、') || '谁都不回');
+          return [tg, wecom].filter(Boolean).join(' · ') || '只在网页上聊';
+        }
+        case 'heartbeat': {
+          var beats = this.textInEffect(this.metaOf('HEARTBEAT')) || this.metaOf('HEARTBEAT').def;
+          return (text('CHECKIN_SCHEDULE') || '不主动找') + ' · ' + (beats === '0' ? '心跳关' : '心跳 ' + beats + ' 次')
+            + (this.inEffect(this.metaOf('ALARMS')) === 'on' ? ' · 闹钟 ' + this.alarms.alarms.length + ' 个' : '');
         }
         case 'voice': {
           var voice = this.config.voice || {};

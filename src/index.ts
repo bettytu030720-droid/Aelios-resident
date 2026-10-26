@@ -2,9 +2,10 @@
 //   POST /messengers/telegram/webhook   Telegram → secret check, allowlist, slash commands → the resident
 //   GET|POST /messengers/wecom/webhook  WeCom: GET checks the address once; POST is a message, opened and checked by
 //                                       the resident (wecom.ts) with the settings in effect
-//   GET  /tg/setup?secret=…             points the bot's webhook here (open once after deploy; POST with the
-//                                       x-tg-setup-secret header works too, for scripts); opened over https,
-//                                       also makes the bot's menu button open the web page as a Mini App
+//   GET  /tg/setup?secret=…             points the bot's webhook here, for a TG_WEBHOOK_SECRET set in Cloudflare
+//                                       (POST with the x-tg-setup-secret header works too, for scripts); over
+//                                       https also makes the bot's menu button open the web page as a Mini App.
+//                                       A bot token saved on the settings page is connected from there instead
 //   /web/*                              the web page's API (same conversation as Telegram, the model, the persona
 //                                       and the settings), behind WEB_KEY, or inside Telegram behind signed
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
@@ -19,27 +20,24 @@ import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini
 import { MCP_CALLBACK_PATH } from "./mcp-servers";
 import { MAX_ZIP_BYTES } from "./stickers";
 import { REPORT_MAX_BYTES } from "./cloud-tasks";
-import { commandOf, isAllowed, sendBubbles, setWebhook, timingSafeEqual, type TelegramUpdate } from "./telegram";
+import { TELEGRAM_WEBHOOK_PATH, commandOf, isAllowed, timingSafeEqual, type TelegramUpdate } from "./telegram";
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { Resident } from "./resident";
 
-const WEBHOOK_PATH = "/messengers/telegram/webhook";
 const WECOM_PATH = "/messengers/wecom/webhook";
 // A WeCom push is a few kilobytes of XML.
 const WECOM_MAX_BYTES = 64 * 1024;
 // Telegram and the web page both talk to this one agent.
 const AGENT_NAME = "default";
 
-function telegram(env: Env) {
-  return { token: env.TG_BOT_TOKEN ?? "", apiBase: env.TG_API_BASE };
-}
-
 async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-  const secret = env.TG_WEBHOOK_SECRET?.trim();
   const got = request.headers.get("x-telegram-bot-api-secret-token") ?? "";
-  if (!secret || !env.TG_BOT_TOKEN || !timingSafeEqual(got, secret)) return new Response("unauthorized", { status: 401 });
+  if (!got) return new Response("unauthorized", { status: 401 });
+  // The token and the webhook secret can be on the settings page, so the resident checks them.
+  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  if (!(await agent.telegramGate(got))) return new Response("unauthorized", { status: 401 });
 
   const body = await request.text();
   let update: TelegramUpdate;
@@ -54,7 +52,6 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
   if (!message || chatId == null || message.from?.is_bot || message.chat?.type !== "private") {
     return new Response("ok");
   }
-  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
   // TG_ALLOWED can be set on the settings page, so the resident says what is in effect.
   if (!isAllowed(await agent.telegramAllowed(), String(chatId), message.from?.username)) {
     // No reply, so strangers cannot probe the bot. The log line shows what to put in TG_ALLOWED.
@@ -65,12 +62,7 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
   const command = commandOf(message.text);
   if (command) {
     // The Think messenger ignores slash commands; the Worker answers them without a model turn.
-    ctx.waitUntil(
-      agent
-        .command(command)
-        .then((text) => sendBubbles(telegram(env), String(chatId), text, { bubbles: false }))
-        .catch((error) => console.error("tg: command failed", { command, error: String(error) }))
-    );
+    ctx.waitUntil(agent.telegramCommand(command, String(chatId)).catch((error) => console.error("tg: command failed", { command, error: String(error) })));
     return new Response("ok");
   }
   return agent.fetch(new Request(request.url, { method: "POST", headers: request.headers, body }));
@@ -96,18 +88,10 @@ async function handleSetup(request: Request, env: Env, url: URL): Promise<Respon
   if (request.method !== "GET" && request.method !== "POST") {
     return new Response("method not allowed", { status: 405, headers: { ...headers, allow: "GET, POST" } });
   }
-  const secret = env.TG_WEBHOOK_SECRET?.trim();
-  if (!secret || !env.TG_BOT_TOKEN) return new Response("set TG_BOT_TOKEN and TG_WEBHOOK_SECRET first", { status: 400, headers });
   // Opened in a browser the secret is in the address; a script can send it as a header instead.
   const given = request.headers.get("x-tg-setup-secret") ?? url.searchParams.get("secret") ?? "";
-  if (!timingSafeEqual(given, secret)) return new Response("unauthorized", { status: 401, headers });
-  // The address an MCP sign-in started from the chat comes back to.
-  await (await getAgentByName(env.RESIDENT, AGENT_NAME)).noteOrigin(url.origin);
-  // Telegram only opens Mini Apps from https; over http (local tests) the menu button is left alone.
-  const https = url.protocol === "https:";
-  const result = await setWebhook(telegram(env), `${url.origin}${WEBHOOK_PATH}`, secret, https ? { miniAppUrl: `${url.origin}/` } : {});
-  if (!https) result.setChatMenuButton = { skipped: "the Mini App needs https; open /tg/setup on the https address" };
-  return Response.json(result, { headers });
+  const answer = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).telegramSetup(given, url.origin);
+  return new Response(answer.text, { status: answer.status, headers: { ...headers, "content-type": answer.json ? "application/json" : "text/plain; charset=utf-8" } });
 }
 
 /** The web door is open only with WEB_KEY, sent by the page as the x-web-key header. */
@@ -125,10 +109,10 @@ type WebCaller = { via: "web" } | { via: "telegram"; caller: NonNullable<Awaited
 async function webCaller(env: Env, request: Request): Promise<WebCaller | null> {
   if (webAllowed(env, request)) return { via: "web" };
   if (!triesMiniApp(request)) return null;
-  // The signature is checked before the resident is woken up.
-  const caller = await miniAppCaller(request, env.TG_BOT_TOKEN);
-  if (!caller) return null;
+  // The bot token can be on the settings page: the resident says which one is in effect.
   const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  const caller = await miniAppCaller(request, await agent.telegramToken());
+  if (!caller) return null;
   if (!callerAllowed(await agent.telegramAllowed(), caller)) {
     console.log("web: Mini App user not in TG_ALLOWED", { id: caller.user.id, username: caller.user.username });
     return null;
@@ -144,7 +128,8 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
     if (who.via !== "telegram") return new Response("the Mini App way in only", { status: 400 });
     const { user, auth } = who.caller;
-    const session = await issueSession(env.TG_BOT_TOKEN ?? "", user, auth);
+    const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+    const session = await issueSession(await agent.telegramToken(), user, auth);
     return Response.json(
       { ...session, user: { id: user.id, username: user.username ?? null, first_name: user.first_name ?? null } },
       { headers: { "cache-control": "no-store" } }
@@ -204,8 +189,15 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "GET /web/config":
       return Response.json(await agent.webConfig());
     case "POST /web/config": {
+      // A bot token saved here is connected to this address.
+      await agent.noteOrigin(url.origin);
       const saved = await agent.webSetConfig(String(body.key ?? ""), String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/telegram/connect": {
+      await agent.noteOrigin(url.origin);
+      const connected = await agent.webTelegramConnect();
+      return Response.json(connected, { status: "error" in connected ? 400 : 200 });
     }
     case "GET /web/mcp":
       return Response.json(await agent.webMcp());
@@ -262,7 +254,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
-      if (url.pathname === WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
+      if (url.pathname === TELEGRAM_WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
       if (url.pathname === WECOM_PATH) return await handleWecom(request, env, url);
       if (url.pathname === "/tg/setup") return await handleSetup(request, env, url);
       if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);

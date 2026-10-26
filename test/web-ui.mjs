@@ -75,28 +75,48 @@ assert.equal(page.placeholderFor(metaOf('VOICE_ID')), '模型自己的');
 console.log('PASS voice settings show once a provider is picked, with that provider\'s models to pick from');
 page.config = { fields: [...voiceFields('elevenlabs'), { key: 'STICKERS', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] }, { key: 'TG_ALLOWED', kind: 'text', value: '', fromWorker: '@her' }], voice: { hears: 'whisper', gap: 'VOICE_ID' } };
 page.stickers = { on: true, packs: [{ id: 'a' }, { id: 'b' }], left: 0 };
-assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.id), ['aelios', 'chat', 'wecom', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom']);
-// WeCom: off while empty; what is missing; who is let in and whether voice goes out; someone shut out.
+assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.id), ['aelios', 'im', 'heartbeat', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom']);
+assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.title).slice(1, 3), ['IM', '心跳和闹钟']);
+// IM: only the web while neither door is set up.
+page.config.telegram = { from: null, bot: null, here: false, error: null, lastError: null };
 page.config.wecom = { gap: 'off', allowed: [], relay: null, error: null, refused: null };
-assert.equal(page.sectionSummary('wecom'), '没接');
-assert.ok(!page.sectionNeeds('wecom'));
+assert.equal(page.sectionSummary('im'), '只在网页上聊');
+assert.ok(!page.sectionNeeds('im'));
+assert.equal(page.telegramStatus(), '没接。');
+// WeCom: what is missing; who is let in; someone shut out.
 page.config.wecom = { gap: 'WECOM_AGENT_ID', allowed: [], relay: null, error: null, refused: null };
-assert.equal(page.sectionSummary('wecom'), '还差AGENT_ID');
+assert.equal(page.sectionSummary('im'), '企业微信还差AGENT_ID');
 assert.match(page.wecomStatus(), /还差AgentId/);
 page.config.wecom = { gap: null, allowed: ['heruser'], relay: { amr: true, mp3: true, gif: true, png: true }, error: null, refused: null };
-assert.equal(page.sectionSummary('wecom'), 'heruser · 能发语音');
-assert.ok(!page.sectionNeeds('wecom'));
+assert.equal(page.sectionSummary('im'), '企业微信 heruser');
+assert.ok(!page.sectionNeeds('im'));
 page.config.wecom = { gap: null, allowed: [], relay: { amr: false }, error: null, refused: { at: Date.now(), user: 'HerUser' } };
-assert.ok(page.sectionNeeds('wecom'));
+assert.ok(page.sectionNeeds('im'));
 assert.match(page.wecomStatus(), /没装转码/);
 assert.match(page.wecomStatus(), /挡下了账号 HerUser/);
 assert.equal(page.viaLabel('wecom'), '企业微信');
-console.log('PASS the WeCom section: off while empty, what is missing, the relay, someone shut out');
+// Telegram: the bot and whether its messages come here; both doors on one line.
+page.config.wecom = { gap: null, allowed: ['heruser'], relay: { amr: true }, error: null, refused: null };
+page.config.telegram = { from: 'page', bot: 'my_bot', here: false, error: null, lastError: null };
+assert.ok(page.sectionNeeds('im'));
+assert.equal(page.sectionSummary('im'), 'Telegram 没接好 · 企业微信 heruser');
+assert.match(page.telegramStatus(), /@my_bot.*重新接一次/);
+page.config.telegram = { from: 'cloudflare', bot: 'my_bot', here: true, error: null, lastError: null };
+assert.ok(!page.sectionNeeds('im'));
+assert.equal(page.sectionSummary('im'), 'Telegram @my_bot · 企业微信 heruser');
+assert.match(page.telegramStatus(), /接好了：@my_bot（token 在 Cloudflare 里）/);
+page.config.telegram = { from: 'page', bot: null, here: false, error: 'Telegram 不认这个 token：Unauthorized', lastError: null };
+assert.equal(page.telegramStatus(), 'Telegram 不认这个 token：Unauthorized');
+assert.equal(page.metaOf('WECOM_STICKERS').def, 'off', 'stickers on WeCom are off unless turned on');
+const imGroup = page.CONFIG_GROUPS.find((group) => group.id === 'im');
+assert.deepEqual(JSON.parse(JSON.stringify(imGroup.fields.filter((meta) => meta.door).map((meta) => [meta.key, meta.door]))), [['TG_BOT_TOKEN', 'telegram'], ['WECOM_ALLOWED', 'wecom']]);
+page.config.telegram = { from: null, bot: null, here: false, error: null, lastError: null };
+console.log('PASS the IM section: Telegram and WeCom side by side, each saying how it stands');
 assert.equal(page.sectionSummary('voice'), '还差声音');
 assert.ok(page.sectionNeeds('voice'));
 assert.equal(page.tagText(metaOf('VOICE_ID')), '要填');
 assert.equal(page.sectionSummary('stickers'), '开 · 2 个包');
-assert.equal(page.sectionSummary('chat'), '@her · 不主动找');
+assert.equal(page.sectionSummary('heartbeat'), '不主动找 · 心跳 3 次');
 assert.equal(page.tagText(page.metaOf('TG_ALLOWED')), 'Cloudflare：TG_ALLOWED');
 page.config.voice = { hears: 'whisper', gap: null };
 assert.equal(page.sectionSummary('voice'), 'ElevenLabs · 你发语音才回语音');
@@ -192,8 +212,8 @@ assert.equal(page.siteKeyText(), 'Authorization: Bearer github_pat_1');
 page.siteDraft.lines[0].value = 'token abc';
 assert.equal(page.siteKeyText(), 'Authorization: token abc', 'a value with its own scheme is left alone');
 console.log('PASS keys for sites: name : value rows become the key, presets fill the names, pasted names are dropped');
-// The heartbeat is on unless turned off, alarms off unless turned on; the 聊天 row counts the alarms while they are on.
-const chatGroup = page.CONFIG_GROUPS.find((group) => group.id === 'chat');
+// The heartbeat is on unless turned off, alarms off unless turned on; the 心跳和闹钟 row counts the alarms while they are on.
+const chatGroup = page.CONFIG_GROUPS.find((group) => group.id === 'heartbeat');
 const chatMeta = (key) => chatGroup.fields.find((meta) => meta.key === key);
 page.config = { fields: [
   { key: 'TG_ALLOWED', kind: 'text', value: '@her', fromWorker: '' },
@@ -205,17 +225,20 @@ assert.equal(page.textInEffect(chatMeta('HEARTBEAT')), '3', 'three times unless 
 assert.deepEqual(Array.from(page.picksFor(chatMeta('HEARTBEAT'))), ['0', '1', '3', '5', '10']);
 assert.equal(page.inEffect(chatMeta('ALARMS')), 'off');
 page.alarms = { on: false, limit: 10, alarms: [{ id: 'a_1', note: '叫她起床', next: '10-25 周日 09:00', when: '每天 09:00' }] };
-assert.equal(page.sectionSummary('chat'), '@her · 不主动找');
+assert.equal(page.sectionSummary('heartbeat'), '不主动找 · 心跳 3 次');
 page.config.fields[3].value = 'on';
-assert.equal(page.sectionSummary('chat'), '@her · 不主动找 · 闹钟 1 个');
+assert.equal(page.sectionSummary('heartbeat'), '不主动找 · 心跳 3 次 · 闹钟 1 个');
+page.config.fields[2].value = '0';
+assert.equal(page.sectionSummary('heartbeat'), '不主动找 · 心跳关 · 闹钟 1 个');
+page.config.fields[2].value = '';
 const calls = [];
 page.api = async (path, options) => { calls.push([path, options && options.body]); return { on: true, limit: 10, alarms: [] }; };
 page.notify = () => {};
 await page.removeAlarm(page.alarms.alarms[0]);
 assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/web/alarms/remove', { id: 'a_1' }]]);
 assert.equal(page.alarms.alarms.length, 0);
-assert.ok(html.includes('x-if="group.id === \'chat\'"') && html.includes('removeAlarm(alarm)'));
-console.log('PASS heartbeat three times and alarms off by default; alarms counted in the 聊天 row and deleted from the settings page');
+assert.ok(html.includes('x-if="group.id === \'heartbeat\'"') && html.includes('removeAlarm(alarm)'));
+console.log('PASS heartbeat three times and alarms off by default; alarms counted in the 心跳和闹钟 row and deleted from the settings page');
 // Letter settings: one visible threshold, two conditions, and a fixed recent-chat budget instead of a second knob.
 const letterPage = vm.runInContext('resident()', context);
 const thinkingGroup = letterPage.CONFIG_GROUPS.find((group) => group.id === 'thinking');

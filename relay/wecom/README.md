@@ -1,6 +1,6 @@
 # 企业微信转发机（relay/wecom）
 
-**English summary**: WeCom only accepts API calls from an app's trusted IPs, and a Cloudflare Worker has no fixed address. This small relay runs on a Linux machine that has one and passes the resident's calls on to `qyapi.weixin.qq.com`. It listens on `127.0.0.1` only and is reached through a Cloudflare Tunnel, so no port is opened. Every request needs the relay key. Install with `sudo ./install.sh` (add `--media` for voice messages and video stickers, which installs ffmpeg). Only needed if you use the resident's WeCom door; the web door and Telegram do not need it.
+**English summary**: WeCom only accepts API calls from an app's trusted IPs, and a Cloudflare Worker has no fixed address. This small relay runs on a Linux machine that has one and passes the resident's calls on to `qyapi.weixin.qq.com`. It listens on `127.0.0.1` only and is reached through a Cloudflare Tunnel, so no port is opened. Every request needs the relay key. Install with `sudo ./install.sh` (add `--media` for voice messages and Telegram's WebM/WebP stickers, which installs ffmpeg). Only needed if you use the resident's WeCom door; the web door and Telegram do not need it.
 
 ---
 
@@ -12,7 +12,7 @@
 - **要钥匙**：每个请求都要带转发钥匙，没带或不对一律 403。
 - **只转企业微信**：只转 `/cgi-bin/…` 到 `qyapi.weixin.qq.com`，别的地址一律 404，不能拿来当通用代理。
 - **不存企业微信的 key**：Secret、Token、EncodingAESKey 都在住户那边，这里只经手一次性的 access_token，日志里也不记。
-- **转码选装**：语音条和动态表情要 ffmpeg，装的时候加 `--media` 才有；不装也能聊文字、发图片。
+- **转码选装**：语音条和 Telegram 包里的 WebM、WebP 贴纸要 ffmpeg，装的时候加 `--media` 才有；不装也能聊文字、发图片。
 - 只用 Python 3.8+ 自带的库，一个文件，一个 systemd 服务。
 
 ## 装
@@ -23,7 +23,7 @@
 git clone https://github.com/wusaki0723/Aelios-resident.git
 cd Aelios-resident/relay/wecom
 sudo ./install.sh            # 文字和图片
-sudo ./install.sh --media    # 再加语音条和动态表情（会装 ffmpeg 和 libavcodec-extra）
+sudo ./install.sh --media    # 再加语音条和贴纸转码（会装 ffmpeg 和 libavcodec-extra）
 ```
 
 装完它会自己试一次，打印「what it can do」和接下来三步。之后随时可以再跑一次改选项，钥匙不变；想换钥匙加 `--new-key`（换完要去住户设置页填新的）。
@@ -45,7 +45,9 @@ sudo ./install.sh --media    # 再加语音条和动态表情（会装 ffmpeg �
 | `gif` | Telegram 包里的动态贴纸（WebM） |
 | `png` | Telegram 包里的静态贴纸（WebP） |
 
-没开的话：住户该回语音时改回文字；你发的语音条它可能听不了；WebM、WebP 贴纸不发，GIF、PNG、JPG 的和它自己画的照发。
+没开的话：住户该回语音时改回文字；你发的语音条它可能听不了；WebM、WebP 贴纸不发，PNG、JPG 的和它自己画的照发。
+
+表情包在企业微信上默认不发：企业微信只认 JPG 和 PNG，GIF 只显示第一帧。想发的话在住户设置页「IM」里打开「在企业微信上发表情包」。
 
 语音条要 ffmpeg 里有 `libopencore_amrnb`。Debian、Ubuntu 上 `libavcodec-extra` 带着它，装的脚本会一起装；没有的话会提醒你，这时语音回复改成文字。
 
@@ -68,7 +70,7 @@ curl -s https://wecom-relay.<你的域名>/ping -H "x-relay-key: <转发钥匙>"
 
 ## 填进住户
 
-住户网页门 → 齿轮 →「企业微信」：
+住户网页门 → 齿轮 →「IM」，企业微信那部分：
 
 - **转发地址**：`https://wecom-relay.<你的域名>`
 - **转发钥匙**：在转发机上看，复制过去，别发在聊天里：
@@ -87,7 +89,7 @@ curl -s https://wecom-relay.<你的域名>/ping -H "x-relay-key: <转发钥匙>"
 curl -s https://ifconfig.me
 ```
 
-企业微信要先在同一个应用里设好「接收消息」的 URL，才让填可信 IP。没填或填错时，住户那边会报 60020，设置页「企业微信」一栏会写出来。
+企业微信要先在同一个应用里设好「接收消息」的 URL，才让填可信 IP。没填或填错时，住户那边会报 60020，设置页「IM」里企业微信那部分会写出来。
 
 ## 查问题
 

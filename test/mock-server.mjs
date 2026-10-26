@@ -12,6 +12,8 @@ const WECOM_RELAY_KEY = "relay-key-for-tests-0123456789abcdef";
 const WECOM_CORP_ID = "wwtest0001";
 const WECOM_SECRET = "wecom-secret";
 let wecomTokens = 0;
+// Where each bot's webhook points (setWebhook / deleteWebhook), by token; a token starting "bad" is one Telegram refuses.
+const webhooks = new Map();
 
 // Other MCP servers: /ext and /ext2 are open, /keyed wants x-api-key: k1, /oauth wants a token from its sign-in.
 // echo's descriptions are long on purpose, and one of its parameters is called title, which must survive trimming.
@@ -128,6 +130,7 @@ const server = http.createServer(async (req, res) => {
     log.length = 0;
     faults = { ingestFailures: 0, letterModel: "ok" };
     wecomTokens = 0;
+    webhooks.clear();
     return reply({ ok: true });
   }
   if (url.pathname === "/__faults" && req.method === "POST") {
@@ -157,10 +160,12 @@ const server = http.createServer(async (req, res) => {
     return res.end(file[1].includes("cache-large-photo") ? Buffer.concat([jpeg, Buffer.alloc(40 * 1024)]) : jpeg);
   }
 
-  const tg = url.pathname.match(/^\/bot[^/]+\/(\w+)$/);
+  const tg = url.pathname.match(/^\/bot([^/]+)\/(\w+)$/);
   if (tg) {
-    const method = tg[1];
-    log.push({ kind: `tg.${method}`, body: json });
+    const token = decodeURIComponent(tg[1]);
+    const method = tg[2];
+    log.push({ kind: `tg.${method}`, body: json, token });
+    if (token.includes(":bad")) return reply({ ok: false, error_code: 401, description: "Unauthorized" }, 401);
     const chat = { id: Number(json?.chat_id ?? 42), type: "private" };
     const message = () => ({ message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, text: json?.text });
     switch (method) {
@@ -197,8 +202,15 @@ const server = http.createServer(async (req, res) => {
       }
       case "sendVoice":
         return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, voice: { file_id: `up-voice-${nextMessageId}`, duration: Number(json?.duration ?? 0) } } });
-      case "sendChatAction":
       case "setWebhook":
+        webhooks.set(token, String(json?.url ?? ""));
+        return reply({ ok: true, result: true });
+      case "deleteWebhook":
+        webhooks.delete(token);
+        return reply({ ok: true, result: true });
+      case "getWebhookInfo":
+        return reply({ ok: true, result: { url: webhooks.get(token) ?? "", pending_update_count: 0 } });
+      case "sendChatAction":
       case "setMyCommands":
       case "setChatMenuButton":
         return reply({ ok: true, result: true });

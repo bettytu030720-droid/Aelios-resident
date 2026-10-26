@@ -1,6 +1,7 @@
 // Settings changed on the web door instead of in Cloudflare's dashboard. A value saved there wins; an empty
 // one falls back to the Worker's variable or secret of the same name, then to the code's default (README).
-// Only what is needed before the door opens stays in Cloudflare: TG_BOT_TOKEN, TG_WEBHOOK_SECRET, WEB_KEY.
+// Only the web door's own key, WEB_KEY, has to be in Cloudflare. A bot token saved here is connected from here, and
+// the Telegram webhook secret it needs is made by the resident and kept with these settings, never shown.
 
 import { fireUrlProblem } from "./cloud-tasks";
 import { MAX_HEARTBEATS } from "./prompts";
@@ -51,6 +52,7 @@ export const FIELDS: readonly Field[] = [
   { key: "AELIOS_API_KEY", kind: "secret" },
   { key: "AELIOS_NAMESPACE", kind: "text" },
   { key: "AELIOS_IDENTITY", kind: "text" },
+  { key: "TG_BOT_TOKEN", kind: "secret", check: (value) => (/^\d{5,16}:[A-Za-z0-9_-]{30,}$/.test(value) ? null : "bot token 长这样：123456789:AA…，从 @BotFather 那里复制") },
   { key: "TG_ALLOWED", kind: "text" },
   // WeCom (wecom.ts): the app's keys, the relay, and who may talk to it.
   { key: "WECOM_CORP_ID", kind: "text", check: (value) => (/^w[wx][0-9a-z]{6,30}$/i.test(value) ? null : "企业 ID 是 ww 开头的一串（老企业是 wx）") },
@@ -61,6 +63,7 @@ export const FIELDS: readonly Field[] = [
   { key: "WECOM_RELAY_URL", kind: "text", check: address },
   { key: "WECOM_RELAY_KEY", kind: "secret", check: (value) => (value.length >= 32 ? null : "转发钥匙至少 32 位，用转发机上 install.sh 生成的那把") },
   { key: "WECOM_ALLOWED", kind: "text" },
+  { key: "WECOM_STICKERS", kind: "choice", choices: ["on", "off"] },
   { key: "TIME_ZONE", kind: "text", check: timeZone },
   // Checked by arming it (Resident.webSetConfig).
   { key: "CHECKIN_SCHEDULE", kind: "text" },
@@ -122,8 +125,8 @@ export function cleaned(field: Field, raw: string): { value: string } | { error:
 }
 
 /**
- * The settings the code reads: saved ones over the Worker's env. Everything else (the AI and BROWSER bindings, the
- * three secrets that stay in Cloudflare) is read from env itself, whether or not the runtime lists it as a property.
+ * The settings the code reads: saved ones over the Worker's env. Everything else (the AI and BROWSER bindings,
+ * WEB_KEY) is read from env itself, whether or not the runtime lists it as a property.
  */
 export function withSaved(env: Env, saved: Record<string, string>): Env {
   return new Proxy(env, {

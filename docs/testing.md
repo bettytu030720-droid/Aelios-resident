@@ -31,7 +31,8 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `sites` | 带钥匙的网站 |
 | `heartbeat` | 未达写信门槛时仍走心跳，夜里别问的时段里不问（带 `--var LETTER_IDLE_MINUTES:0.05 --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05`） |
 | `alarms` | 它自己定的闹钟（带 `--var ALARM_MINUTE_SECONDS:0.05`，一分钟只算 3 秒） |
-| `wecom` | 企业微信门：没接时 404、填错的值、只填三项就能过地址验证、陌生人被挡并显示、验签和解密、回复和去重、长回复按 2048 字节拆、token 过期重拿、图片、表情包、语音条来回、转发机不转码时改发文字、钥匙不对时报错、主动消息和云端回报发到最后说话的那扇门 |
+| `wecom` | 企业微信门：没接时 404、填错的值、只填三项就能过地址验证、陌生人被挡并显示、验签和解密、回复和去重、长回复按 2048 字节拆、token 过期重拿、图片、表情包默认不发和打开后发、语音条来回、转发机不转码时改发文字、钥匙不对时报错、主动消息和云端回报发到最后说话的那扇门 |
+| `telegram` | bot token 填在设置页（起 Worker 时带 `--var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:`，把测试配置里的去掉）：没 token 时一律 401、填错格式被拒、存好后自己接上并生成暗号、重启后用新 token 回话和命令、Mini App 认新 token、「重新接一次」、Telegram 不认的 token 显示在页上、清掉后门关上 |
 
 不用起 Worker 的，直接 `node test/<名字>.mjs`：
 
