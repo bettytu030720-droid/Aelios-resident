@@ -18,7 +18,10 @@
 //   heartbeat  going quiet while the chat is short (start wrangler with --var LETTER_IDLE_MINUTES:0.05
 //              --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05)
 //   alarms   alarms the resident sets itself (start wrangler with --var ALARM_MINUTE_SECONDS:0.05)
+//   wecom    the WeCom door: its address check, pushes opened and checked, replies, stickers and voice messages
+//            through the fake relay, a relay without --media, a wrong relay key, out-of-turn messages
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import http from "node:http";
 import { GIF, PNG, WEBM, WEBP, zip } from "./zip.mjs";
 
@@ -27,7 +30,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -1729,6 +1732,293 @@ if (phase === "alarms") {
     await sleep(1500);
     assert.deepEqual((await sent()).slice(before), []);
     assert.deepEqual(await say("闹钟工具有哪些"), ["没有闹钟工具。"]);
+  });
+}
+
+if (phase === "wecom") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const CORP = "wwtest0001";
+  const AGENT = "1000002";
+  const TOKEN = "wecomTestToken42";
+  const AES = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+  const RELAY_KEY = "relay-key-for-tests-0123456789abcdef";
+  const set = async (settings) => {
+    for (const [key, text] of Object.entries(settings)) {
+      const response = await web("/web/config", KEY, { key, text });
+      assert.equal(response.status, 200, `${key}: ${await response.clone().text()}`);
+    }
+  };
+  const state = async () => (await (await web("/web/config", KEY)).json()).wecom;
+  const ofKind = async (kind) => (await log()).filter((e) => e.kind === kind);
+  const wecomSent = async () => ofKind("wecom.send");
+  const texts = async () => (await wecomSent()).filter((e) => e.body.msgtype === "text").map((e) => e.body.text.content);
+  const waitFor = async (read, before, count, timeoutMs = 20000) => {
+    const start = Date.now();
+    for (;;) {
+      const all = await read();
+      if (all.length >= before + count) return all.slice(before);
+      if (Date.now() - start > timeoutMs) throw new Error(`timed out: wanted ${count} more, have ${all.length - before}: ${JSON.stringify(all.slice(before))}`);
+      await sleep(200);
+    }
+  };
+  // What WeCom does: AES-256-CBC with the EncodingAESKey, 16 random bytes, the length, the XML, the CorpID, padded to 32.
+  const encrypt = (text, corp = CORP) => {
+    const key = Buffer.from(`${AES}=`, "base64");
+    const message = Buffer.from(text);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(message.length);
+    let plain = Buffer.concat([crypto.randomBytes(16), length, message, Buffer.from(corp)]);
+    const pad = 32 - (plain.length % 32);
+    plain = Buffer.concat([plain, Buffer.alloc(pad, pad)]);
+    const cipher = crypto.createCipheriv("aes-256-cbc", key, key.subarray(0, 16));
+    cipher.setAutoPadding(false);
+    return Buffer.concat([cipher.update(plain), cipher.final()]).toString("base64");
+  };
+  const sign = (timestamp, nonce, encrypted, token = TOKEN) =>
+    crypto.createHash("sha1").update([token, timestamp, nonce, encrypted].sort().join("")).digest("hex");
+  const signed = (encrypted, { token, timestamp = Math.floor(Date.now() / 1000) } = {}) => {
+    const nonce = `n${Math.floor(Math.random() * 1e9)}`;
+    return `msg_signature=${sign(String(timestamp), nonce, encrypted, token)}&timestamp=${timestamp}&nonce=${nonce}`;
+  };
+  let msgId = 7000000000000000;
+  const push = async (fields, { user = "HerUser", token, timestamp, corp } = {}) => {
+    const all = { ToUserName: CORP, FromUserName: user, CreateTime: String(Math.floor(Date.now() / 1000)), AgentID: AGENT, MsgId: String(msgId++), ...fields };
+    const xml = `<xml>${Object.entries(all).map(([k, v]) => `<${k}><![CDATA[${v}]]></${k}>`).join("")}</xml>`;
+    const encrypted = encrypt(xml, corp);
+    const response = await fetch(`${WORKER}/messengers/wecom/webhook?${signed(encrypted, { token, timestamp })}`, {
+      method: "POST",
+      headers: { "content-type": "text/xml" },
+      body: `<xml><ToUserName><![CDATA[${CORP}]]></ToUserName><Encrypt><![CDATA[${encrypted}]]></Encrypt><AgentID><![CDATA[${AGENT}]]></AgentID></xml>`
+    });
+    return { status: response.status, body: await response.text(), fields: all };
+  };
+  const verify = async (echo, options) => {
+    const encrypted = encrypt(echo);
+    const response = await fetch(`${WORKER}/messengers/wecom/webhook?${signed(encrypted, options)}&echostr=${encodeURIComponent(encrypted)}`);
+    return { status: response.status, body: await response.text() };
+  };
+
+  await step("off until it is set up: the address answers nothing, and the settings page says it is not connected", async () => {
+    assert.equal((await state()).gap, "off");
+    assert.equal((await verify("123")).status, 404);
+    assert.equal((await push({ MsgType: "text", Content: "hi" })).status, 404);
+    assert.equal((await ofKind("wecom.send")).length, 0);
+  });
+
+  await step("bad values are not saved", async () => {
+    for (const [key, text, error] of [
+      ["WECOM_CORP_ID", "corp", /ww 开头/],
+      ["WECOM_AGENT_ID", "12a", /数字/],
+      ["WECOM_AES_KEY", "short", /43 位/],
+      ["WECOM_RELAY_KEY", "short", /32 位/],
+      ["WECOM_RELAY_URL", "ftp://x", /https/]
+    ]) {
+      const response = await web("/web/config", KEY, { key, text });
+      assert.equal(response.status, 400, key);
+      assert.match((await response.json()).error, error);
+    }
+  });
+
+  await step("with the CorpID, Token and EncodingAESKey saved, WeCom's check of the address passes (before the relay works)", async () => {
+    await set({ WECOM_CORP_ID: CORP, WECOM_TOKEN: TOKEN, WECOM_AES_KEY: AES });
+    assert.equal((await state()).gap, "WECOM_AGENT_ID");
+    const ok = await verify("1616140317555161061");
+    assert.deepEqual(ok, { status: 200, body: "1616140317555161061" });
+    assert.equal((await verify("x", { token: "wrongToken" })).status, 403, "a wrong signature");
+    assert.equal((await verify("x", { timestamp: Math.floor(Date.now() / 1000) - 2 * 3600 })).status, 403, "an old one");
+    const config = JSON.stringify(await (await web("/web/config", KEY)).json());
+    assert.ok(!config.includes(TOKEN) && !config.includes(AES), "the secrets are not sent back");
+  });
+
+  await step("someone not let in gets no answer, and the settings page shows who it was", async () => {
+    assert.equal((await push({ MsgType: "text", Content: "你好" })).status, 200);
+    await sleep(1500);
+    assert.equal((await wecomSent()).length, 0);
+    assert.equal((await state()).refused?.user, "HerUser");
+  });
+
+  await step("a push that is not signed with her Token, or not for her enterprise, is refused", async () => {
+    assert.equal((await push({ MsgType: "text", Content: "x" }, { token: "otherToken" })).status, 403);
+    assert.equal((await push({ MsgType: "text", Content: "x" }, { corp: "wwsomeoneelse" })).status, 403);
+  });
+
+  await step("filled in, the relay is asked what it can do and she is let in (her UserID in any case)", async () => {
+    await set({ WECOM_AGENT_ID: AGENT, WECOM_SECRET: "wecom-secret", WECOM_RELAY_URL: "http://127.0.0.1:9999/wecom-relay", WECOM_RELAY_KEY: RELAY_KEY, WECOM_ALLOWED: "heruser" });
+    const now = await state();
+    assert.equal(now.gap, null);
+    assert.deepEqual(now.relay, { amr: true, mp3: true, gif: true, png: true });
+    assert.deepEqual(now.allowed, ["heruser"]);
+    assert.equal(now.refused, null, "no longer shut out");
+  });
+
+  let first;
+  await step("a message gets two text messages back, with the time stamp the model saw, sent through the relay", async () => {
+    const before = (await wecomSent()).length;
+    first = await push({ MsgType: "text", Content: "你好" });
+    assert.deepEqual([first.status, first.body], [200, ""]);
+    const out = await waitFor(wecomSent, before, 2);
+    assert.match(out[0].body.text.content, /^收到：\[\d\d-\d\d 周. \d\d:\d\d\] 你好$/);
+    assert.equal(out[1].body.text.content, "这是第二个气泡。");
+    assert.deepEqual([out[0].body.touser, out[0].body.agentid, out[0].body.msgtype], ["HerUser", 1000002, "text"]);
+    assert.equal((await ofKind("wecom.gettoken")).length, 1, "one access token, kept");
+  });
+
+  await step("the same push again (WeCom retries when slow) is not answered twice", async () => {
+    const before = (await wecomSent()).length;
+    await push({ MsgType: "text", Content: "你好", MsgId: first.fields.MsgId });
+    await sleep(2500);
+    assert.equal((await wecomSent()).length, before);
+  });
+
+  await step("the web page shows her WeCom message as from WeCom", async () => {
+    const lines = (await (await web("/web/messages", KEY)).json()).data;
+    const mine = lines.findLast((line) => line.role === "user");
+    assert.equal(mine.via, "wecom");
+  });
+
+  await step("an expired access token is replaced and the message still goes out", async () => {
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ wecomExpire: true }) });
+    const before = (await wecomSent()).length;
+    await push({ MsgType: "text", Content: "过期了吗" });
+    const out = await waitFor(wecomSent, before, 2);
+    assert.match(out[0].body.text.content, /过期了吗/);
+    assert.equal((await ofKind("wecom.gettoken")).length, 2);
+  });
+
+  await step("a long reply is cut into messages of at most 2048 bytes, nothing lost", async () => {
+    const long = "长".repeat(1500);
+    const before = (await texts()).length;
+    await push({ MsgType: "text", Content: long });
+    const out = await waitFor(texts, before, 4);
+    const reply = out.slice(0, -1);
+    assert.ok(reply.length >= 3, `${reply.length} pieces`);
+    assert.ok(reply.every((text) => Buffer.byteLength(text) <= 2048));
+    assert.equal(reply.join("").replace(/^收到：\[[^\]]+\] /, ""), long);
+  });
+
+  await step("/status is answered without the model, with a line for WeCom", async () => {
+    const before = (await texts()).length;
+    await push({ MsgType: "text", Content: "/status" });
+    const [status] = await waitFor(texts, before, 1);
+    assert.match(status, /企业微信：放行 heruser；转发机能转语音/);
+  });
+
+  await step("a picture she sends comes down through the relay and reaches the model as a picture (PNG, as it is)", async () => {
+    const before = (await texts()).length;
+    await push({ MsgType: "image", MediaId: "pic-1", PicUrl: "http://example.com/x.png" });
+    await sleep(500);
+    await push({ MsgType: "text", Content: "看图" });
+    const out = await waitFor(texts, before, 1);
+    assert.match(out.join("\n"), /看到 1 张图/);
+    assert.ok((await ofKind("wecom.get")).some((e) => e.id === "pic-1"));
+  });
+
+  await step("a sticker goes out after the words, as a picture uploaded to WeCom", async () => {
+    const body = zip([
+      { name: "pack.json", data: JSON.stringify({ format: "resident-stickers/1", name: "Test", stickers: [{ id: "wave", file: "wave.gif", emoji: "👋", when: "Say hi.", telegram: "wave.webm" }] }) },
+      { name: "wave.gif", data: GIF },
+      { name: "wave.webm", data: WEBM }
+    ]);
+    const imported = await fetch(`${WORKER}/web/stickers/import?name=test.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body });
+    assert.equal(imported.status, 200, await imported.clone().text());
+    const before = (await wecomSent()).length;
+    await push({ MsgType: "text", Content: "发表情" });
+    const out = await waitFor(wecomSent, before, 1);
+    const last = out.at(-1);
+    await sleep(1500);
+    const all = (await wecomSent()).slice(before);
+    const image = all.find((e) => e.body.msgtype === "image");
+    assert.ok(image, JSON.stringify(all.map((e) => e.body.msgtype)) + JSON.stringify(last.body));
+    const upload = (await ofKind("wecom.upload")).at(-1);
+    assert.deepEqual([upload.type, upload.media.type, upload.media.file, upload.filelength], ["image", "image/gif", "sticker.gif", true]);
+    assert.equal(image.body.image.media_id.startsWith("wecom-media-"), true);
+    assert.equal(all.at(-1).body.msgtype, "image", "after the words");
+  });
+
+  await step("with a voice set up, her voice message (AMR) is made MP3 by the relay, heard, and answered with a WeCom voice message (AMR)", async () => {
+    await set({ VOICE_BASE_URL: "http://127.0.0.1:9999/voice", VOICE_API_KEY: "test-voice-key", VOICE_PROVIDER: "elevenlabs", VOICE_ID: "voice-123" });
+    const before = (await wecomSent()).length;
+    await push({ MsgType: "voice", MediaId: "voice-1", Format: "amr" });
+    const out = await waitFor(wecomSent, before, 1);
+    await sleep(1500);
+    const all = (await wecomSent()).slice(before);
+    assert.deepEqual(all.map((e) => e.body.msgtype), ["voice"], "the reply is the voice message only: " + JSON.stringify(out.map((e) => e.body)));
+    const converts = await ofKind("wecom.convert");
+    assert.deepEqual(converts.slice(-2).map((e) => [e.to, e.head.slice(0, 5)]), [["mp3", "#!AMR"], ["amr", "ID3\u0004\u0000"]]);
+    const stt = (await ofKind("voice")).find((e) => e.endpoint === "v1/speech-to-text" && e.body?.file?.type === "audio/mpeg");
+    assert.ok(stt, "heard as MP3");
+    const tts = (await ofKind("voice")).at(-1);
+    assert.match(tts.body.text, /企微里说的话/);
+    const upload = (await ofKind("wecom.upload")).at(-1);
+    assert.deepEqual([upload.type, upload.media.type, upload.media.file, upload.media.head.slice(0, 5)], ["voice", "audio/amr", "voice.amr", "#!AMR"]);
+  });
+
+  await step("send_voice sends to WeCom when that is where she last wrote", async () => {
+    const before = (await wecomSent()).length;
+    await push({ MsgType: "text", Content: "发条语音" });
+    const out = await waitFor(wecomSent, before, 1);
+    await sleep(1500);
+    assert.deepEqual((await wecomSent()).slice(before).map((e) => e.body.msgtype), ["voice"], JSON.stringify(out.map((e) => e.body)));
+  });
+
+  await step("a relay installed without --media: voice replies go out as text, and the settings page says why", async () => {
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ wecomMedia: false }) });
+    // Saving a WeCom setting asks the relay again.
+    await set({ WECOM_RELAY_URL: "http://127.0.0.1:9999/wecom-relay/" });
+    assert.equal((await state()).relay.amr, false);
+    const before = (await wecomSent()).length;
+    await push({ MsgType: "voice", MediaId: "voice-2", Format: "amr" });
+    const out = await waitFor(wecomSent, before, 2);
+    assert.deepEqual(out.map((e) => e.body.msgtype), ["text", "text"]);
+    assert.match(out[0].body.text.content, /\[voice, could not be heard\]/);
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ wecomMedia: true }) });
+    await set({ VOICE_PROVIDER: "off" });
+  });
+
+  await step("a wrong relay key: nothing goes out, and the settings page and /status say why", async () => {
+    await set({ WECOM_RELAY_KEY: "x".repeat(40) });
+    await push({ MsgType: "text", Content: "钥匙错了" });
+    await sleep(3000);
+    const now = await state();
+    assert.equal(now.relay, null);
+    assert.match(now.error?.reason ?? "", /钥匙/);
+    assert.ok((await ofKind("wecom.refused")).length > 0);
+    await set({ WECOM_RELAY_KEY: RELAY_KEY });
+    assert.equal((await state()).error, null, "cleared once the setting changes");
+  });
+
+  await step("a cloud task's result, outside any turn, goes to WeCom, where she last wrote", async () => {
+    await set({ CLOUD_TASKS: "on", CLOUD_TASK_URL: "https://api.anthropic.com/v1/claude_code/routines/trig_testtask01/fire", CLOUD_TASK_TOKEN: "good-token" });
+    const before = (await texts()).length;
+    await push({ MsgType: "text", Content: "派活" });
+    await waitFor(texts, before, 1);
+    const fire = (await ofKind("routine.fire")).at(-1);
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    assert.ok(id && code);
+    await sleep(1500);
+    const after = (await texts()).length;
+    const done = await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code }, body: JSON.stringify({ status: "done", summary: "改好了。" }) });
+    assert.equal(done.status, 200);
+    const out = await waitFor(texts, after, 1);
+    assert.match(out.join("\n"), /云端回来了/);
+  });
+
+  await step("Telegram still works next to it, and once she writes there, what goes out of turn goes there", async () => {
+    const before = (await sent()).length;
+    await post("TG 也在");
+    const out = await waitForSends(before, 2);
+    assert.match(out[0], /TG 也在/);
+    await post("派活");
+    await waitForSends(before + 2, 1);
+    const fire = (await ofKind("routine.fire")).at(-1);
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    await sleep(1500);
+    const tg = (await sent()).length;
+    const wecom = (await texts()).length;
+    await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code }, body: JSON.stringify({ status: "done", summary: "又改好了。" }) });
+    assert.match((await waitForSends(tg, 1)).join("\n"), /云端回来了/);
+    assert.equal((await texts()).length, wecom, "not to WeCom");
   });
 }
 

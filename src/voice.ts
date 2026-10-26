@@ -145,6 +145,24 @@ export function hearing(env: Env): Hear | null {
   };
 }
 
+/** What a recording is, from its first bytes; null when it is none of these. */
+export function audioTypeOf(bytes: Uint8Array): string | null {
+  const ascii = (from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
+  if (ascii(0, 5) === "#!AMR") return "audio/amr";
+  if (ascii(0, 3) === "ID3" || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return "audio/mpeg";
+  if (ascii(0, 4) === "OggS") return "audio/ogg";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "audio/wav";
+  return null;
+}
+
+/**
+ * Hearing that goes by what the recording is, not what the message said it was: a WeCom voice message is AMR, but
+ * the relay may have made it MP3 on the way down.
+ */
+export function byWhatItIs(hear: Hear | null): Hear | null {
+  return hear && ((audio, mediaType) => hear(audio, audioTypeOf(audio) ?? mediaType));
+}
+
 function isVoice(attachment: MessengerAttachment): boolean {
   return Boolean(attachment.mediaType?.startsWith("audio/") && attachment.fetchMetadata?.fileId) && (attachment.size ?? 0) <= HEAR_MAX_BYTES;
 }

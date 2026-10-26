@@ -1,10 +1,17 @@
-// Stands in for the Telegram Bot API, Aelios and other MCP servers during local tests. Records every call.
+// Stands in for the Telegram Bot API, Aelios, other MCP servers and the WeCom relay during local tests. Records every
+// call.
 import http from "node:http";
+import { GIF, PNG } from "./zip.mjs";
 
 const log = [];
 let nextMessageId = 1000;
 let faults = { ingestFailures: 0, letterModel: "ok" };
 const ORIGIN = "http://127.0.0.1:9999";
+// The WeCom relay's key, and the app the fake WeCom knows.
+const WECOM_RELAY_KEY = "relay-key-for-tests-0123456789abcdef";
+const WECOM_CORP_ID = "wwtest0001";
+const WECOM_SECRET = "wecom-secret";
+let wecomTokens = 0;
 
 // Other MCP servers: /ext and /ext2 are open, /keyed wants x-api-key: k1, /oauth wants a token from its sign-in.
 // echo's descriptions are long on purpose, and one of its parameters is called title, which must survive trimming.
@@ -102,7 +109,9 @@ const server = http.createServer(async (req, res) => {
   }
   // A multipart upload (sendSticker and the like): its fields, and for each file its name, type and first bytes.
   if (!json && /multipart\/form-data/.test(req.headers["content-type"] ?? "")) {
-    const form = await new Response(raw, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    const parse = (bytes) => new Response(bytes, { headers: { "content-type": req.headers["content-type"] } }).formData();
+    // WeCom's upload names the file's length in its part (filelength=…), which Node's parser does not take.
+    const form = await parse(raw).catch(() => parse(Buffer.from(raw.toString("latin1").replace(/; ?filelength=\d+/g, ""), "latin1")));
     json = { multipart: true };
     for (const [key, value] of form) {
       json[key] = typeof value === "string" ? value : { file: value.name, type: value.type, size: value.size, head: Buffer.from(await value.arrayBuffer()).subarray(0, 6).toString("latin1") };
@@ -118,6 +127,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/__reset") {
     log.length = 0;
     faults = { ingestFailures: 0, letterModel: "ok" };
+    wecomTokens = 0;
     return reply({ ok: true });
   }
   if (url.pathname === "/__faults" && req.method === "POST") {
@@ -197,6 +207,63 @@ const server = http.createServer(async (req, res) => {
         return reply({ ok: false, error_code: 404, description: "Not Found: method not found" }, 404);
     }
   }
+  // The WeCom relay (relay/wecom/) with WeCom behind it, at /wecom-relay. It wants the relay key, and WeCom the CorpID
+  // and Secret above. faults.wecomMedia false stands for a relay installed without --media; faults.wecomExpire makes
+  // the next message/send say the access token expired. MediaIds she "sent": voice-… is AMR, pic-… a PNG.
+  const relay = url.pathname.match(/^\/wecom-relay(\/.*)$/);
+  if (relay) {
+    const path = relay[1];
+    const token = url.searchParams.get("access_token");
+    if (req.headers["x-relay-key"] !== WECOM_RELAY_KEY) {
+      log.push({ kind: "wecom.refused", path });
+      return reply({ error: "forbidden" }, 403);
+    }
+    const media = faults.wecomMedia !== false;
+    if (path === "/ping") return reply({ ok: true, media: { amr: media, mp3: media, gif: media, png: media } });
+    const convert = path.match(/^\/media\/(amr|mp3|gif|png)$/);
+    if (convert) {
+      if (!media) return reply({ error: "this relay does not convert" }, 501);
+      log.push({ kind: "wecom.convert", to: convert[1], head: raw.subarray(0, 6).toString("latin1"), size: raw.length });
+      const out = { amr: Buffer.concat([Buffer.from("#!AMR\n"), Buffer.alloc(64)]), mp3: MP3, gif: GIF, png: PNG }[convert[1]];
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      return res.end(out);
+    }
+    if (path === "/cgi-bin/gettoken") {
+      log.push({ kind: "wecom.gettoken" });
+      if (url.searchParams.get("corpid") !== WECOM_CORP_ID || url.searchParams.get("corpsecret") !== WECOM_SECRET) return reply({ errcode: 40001, errmsg: "invalid credential" });
+      wecomTokens += 1;
+      return reply({ errcode: 0, errmsg: "ok", access_token: `wecom-token-${wecomTokens}`, expires_in: 7200 });
+    }
+    if (token !== `wecom-token-${wecomTokens}`) return reply({ errcode: 40014, errmsg: "invalid access_token" });
+    if (path === "/cgi-bin/message/send") {
+      if (faults.wecomExpire) {
+        faults.wecomExpire = false;
+        return reply({ errcode: 42001, errmsg: "access_token expired" });
+      }
+      log.push({ kind: "wecom.send", body: json });
+      return reply({ errcode: 0, errmsg: "ok", msgid: `wecom-msg-${nextMessageId++}` });
+    }
+    if (path === "/cgi-bin/media/upload") {
+      log.push({ kind: "wecom.upload", type: url.searchParams.get("type"), media: json?.media ?? null, filelength: /filelength=\d+/.test(body) });
+      return reply({ errcode: 0, errmsg: "ok", type: url.searchParams.get("type"), media_id: `wecom-media-${nextMessageId++}` });
+    }
+    if (path === "/cgi-bin/media/get") {
+      const id = url.searchParams.get("media_id") ?? "";
+      log.push({ kind: "wecom.get", id });
+      if (id.startsWith("voice-")) {
+        res.writeHead(200, { "content-type": "audio/amr" });
+        return res.end(Buffer.concat([Buffer.from("#!AMR\n"), Buffer.alloc(64)]));
+      }
+      if (id.startsWith("pic-")) {
+        res.writeHead(200, { "content-type": "image/png" });
+        return res.end(PNG);
+      }
+      return reply({ errcode: 40007, errmsg: "invalid media_id" });
+    }
+    if (path === "/cgi-bin/message/recall") return reply({ errcode: 0, errmsg: "ok" });
+    return reply({ errcode: 404, errmsg: "not found" }, 404);
+  }
+
   // Voice providers, reached through VOICE_BASE_URL=http://127.0.0.1:9999/voice: ElevenLabs Scribe and text to
   // speech, Cartesia, and OpenRouter's speech endpoint. A text with 炸 in it fails, so the reply goes out as text.
   const voice = url.pathname.match(/^\/voice\/(v1\/speech-to-text|v1\/text-to-speech\/[^/]+|tts\/bytes|v1\/audio\/speech)$/);
@@ -205,6 +272,8 @@ const server = http.createServer(async (req, res) => {
     log.push({ kind: "voice", endpoint: voice[1], query: url.search, headers, body: json });
     if (voice[1] === "v1/speech-to-text") {
       if (json?.file?.head?.startsWith("OggS")) return reply({ text: " 今天好累呀 " });
+      // A WeCom voice message, made MP3 by the relay on the way down.
+      if (json?.file?.head?.startsWith("ID3") && json.file.type === "audio/mpeg") return reply({ text: " 企微里说的话 " });
       return reply({ detail: "unreadable audio" }, 422);
     }
     const said = json?.text ?? json?.transcript ?? json?.input ?? "";

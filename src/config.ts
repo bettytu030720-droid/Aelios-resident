@@ -52,6 +52,15 @@ export const FIELDS: readonly Field[] = [
   { key: "AELIOS_NAMESPACE", kind: "text" },
   { key: "AELIOS_IDENTITY", kind: "text" },
   { key: "TG_ALLOWED", kind: "text" },
+  // WeCom (wecom.ts): the app's keys, the relay, and who may talk to it.
+  { key: "WECOM_CORP_ID", kind: "text", check: (value) => (/^w[wx][0-9a-z]{6,30}$/i.test(value) ? null : "企业 ID 是 ww 开头的一串（老企业是 wx）") },
+  { key: "WECOM_AGENT_ID", kind: "text", check: (value) => (/^\d{1,12}$/.test(value) ? null : "AgentId 是一串数字") },
+  { key: "WECOM_SECRET", kind: "secret" },
+  { key: "WECOM_TOKEN", kind: "secret", check: (value) => (/^[A-Za-z0-9]{1,32}$/.test(value) ? null : "Token 是最多 32 位的英文字母和数字") },
+  { key: "WECOM_AES_KEY", kind: "secret", check: (value) => (/^[A-Za-z0-9+/]{43}$/.test(value) ? null : "EncodingAESKey 是 43 位的英文字母和数字") },
+  { key: "WECOM_RELAY_URL", kind: "text", check: address },
+  { key: "WECOM_RELAY_KEY", kind: "secret", check: (value) => (value.length >= 32 ? null : "转发钥匙至少 32 位，用转发机上 install.sh 生成的那把") },
+  { key: "WECOM_ALLOWED", kind: "text" },
   { key: "TIME_ZONE", kind: "text", check: timeZone },
   // Checked by arming it (Resident.webSetConfig).
   { key: "CHECKIN_SCHEDULE", kind: "text" },
