@@ -5,6 +5,7 @@
 import { fireUrlProblem } from "./cloud-tasks";
 import { MAX_HEARTBEATS } from "./prompts";
 import { LETTER_KEEP_TOKENS } from "./fold";
+import { quietHoursProblem } from "./quiet-hours";
 import { VOICE_PROVIDERS, VOICE_REPLIES } from "./voice";
 
 type Kind = "text" | "secret" | "choice";
@@ -55,6 +56,7 @@ export const FIELDS: readonly Field[] = [
   // Checked by arming it (Resident.webSetConfig).
   { key: "CHECKIN_SCHEDULE", kind: "text" },
   { key: "HEARTBEAT", kind: "text", check: times },
+  { key: "QUIET_HOURS", kind: "text", check: quietHoursProblem },
   { key: "ALARMS", kind: "choice", choices: ["on", "off"] },
   { key: "LETTER_IDLE_MINUTES", kind: "text", check: minutes },
   { key: "LETTER_TOKEN_THRESHOLD", kind: "text", check: letterThreshold },

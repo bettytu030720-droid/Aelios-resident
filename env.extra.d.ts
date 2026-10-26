@@ -32,6 +32,8 @@ interface Env {
   // When the quiet time ends but an automatic letter is not due yet, ask whether to reach out, up to this many times
   // in one quiet time: 3 by default, 0 or off never, at most 10.
   HEARTBEAT?: string;
+  // The part of the night the heartbeat does not ask (quiet-hours.ts), in TIME_ZONE: 00:00-08:00 by default, off for none.
+  QUIET_HOURS?: string;
   // Alarms the resident sets for itself (alarms.ts): off (default) or on.
   ALARMS?: string;
   // Local tests only: how many seconds a minute of set_alarm's in_minutes lasts.

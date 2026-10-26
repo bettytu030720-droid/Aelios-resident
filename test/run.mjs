@@ -1605,6 +1605,28 @@ if (phase === "heartbeat") {
     assert.match(out, /心跳：开，没动静 1 分钟、尚不需要写信时问它要不要找你，一段沉默最多 3 次/);
     assert.match(out, /闹钟：关/);
   });
+  await step("quiet hours on the settings page: unreadable ones are refused, and in them no heartbeat is asked", async () => {
+    let response = await web("/web/config", KEY, { key: "QUIET_HOURS", text: "晚上" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /00:00-08:00/);
+    // From this hour (TIME_ZONE in wrangler.test.jsonc) to two hours on, so the whole step runs inside them.
+    const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", hour: "2-digit", hourCycle: "h23" }).format(new Date()));
+    const clock = (h) => `${String(h % 24).padStart(2, "0")}:00`;
+    response = await web("/web/config", KEY, { key: "QUIET_HOURS", text: `${clock(hour)}-${clock(hour + 2)}` });
+    assert.equal(response.status, 200);
+    const mark = (await sent()).length;
+    await post("我睡了，晚安");
+    await waitForSends(mark, 2);
+    const before = (await sent()).length;
+    await sleep(9000);
+    assert.deepEqual((await sent()).slice(before), [], "quiet hours: not asked");
+    assert.equal((await checkinsInAelios(4, 0)).length, 3);
+    const statusMark = (await sent()).length;
+    await post("/status");
+    const [out] = await waitForSends(statusMark, 1);
+    assert.match(out, new RegExp(`一段沉默最多 3 次；夜里 ${hour % 24}:00 到 ${(hour + 2) % 24}:00（Asia/Shanghai）不问`));
+    assert.equal((await web("/web/config", KEY, { key: "QUIET_HOURS", text: "" })).status, 200);
+  });
   await step("the count is set on the settings page: 0 never asks, more than 10 is refused", async () => {
     let response = await web("/web/config", KEY, { key: "HEARTBEAT", text: "11" });
     assert.equal(response.status, 400);

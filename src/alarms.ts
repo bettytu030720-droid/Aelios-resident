@@ -75,7 +75,7 @@ type Local = { year: number; month: number; day: number; hour: number; minute: n
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
-function localOf(at: number, timeZone: string): Local {
+export function localOf(at: number, timeZone: string): Local {
   let format = formatters.get(timeZone);
   if (!format) {
     format = new Intl.DateTimeFormat("en-US", {

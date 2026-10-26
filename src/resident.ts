@@ -40,6 +40,7 @@ import { historyPathComplete } from "./history-path";
 import { readAuxiliaryAnswer, removeAuxiliaryTurn } from "./letter-auxiliary";
 import { fakeModel } from "./fake-model";
 import { ALARM_PREFIX, CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, LETTER_PREFIX, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import { inQuietHours, quietHoursInWords, quietHoursOf } from "./quiet-hours";
 import {
   AlarmStore,
   CANCEL_ALARM_DESCRIPTION,
@@ -2006,6 +2007,12 @@ export class Resident extends Think<Env> {
     // They wrote since: a turn of theirs may be running now, which activeTurn cannot see from a scheduled call.
     // Half the quiet time leaves room for a schedule that runs a moment early.
     if (at - lastFromThem < (minutes * 60_000) / 2) return;
+    // Quiet hours (QUIET_HOURS): not asked, and the rest of this quiet time's count is dropped. By the morning the
+    // cache is long cold, so asking then would cost the whole conversation; their next message starts a new count.
+    if (inQuietHours(quietHoursOf(this.cfg.QUIET_HOURS), at, this.tz)) {
+      console.log("heartbeat: quiet hours, not asking", { n, times });
+      return;
+    }
     const quiet = Math.max(1, Math.round((at - lastFromThem) / 60_000));
     const text = heartbeatPrompt(stamp(new Date(at), this.tz), quiet, n, times);
     const message = { id: `heartbeat_${at}`, role: "user", parts: [{ type: "text", text }], metadata: { at } } as UIMessage;
@@ -2014,6 +2021,12 @@ export class Resident extends Think<Env> {
       const next = await this.schedule(minutes * 60, "heartbeatAgain", { n: n + 1 });
       await this.ctx.storage.put("heartbeat", next.id);
     }
+  }
+
+  /** /status: the quiet hours, in the time zone they are read in. */
+  private quietHoursLine(): string {
+    const hours = quietHoursOf(this.cfg.QUIET_HOURS);
+    return hours ? `夜里 ${quietHoursInWords(hours)}（${this.tz}）不问` : "夜里也问";
   }
 
   async heartbeatAgain(payload: { n: number }): Promise<void> {
@@ -2212,7 +2225,7 @@ export class Resident extends Think<Env> {
       `主动找你：${this.cfg.CHECKIN_SCHEDULE?.trim() || "关"}`,
       `心跳：${
         this.heartbeatOn()
-          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、尚不需要写信时问它要不要找你，一段沉默最多 ${this.heartbeatTimes()} 次`
+          ? `开，没动静 ${Math.max(1, Math.round(idleMinutes(this.cfg)))} 分钟、尚不需要写信时问它要不要找你，一段沉默最多 ${this.heartbeatTimes()} 次；${this.quietHoursLine()}`
           : !this.heartbeatTimes()
             ? "关"
             : "不问（当前模型没有 Anthropic 缓存，或缓存 5 分钟、交接信关着）"
