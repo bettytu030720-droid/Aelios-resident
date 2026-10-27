@@ -254,11 +254,18 @@ async function tokenFromResident(origin, parsed) {
   try { response = await fetch(`${origin}/tasks/${parsed.task}/hands`, { method: "POST", headers: { "x-task-code": parsed.code }, signal: AbortSignal.timeout(30_000) }); }
   catch { throw new Error("住户那边连不上，拿不到 GitHub token"); }
   const body = await response.json().catch(() => null);
-  if (!response.ok || typeof body?.github_token !== "string" || !body.github_token) throw new Error(`住户没给 GitHub token（HTTP ${response.status}）`);
+  if (!response.ok || typeof body?.github_token !== "string" || !body.github_token) throw new Error(`住户没给 GitHub token（HTTP ${response.status}）${typeof body?.error === "string" ? `：${body.error.slice(0, 200)}` : ""}`);
   return body.github_token;
 }
 
-export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "", model = "", jobText, workdir = process.cwd(), maxSteps = MAX_STEPS, prepare = false, askToken = false, exec = execute, publishRepo = process.env.HANDS_PUBLISH_REPO || "", publishToken = process.env.HANDS_PUBLISH_TOKEN || "", outputDir = process.env.HANDS_OUTPUT_DIR || "", runUrl = "", retentionDays = 7, reportedFile = "" }) {
+/** One line of a command, a file path or a tool's arguments, short enough for the run log. */
+function brief(name, args) {
+  const what = name === "bash" ? args.command : args.path ?? (Array.isArray(args.files) ? args.files.join(" ") : args.line ?? args.status ?? "");
+  return `${name}: ${string(what).replace(/\s+/g, " ").slice(0, 200)}`;
+}
+
+/** `log` gets each step for the run log (the CLI prints them); lines are redacted first. */
+export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "", model = "", jobText, workdir = process.cwd(), maxSteps = MAX_STEPS, prepare = false, askToken = false, exec = execute, publishRepo = process.env.HANDS_PUBLISH_REPO || "", publishToken = process.env.HANDS_PUBLISH_TOKEN || "", outputDir = process.env.HANDS_OUTPUT_DIR || "", runUrl = "", retentionDays = 7, reportedFile = "", log = () => {} }) {
   const parsed = parseJobPayload(jobText);
   // Workflow commands are not printed: from here on the log shows *** for the code.
   const onActions = process.env.GITHUB_ACTIONS === "true";
@@ -267,6 +274,7 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
   if (!origin) throw new Error("RESIDENT_URL is required");
   const secrets = [modelApiKey, parsed.code, publishToken, process.env.GH_TOKEN, process.env.GITHUB_TOKEN, process.env.CLOUD_TASK_TOKEN];
   const redact = redactor(secrets);
+  const say = (line) => log(redact(line));
   const postReport = async (kind, body) => {
     let response;
     try { response = await fetch(`${origin}/tasks/${parsed.task}/${kind}`, { method: "POST", headers: { "x-task-code": parsed.code, "content-type": "application/json" }, body: redact(JSON.stringify(body)), signal: AbortSignal.timeout(30_000) }); }
@@ -278,6 +286,7 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
   const finish = async (body) => {
     const merged = [...new Set([...links, ...extractLinks(body.summary), ...(Array.isArray(body.links) ? body.links : []).filter((url) => typeof url === "string" && /^https:\/\//.test(url))])].slice(0, 8);
     const result = { status: body.status, summary: redact([string(body.summary), ...deliveryNotes].join("\n")).slice(0, 4000), links: merged.map(redact) };
+    log(`${{ done: "做完了", failed: "没做完", needs_you: "要你拿主意" }[result.status] || result.status}：${result.summary}`);
     // Answers to pick from, only for a decision; the resident checks them again.
     if (body.status === "needs_you" && Array.isArray(body.choices)) result.choices = body.choices.filter((choice) => typeof choice === "string").slice(0, 4).map((choice) => redact(choice).slice(0, 40));
     await postReport("result", result);
@@ -296,7 +305,9 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
     const key = own ? modelApiKey : parsed.code;
     const named = string(parsed.model || model).trim() || (own ? "" : "resident");
     if (!key || !named) return await finish({ status: "failed", summary: "自己接模型时，MODEL_BASE_URL、MODEL_API_KEY 和 MODEL_NAME 要一起给。" });
+    say(`单子：${parsed.title}；模型：${own ? `${named}（自己接的）` : "住户选的"}`);
     if (askToken) {
+      say("向住户借 GitHub token");
       const token = await tokenFromResident(origin, parsed);
       if (onActions) console.log(`::add-mask::${token}`);
       secrets.push(token);
@@ -305,6 +316,7 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
       process.env.GITHUB_TOKEN = token;
       if (!publishToken) publishToken = token;
     }
+    if (prepare) say(`准备工作区：${parsed.repository || "这个仓库"}`);
     if (prepare) workdir = await prepareWorkspace({ repository: parsed.repository, task: parsed.task, workdir, exec });
     // Public pages only where they set a repository for them up; otherwise the tool is not offered at all.
     const tools = publishRepo ? TOOLS : TOOLS.filter((item) => item.function.name !== "publish_files");
@@ -316,7 +328,10 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
       let response;
       try { response = await fetch(`${base}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-aelios-purpose": "auxiliary", "content-type": "application/json" }, body: JSON.stringify({ model: named, messages, tools }), signal: AbortSignal.timeout(180_000) }); }
       catch { throw new Error("模型连接失败或超时"); }
-      if (!response.ok) throw new Error(`模型调用失败（HTTP ${response.status}）`);
+      if (!response.ok) {
+        const said = await response.json().then((body) => (typeof body?.error?.message === "string" ? body.error.message : ""), () => "");
+        throw new Error(`模型调用失败（HTTP ${response.status}）${said ? `：${said.slice(0, 200)}` : ""}`);
+      }
       const data = await response.json().catch(() => { throw new Error("模型返回的 JSON 无效"); });
       const message = data?.choices?.[0]?.message;
       if (!message) throw new Error("模型没有返回消息");
@@ -328,7 +343,8 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
         const name = call?.function?.name;
         let args;
         try { args = JSON.parse(call.function.arguments || "{}"); if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error(); }
-        catch { messages.push({ role: "tool", tool_call_id: call.id, content: "Error: invalid JSON tool arguments" }); continue; }
+        catch { say(`${name}: invalid JSON arguments`); messages.push({ role: "tool", tool_call_id: call.id, content: "Error: invalid JSON tool arguments" }); continue; }
+        say(brief(name, args));
         if (name === "report_result") {
           if (!["done", "failed", "needs_you"].includes(args.status) || !string(args.summary).trim()) { messages.push({ role: "tool", tool_call_id: call.id, content: "Error: valid status and summary required" }); continue; }
           return await finish(args);
@@ -345,14 +361,16 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
             for (const link of output.links || []) links.add(link);
             if (output.note) deliveryNotes.add(output.note);
           }
-        } catch { output = `Error: ${name === "publish_files" ? "Public publishing failed; check HANDS_PUBLISH_REPO, Pages branch configuration, permissions, file paths and concurrent pushes. Nothing is confirmed deployed." : name === "save_artifacts" ? "Artifact export failed; check output directory and explicit nonprivate file paths." : "Tool failed; check arguments, available commands and file paths."}`; }
+        } catch (error) { say(`  failed: ${string(error?.message).split("\n")[0].slice(0, 300)}`); output = `Error: ${name === "publish_files" ? "Public publishing failed; check HANDS_PUBLISH_REPO, Pages branch configuration, permissions, file paths and concurrent pushes. Nothing is confirmed deployed." : name === "save_artifacts" ? "Artifact export failed; check output directory and explicit nonprivate file paths." : "Tool failed; check arguments, available commands and file paths."}`; }
         messages.push({ role: "tool", tool_call_id: call.id, content: redact(typeof output === "string" ? bounded(output) : JSON.stringify(output).slice(0, OUTPUT_LIMIT)) });
       }
     }
     return await finish({ status: "failed", summary: "达到最大步数仍未完成（最多 30 步）。" });
   } catch (error) {
-    const safe = /^(模型|住户|Report delivery failed)/.test(error.message || "") ? error.message : "后台执行失败，请检查工作流配置、仓库权限和运行日志。";
-    try { return await finish({ status: "failed", summary: safe }); }
+    // What went wrong, with secrets taken out: a failed command says which one and what it printed.
+    const reason = redact(string(error?.message || error)).split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6).join("\n").slice(0, 800);
+    const summary = /^(模型|住户|Report delivery failed)/.test(reason) ? reason : `后台执行失败：${reason}`;
+    try { return await finish({ status: "failed", summary }); }
     catch { throw new Error("Task failed and its report could not be delivered; inspect the workflow run"); }
   }
 }
@@ -386,6 +404,14 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   } else {
     // On Actions the GitHub token comes from the resident, unless the run was given one of its own.
     const onActions = env.GITHUB_ACTIONS === "true";
-    runHands({ ...common, modelBaseUrl: env.MODEL_BASE_URL, modelApiKey: env.MODEL_API_KEY, model: env.MODEL_NAME, prepare: onActions, askToken: onActions && !env.GH_TOKEN, retentionDays: Number(env.HANDS_RETENTION_DAYS) || 7 }).then((result) => { if (result.status === "failed") process.exitCode = 1; }).catch(() => { console.error("Resident hands failed; result delivery may also have failed."); process.exitCode = 1; });
+    // Each step goes to the log; a failure also becomes an annotation at the top of the run's page.
+    const annotation = (text) => string(text).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+    runHands({ ...common, modelBaseUrl: env.MODEL_BASE_URL, modelApiKey: env.MODEL_API_KEY, model: env.MODEL_NAME, prepare: onActions, askToken: onActions && !env.GH_TOKEN, retentionDays: Number(env.HANDS_RETENTION_DAYS) || 7, log: (line) => console.log(line) })
+      .then((result) => {
+        if (result.status !== "failed") return;
+        if (onActions) console.log(`::error title=没做完::${annotation(result.summary)}`);
+        process.exitCode = 1;
+      })
+      .catch((error) => { console.error(`Resident hands failed; result delivery may also have failed: ${string(error?.message).slice(0, 300)}`); process.exitCode = 1; });
   }
 }

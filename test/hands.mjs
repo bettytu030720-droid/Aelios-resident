@@ -115,7 +115,30 @@ try {
     globalThis.fetch = async (url) => String(url).endsWith('/hands') ? Response.json({ error: 'no GitHub token is set' }, { status: 409 }) : (seen.push({ where: String(url) }), new Response('{}'));
     const refused = await runHands({ residentUrl: 'https://resident.example', jobText, workdir, askToken: true });
     assert.equal(refused.status, 'failed');
-    assert.match(refused.summary, /住户没给 GitHub token（HTTP 409）/);
+    assert.match(refused.summary, /住户没给 GitHub token（HTTP 409）：no GitHub token is set/);
+
+    // A failure says why, on the card and in the run log: the resident's own error for the model, and the command
+    // that failed with what it printed, secrets taken out.
+    const lines = [];
+    globalThis.fetch = async (url) => {
+      const where = String(url);
+      if (where.endsWith('/hands')) return Response.json({ github_token: 'ghp_from_resident' });
+      if (where.endsWith('/chat/completions')) return Response.json({ error: { message: 'the model call failed: 5007 no such model' } }, { status: 502 });
+      return new Response('{}');
+    };
+    const modelDown = await runHands({ residentUrl: 'https://resident.example', jobText: jobText.replace('model: selected/model\n', ''), workdir, askToken: true, log: (line) => lines.push(line) });
+    assert.equal(modelDown.summary, '模型调用失败（HTTP 502）：the model call failed: 5007 no such model');
+    assert.ok(lines.includes('向住户借 GitHub token'), JSON.stringify(lines));
+    assert.ok(lines.at(-1).startsWith('没做完：模型调用失败'), JSON.stringify(lines));
+    const cloneFails = async (bin, args) => {
+      if (args[1] === 'clone') throw new Error('Command failed: gh repo clone owner/secret-repo\nGraphQL: Could not resolve to a Repository with the name \'owner/secret-repo\'. (repository)\ntoken ghp_from_resident\n');
+      return { stdout: '' };
+    };
+    const noClone = await runHands({ residentUrl: 'https://resident.example', jobText: jobText.replace('title: Make a page', 'title: Make a page\nrepository: owner/secret-repo'), workdir, askToken: true, prepare: true, exec: cloneFails, log: (line) => lines.push(line) });
+    assert.equal(noClone.status, 'failed');
+    assert.match(noClone.summary, /^后台执行失败：Command failed: gh repo clone owner\/secret-repo\nGraphQL: Could not resolve/);
+    assert.ok(!noClone.summary.includes('ghp_from_resident') && noClone.summary.includes('[redacted]'));
+    assert.ok(lines.includes('准备工作区：owner/secret-repo'));
   } finally {
     if (savedGh === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = savedGh;
     if (savedGithub === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = savedGithub;
