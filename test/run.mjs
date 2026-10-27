@@ -1950,6 +1950,9 @@ if (phase === "wecom") {
     const upload = (await ofKind("wecom.upload")).at(-1);
     assert.deepEqual([upload.type, upload.media.type, upload.media.file, upload.filelength], ["image", "image/png", "sticker.png", true]);
     assert.equal(upload.media.head.slice(1, 4), "PNG", "the GIF made a PNG");
+    const colour = await web("/web/config", KEY, { key: "WECOM_STICKER_BACKGROUND", text: "red" });
+    assert.equal(colour.status, 400);
+    assert.match((await colour.json()).error, /#EDEDED/);
     assert.equal((await ofKind("wecom.convert")).length, converts, "by the resident, not the relay");
     assert.equal(image.body.image.media_id.startsWith("wecom-media-"), true);
     assert.equal(all.at(-1).body.msgtype, "image", "after the words");

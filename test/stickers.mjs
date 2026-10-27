@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inflateSync, crc32 } from "node:zlib";
+import { deflateSync, inflateSync, crc32 } from "node:zlib";
 import { build } from "esbuild";
 import { GIF, PNG, WEBM, zip } from "./zip.mjs";
 
@@ -382,7 +382,7 @@ await test("the PNG writer: RGBA that node's zlib reads back pixel for pixel, ev
   assert.deepEqual([...back.rgba], [...rgba]);
 });
 
-await test("a sticker for WeCom: a GIF made a still PNG, enlarged, see-through kept; PNG and JPEG as they are; WebP and WebM not here", async () => {
+await test("a sticker for WeCom: a GIF made a still PNG, enlarged, see-through kept; a big PNG and a JPEG as they are; WebP and WebM not here", async () => {
   const drawn = m.drawSticker({ palette: { X: "#3a7" }, frames: [Array(8).fill("..XXXX..")] });
   const still = await m.stillSticker(drawn.web);
   assert.equal(still.type, "image/png");
@@ -394,8 +394,8 @@ await test("a sticker for WeCom: a GIF made a still PNG, enlarged, see-through k
   for (const [x, y] of [[88, 56], [89, 56], [88, 57], [89, 57]]) assert.deepEqual(at(x, y), [0x33, 0xaa, 0x77, 255]);
   const wide = readPng((await m.stillSticker({ bytes: rawGif({ width: 300, height: 10, palette: [[0, 0, 0], RED], frames: [{ w: 300, h: 10, indices: new Uint8Array(3000).fill(1) }] }), type: "image/gif" })).bytes);
   assert.deepEqual([wide.width, wide.height], [300, 10], "big enough already: not enlarged");
-  const pngFile = { bytes: new Uint8Array(PNG), type: "image/png" };
-  assert.equal(await m.stillSticker(pngFile), pngFile);
+  const pngFile = { bytes: makePng({ width: 300, height: 2, colour: 6, depth: 8, rows: [new Uint8Array(1200), new Uint8Array(1200)] }), type: "image/png" };
+  assert.equal(await m.stillSticker(pngFile), pngFile, "a big PNG as it is");
   const jpeg = { bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0]), type: "image/jpeg" };
   assert.equal(await m.stillSticker(jpeg), jpeg);
   assert.equal(await m.stillSticker({ bytes: new Uint8Array(WEBM), type: "video/webm" }), null);
@@ -405,4 +405,99 @@ await test("a sticker for WeCom: a GIF made a still PNG, enlarged, see-through k
   const tiny = readPng((await m.stillSticker({ bytes: new Uint8Array(GIF), type: "image/gif" })).bytes);
   assert.deepEqual([tiny.width, tiny.height], [4, 4], "1 px enlarged at most 4 times");
   assert.ok(tiny.rgba.every((v, i) => i % 4 !== 3 || v === 0), "the test GIF's one pixel is see-through");
+});
+
+/** A PNG built by hand: unfiltered rows, each sent through the filter given for it (0 to 4). */
+function makePng({ width, height, colour, depth, rows, filters = [], plte, trns, interlace = 0 }) {
+  const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colour];
+  const bpp = Math.max(1, (channels * depth) >> 3);
+  const paethOf = (a, b, c) => {
+    const p = a + b - c;
+    const [pa, pb, pc] = [Math.abs(p - a), Math.abs(p - b), Math.abs(p - c)];
+    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+  };
+  const raw = [];
+  rows.forEach((row, y) => {
+    const f = filters[y % filters.length] ?? 0;
+    const up = y ? rows[y - 1] : new Uint8Array(row.length);
+    raw.push(f);
+    for (let i = 0; i < row.length; i += 1) {
+      const a = i >= bpp ? row[i - bpp] : 0;
+      const b = up[i];
+      const c = i >= bpp ? up[i - bpp] : 0;
+      const predict = [0, a, b, (a + b) >> 1, paethOf(a, b, c)][f];
+      raw.push((row[i] - predict) & 0xff);
+    }
+  });
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), Buffer.from(data)]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc32(body), 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr.set([depth, colour, 0, 0, interlace], 8);
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    ...(plte ? [chunk("PLTE", plte)] : []),
+    ...(trns ? [chunk("tRNS", trns)] : []),
+    chunk("IDAT", deflateSync(Buffer.from(raw))),
+    chunk("IEND", [])
+  ]));
+}
+
+await test("the PNG reader: every filter, a 4-bit palette with tRNS, 16-bit grey with a see-through grey, grey with alpha; interlaced and broken refused", async () => {
+  // RGBA, 3 × 5, rows through filters 0 to 4.
+  const rgba = Array.from({ length: 5 }, (_, y) => Uint8Array.from({ length: 12 }, (_, i) => (y * 53 + i * 29) & 0xff));
+  const back = await png.decodePng(makePng({ width: 3, height: 5, colour: 6, depth: 8, rows: rgba, filters: [0, 1, 2, 3, 4] }));
+  assert.deepEqual([...back.rgba], rgba.flatMap((row) => [...row]));
+  // Palette, 4 bits a pixel: indices 0..4 in a row of 5, index 1 see-through, index 2 half.
+  const plte = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150];
+  const packed = Uint8Array.from([0x01, 0x23, 0x40]);
+  const palette = await png.decodePng(makePng({ width: 5, height: 1, colour: 3, depth: 4, rows: [packed], plte, trns: [255, 0, 128] }));
+  assert.deepEqual([...palette.rgba], [10, 20, 30, 255, 40, 50, 60, 0, 70, 80, 90, 128, 100, 110, 120, 255, 130, 140, 150, 255]);
+  // Grey, 16 bits: 0x1234 shows as 0x12; tRNS names 0xabcd see-through.
+  const grey = await png.decodePng(makePng({ width: 2, height: 1, colour: 0, depth: 16, rows: [Uint8Array.from([0x12, 0x34, 0xab, 0xcd])], trns: [0xab, 0xcd] }));
+  assert.deepEqual([...grey.rgba], [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 0]);
+  const greyAlpha = await png.decodePng(makePng({ width: 1, height: 1, colour: 4, depth: 8, rows: [Uint8Array.from([200, 77])] }));
+  assert.deepEqual([...greyAlpha.rgba], [200, 200, 200, 77]);
+  // 1-bit grey: 0 black, 1 white.
+  const bw = await png.decodePng(makePng({ width: 3, height: 1, colour: 0, depth: 1, rows: [Uint8Array.from([0b10100000])] }));
+  assert.deepEqual([...bw.rgba], [255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255]);
+  assert.equal(await png.decodePng(makePng({ width: 1, height: 1, colour: 6, depth: 8, rows: [new Uint8Array(4)], interlace: 1 })), null);
+  assert.equal(await png.decodePng(new Uint8Array(PNG).subarray(0, 40)), null, "cut short");
+  assert.equal(await png.decodePng(Uint8Array.from(GIF)), null);
+});
+
+await test("on WeCom, a see-through background is filled with the chat colour, half see-through edges blended; none leaves it", async () => {
+  assert.deepEqual(m.hexColour("#EDEDED"), [237, 237, 237]);
+  assert.equal(m.hexColour("none"), null);
+  assert.equal(m.hexColour("red"), null);
+  const grey = m.hexColour(m.DEFAULT_WECOM_STICKER_BACKGROUND);
+  // A drawn sticker (a GIF): its empty corner becomes the grey, every pixel solid.
+  const drawn = m.drawSticker({ palette: { X: "#3a7" }, frames: [Array(8).fill("..XXXX..")] });
+  const filled = readPng((await m.stillSticker(drawn.web, grey)).bytes);
+  assert.deepEqual([...filled.rgba.subarray(0, 4)], [237, 237, 237, 255]);
+  assert.ok(filled.rgba.every((v, i) => i % 4 !== 3 || v === 255), "nothing see-through left");
+  assert.deepEqual([...filled.rgba.subarray((56 * 272 + 88) * 4, (56 * 272 + 88) * 4 + 4)], [0x33, 0xaa, 0x77, 255], "the drawing itself unchanged");
+  // A PNG sticker, 300 px wide so it is not enlarged: a half see-through pixel is blended with the grey.
+  const row = new Uint8Array(300 * 4);
+  row.set([255, 0, 0, 255, 0, 0, 255, 128, 0, 0, 0, 0]);
+  const file = { bytes: makePng({ width: 300, height: 1, colour: 6, depth: 8, rows: [row] }), type: "image/png" };
+  const blended = readPng((await m.stillSticker(file, grey)).bytes);
+  assert.deepEqual([...blended.rgba.subarray(0, 12)], [255, 0, 0, 255, 118, 118, 246, 255, 237, 237, 237, 255]);
+  // Without a colour the PNG goes as it came; so does one with nothing see-through.
+  assert.equal(await m.stillSticker(file, null), file);
+  const solid = { bytes: makePng({ width: 300, height: 1, colour: 2, depth: 8, rows: [new Uint8Array(900).fill(9)] }), type: "image/png" };
+  assert.equal(await m.stillSticker(solid, grey), solid);
+  // A small PNG is enlarged, and filled.
+  const small = readPng((await m.stillSticker({ bytes: makePng({ width: 2, height: 2, colour: 6, depth: 8, rows: [new Uint8Array(8), new Uint8Array(8).fill(255)] }), type: "image/png" }, grey)).bytes);
+  assert.deepEqual([small.width, small.height], [8, 8]);
+  assert.deepEqual([...small.rgba.subarray(0, 4)], [237, 237, 237, 255]);
+  assert.deepEqual([...small.rgba.subarray(small.rgba.length - 4)], [255, 255, 255, 255]);
 });

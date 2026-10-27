@@ -65,6 +65,8 @@ interface Env {
   WECOM_ALLOWED?: string;
   // Stickers on WeCom ("on"), where they arrive as still pictures; off by default.
   WECOM_STICKERS?: string;
+  // What a see-through sticker background is filled with on WeCom: a colour like #EDEDED, or "none".
+  WECOM_STICKER_BACKGROUND?: string;
   // The bot token can be saved on the settings page too; the webhook secret is then made by the resident.
   TG_BOT_TOKEN?: string;
   TG_WEBHOOK_SECRET?: string;

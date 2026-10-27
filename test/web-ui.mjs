@@ -108,6 +108,7 @@ assert.match(page.telegramStatus(), /接好了：@my_bot（token 在 Cloudflare 
 page.config.telegram = { from: 'page', bot: null, here: false, error: 'Telegram 不认这个 token：Unauthorized', lastError: null };
 assert.equal(page.telegramStatus(), 'Telegram 不认这个 token：Unauthorized');
 assert.equal(page.metaOf('WECOM_STICKERS').def, 'off', 'stickers on WeCom are off unless turned on');
+assert.equal(page.metaOf('WECOM_STICKER_BACKGROUND').def, '#EDEDED', 'a see-through sticker background is filled with the light chat grey');
 const imGroup = page.CONFIG_GROUPS.find((group) => group.id === 'im');
 assert.deepEqual(JSON.parse(JSON.stringify(imGroup.fields.filter((meta) => meta.door).map((meta) => [meta.key, meta.door]))), [['TG_BOT_TOKEN', 'telegram'], ['WECOM_ALLOWED', 'wecom']]);
 page.config.telegram = { from: null, bot: null, here: false, error: null, lastError: null };
