@@ -242,10 +242,21 @@ function resident() {
   function writeKey(value) { try { value ? localStorage.setItem('resident.key', value) : localStorage.removeItem('resident.key'); } catch (e) {} }
   function remember(name, value) { try { localStorage.setItem(name, value); } catch (e) {} }
   function recall(name) { try { return localStorage.getItem(name) || ''; } catch (e) { return ''; } }
-  // The same rule as Telegram: a blank line starts a new bubble.
+  // The same rule as Telegram: a blank line starts a new bubble, except inside a fenced code block.
   function bubbleTexts(text) {
-    var parts = String(text || '').split(/\n[^\S\n]*\n\s*/).filter(function (part) { return part.trim(); });
-    return parts.length ? parts : (String(text || '').trim() ? [text] : []);
+    var parts = [];
+    var now = [];
+    var fence = null;
+    String(text || '').split('\n').forEach(function (line) {
+      var mark = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+      if (mark && (!fence || mark[1].charAt(0) === fence.charAt(0) && mark[1].length >= fence.length)) fence = fence ? null : mark[1];
+      if (!fence && !line.trim()) {
+        if (now.join('').trim()) parts.push(now.join('\n').trim());
+        now = [];
+      } else now.push(line);
+    });
+    if (now.join('').trim()) parts.push(now.join('\n').trim());
+    return parts;
   }
   function parsed(text) { try { return JSON.parse(text); } catch (e) { return null; } }
   function dayKey(at) { var d = new Date(at); return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); }
@@ -519,6 +530,9 @@ function resident() {
       var out = [];
       var lastDay = '';
       var lastVia = null;
+      // A thread's card shows once, under the newest line about it: sent under one reply, reported under a later one.
+      var newest = {};
+      this.lines.forEach(function (line) { (line.tasks || []).forEach(function (task) { newest[task.id] = line.id; }); });
       this.lines.forEach(function (line) {
         if (line.at) {
           var day = dayKey(line.at);
@@ -534,7 +548,8 @@ function resident() {
           out.push({ key: 'why_' + line.id, type: 'why', text: (line.via === 'task' ? '线程交回' : '主动找你') + (line.at ? ' · ' + self.clock(line.at) : '') });
         }
         lastVia = line.role === 'user' ? null : line.via;
-        out.push({ key: line.id, type: 'line', line: line });
+        var cards = (line.tasks || []).filter(function (task) { return newest[task.id] === line.id; });
+        out.push({ key: line.id, type: 'line', line: line, cards: cards });
       });
       this.outbox.forEach(function (item) { out.push({ key: item.tid, type: 'local', item: item }); });
       if (this.waiting()) out.push({ key: 'typing', type: 'typing' });
@@ -1086,6 +1101,15 @@ function resident() {
       if (task.status === 'sent' || task.status === 'working') return task.progress || '派出去了，等它开工';
       return task.summary || task.progress || '';
     },
+    // What a thread's card in the chat says: one or two lines, without the report's marks. The thread has it all.
+    taskPreview(task) {
+      var note = this.taskNote(task);
+      return typeof markdownPlain === 'function' ? markdownPlain(note) : note;
+    },
+    // The card in the chat opens the thread, and the session where it ran; its links are in the thread.
+    cardLinks(task) {
+      return /^https:\/\//.test(task.sessionUrl || '') ? [{ url: task.sessionUrl, text: '打开会话' }] : [];
+    },
     taskLinks(task) {
       var self = this;
       var https = function (url) { return /^https:\/\//.test(url || ''); };
@@ -1484,7 +1508,7 @@ function resident() {
         } else {
           try {
             text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-            kind = text.indexOf('\u0000') >= 0 ? 'other' : /^(html?|xhtml)$/.test(ext) ? 'html' : 'text';
+            kind = text.indexOf('\u0000') >= 0 ? 'other' : /^(html?|xhtml)$/.test(ext) ? 'html' : /^(md|markdown)$/.test(ext) ? 'markdown' : 'text';
           } catch (e) {
             kind = 'other';
           }
