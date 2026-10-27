@@ -10,7 +10,7 @@
 // it a GIF goes to Telegram as an animation, a still picture as a photo.
 
 import { encodeGif, fullestGifFrame, type Rgb } from "./gif";
-import { encodePng } from "./png";
+import { decodePng, encodePng } from "./png";
 
 export const PACK_FORMAT = "resident-stickers/1";
 export const MAX_PACKS = 20;
@@ -400,20 +400,41 @@ export function drawSticker(drawing: Drawing): { web: StickerFile; telegram: Sti
 
 // A still sticker is enlarged (by a whole number, so pixel art stays crisp) to at least this many pixels across.
 const STILL_MIN_SIDE = 240;
+// What a see-through background is filled with on WeCom unless set: WeChat's chat background in light mode.
+export const DEFAULT_WECOM_STICKER_BACKGROUND = "#EDEDED";
+
+/** A colour like #EDEDED, as RGB; null for anything else ("none"). */
+export function hexColour(text: string | undefined): Rgb | null {
+  const match = /^#([0-9a-f]{6})$/i.exec(text?.trim() ?? "");
+  if (!match) return null;
+  const n = parseInt(match[1], 16);
+  return [n >> 16, (n >> 8) & 0xff, n & 0xff];
+}
 
 /**
- * A sticker as one still picture, for WeCom, which shows a GIF as its first frame and keeps only JPG and PNG: a
- * GIF becomes a PNG of its fullest frame, see-through where it was, enlarged when small. PNG and JPEG stay as
- * they are; a GIF this cannot read goes as it is. Null for anything else (WebP, WebM), which only the relay can
- * turn into a picture.
+ * A sticker as one still picture, for WeCom, which plays no animation and turns a see-through background black: a
+ * GIF becomes a PNG of its fullest frame, a PNG stays a PNG; with a `background`, what was see-through is filled
+ * with it (half see-through edges blended), and a small one is enlarged. A JPEG goes as it is, and so does a GIF or
+ * PNG this cannot read. Null for anything else (WebP, WebM), which only the relay can turn into a picture.
  */
-export async function stillSticker(file: StickerFile): Promise<StickerFile | null> {
-  if (file.type === "image/png" || file.type === "image/jpeg") return file;
-  if (file.type !== "image/gif") return null;
-  const frame = fullestGifFrame(file.bytes);
+export async function stillSticker(file: StickerFile, background: Rgb | null = null): Promise<StickerFile | null> {
+  if (file.type === "image/jpeg") return file;
+  if (file.type !== "image/gif" && file.type !== "image/png") return null;
+  const frame = file.type === "image/gif" ? fullestGifFrame(file.bytes) : await decodePng(file.bytes);
   if (!frame) return file;
   const { width, height, rgba } = frame;
   const times = Math.max(1, Math.min(4, Math.ceil(STILL_MIN_SIDE / Math.max(width, height))));
+  let clear = false;
+  for (let p = 3; p < rgba.length && !clear; p += 4) clear = rgba[p] < 255;
+  // A PNG big enough already, with nothing to fill, is sent as it came.
+  if (file.type === "image/png" && times === 1 && !(clear && background)) return file;
+  if (background && clear) {
+    for (let p = 0; p < rgba.length; p += 4) {
+      const a = rgba[p + 3];
+      for (let c = 0; c < 3; c += 1) rgba[p + c] = Math.round((rgba[p + c] * a + background[c] * (255 - a)) / 255);
+      rgba[p + 3] = 255;
+    }
+  }
   if (times === 1) return { bytes: await encodePng(width, height, rgba), type: "image/png" };
   const W = width * times;
   const big = new Uint8Array(W * height * times * 4);

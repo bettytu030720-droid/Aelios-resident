@@ -64,6 +64,7 @@ export const FIELDS: readonly Field[] = [
   { key: "WECOM_RELAY_KEY", kind: "secret", check: (value) => (value.length >= 32 ? null : "转发钥匙至少 32 位，用转发机上 install.sh 生成的那把") },
   { key: "WECOM_ALLOWED", kind: "text" },
   { key: "WECOM_STICKERS", kind: "choice", choices: ["on", "off"] },
+  { key: "WECOM_STICKER_BACKGROUND", kind: "text", check: (value) => (/^#[0-9a-f]{6}$/i.test(value) || value.toLowerCase() === "none" ? null : "填一个颜色，比如 #EDEDED；不垫填 none") },
   { key: "TIME_ZONE", kind: "text", check: timeZone },
   // Checked by arming it (Resident.webSetConfig).
   { key: "CHECKIN_SCHEDULE", kind: "text" },

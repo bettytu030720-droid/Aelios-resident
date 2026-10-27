@@ -118,7 +118,7 @@ The **WeCom** line of `/status`, and the WeCom part of IM on the settings page, 
 **What works**:
 
 - Text both ways; pictures you send; voice messages both ways with `--media`. Without `--media` its voice replies go out as text, and it may not be able to hear yours.
-- Stickers, as still pictures, once you turn on **Send stickers on WeCom** (「在企业微信上发表情包」; off by default). WeCom does not play animations, so an animated GIF goes as a PNG of its fullest frame, with its see-through background kept, and a small one is enlarged with its pixels kept sharp; PNG and JPEG go as they are; Telegram's WebP and WebM stickers only with `--media`. When off, it knows not to send stickers there, and still sends them on the web and Telegram.
+- Stickers, as still pictures, once you turn on **Send stickers on WeCom** (「在企业微信上发表情包」; off by default). WeCom has no sticker message, only pictures, and it plays no animation and turns a see-through background black. So an animated GIF goes as a PNG of its fullest frame, what was see-through is filled with **Sticker background** (「表情包垫的底色」, `#EDEDED` by default, WeChat's light-mode chat grey, so the sticker looks set on the chat; pick dark mode's or type your own colour), and a small one is enlarged with its pixels kept sharp. PNG stickers are filled the same way, JPEG goes as it is, and Telegram's WebP and WebM stickers need `--media`. When off, it knows not to send stickers there, and still sends them on the web and Telegram.
 - `/status`, `/letter` and `/handoff`, as on Telegram.
 - Check-ins, heartbeats, alarms and cloud jobs report to the chat you last wrote from, so if that was WeCom, they come to WeCom.
 
@@ -385,6 +385,7 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `WECOM_TOKEN` / `WECOM_AES_KEY` | empty | The app's Receive Messages Token and EncodingAESKey (43 characters); save them here before saving the URL in WeCom |
 | `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | empty | The address of the [relay](relay/wecom/README.md) through its Cloudflare Tunnel, and its key (at least 32 characters) |
 | `WECOM_STICKERS` | `off` | `on` sends stickers on WeCom too, as still pictures (an animation's fullest frame) |
+| `WECOM_STICKER_BACKGROUND` | `#EDEDED` | What a see-through sticker background is filled with on WeCom, which would turn it black: a colour like `#111111`, or `none` |
 | `TIME_ZONE` | `Asia/Singapore` | The time zone for message times and schedules |
 | `DEBOUNCE_SECONDS` | `3` | Messages sent within this many seconds count as one turn |
 | `CHECKIN_SCHEDULE` | empty (no check-ins) | Times like `every day at 09:00`, `every weekday at 21:30`, `every 3 hours` |

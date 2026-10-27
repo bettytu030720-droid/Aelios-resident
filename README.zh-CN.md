@@ -116,7 +116,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 **能做的**：
 
 - 文字来回；你发的图片；装了 `--media` 后语音条来回都行。没装的话，它的语音回复改成文字，你发的语音它可能听不了。
-- 表情包要在「IM」里打开「在企业微信上发表情包」（默认关），发出去是静图：企业微信不放动图，动图就挑最完整的那一帧转成 PNG，透明底留着，小图放大一倍、像素照样清楚；PNG、JPG 直接发；Telegram 包里的 WebP、WebM 要转发机装了 `--media`。关着时它知道这里发不了表情，网页和 Telegram 上照发。
+- 表情包要在「IM」里打开「在企业微信上发表情包」（默认关），发出去是静图。企业微信没有表情包这一类消息，只能发图片，它不放动图，还会把透明底变成黑底。所以动图挑最完整的那一帧转成 PNG，透明的地方垫上「表情包垫的底色」（默认 `#EDEDED`，微信浅色模式的聊天背景，看着就像贴在聊天里；深色模式选「深色模式」，也能自己填颜色），小图放大一倍、像素照样清楚。PNG 表情一样垫底，JPG 直接发，Telegram 包里的 WebP、WebM 要转发机装了 `--media`。关着时它知道这里发不了表情，网页和 Telegram 上照发。
 - `/status`、`/letter`、`/handoff`，跟 Telegram 一样。
 - 定时找你、心跳、闹钟、云端干完活的回报，都发到你最后说话的那扇门：最后在企业微信说的话，就发到企业微信。
 
@@ -383,6 +383,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 | `WECOM_TOKEN` / `WECOM_AES_KEY` | 空 | 应用「接收消息」的 Token 和 EncodingAESKey（43 位）；先存在这里，再去企业微信保存 URL |
 | `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | 空 | [转发机](relay/wecom/README.md)经 Cloudflare Tunnel 出来的网址，和它的钥匙（至少 32 位） |
 | `WECOM_STICKERS` | `off` | `on` 在企业微信上也发表情包，发成静图（动图取最完整的一帧） |
+| `WECOM_STICKER_BACKGROUND` | `#EDEDED` | 企业微信上表情包透明的地方垫什么颜色（不垫会变黑底）：比如 `#111111`，`none` 是不垫 |
 | `TIME_ZONE` | `Asia/Singapore` | 消息前的时间、定时用哪个时区 |
 | `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
 | `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |

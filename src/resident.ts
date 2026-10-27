@@ -122,6 +122,7 @@ import {
   type TaskCard
 } from "./cloud-tasks";
 import {
+  DEFAULT_WECOM_STICKER_BACKGROUND,
   MAKE_STICKER_DESCRIPTION,
   MAX_STICKERS_PER_PACK,
   MAX_WEB_BYTES,
@@ -132,6 +133,7 @@ import {
   isEmojiPackLink,
   readPack,
   slug,
+  hexColour,
   sniff,
   stillSticker,
   telegramSetName,
@@ -139,6 +141,7 @@ import {
   type Drawing,
   type StickerFile
 } from "./stickers";
+import type { Rgb } from "./gif";
 import {
   SPEAK_MAX_CHARS,
   VOICE_MARK,
@@ -1300,22 +1303,25 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * One sticker to WeCom, as a still picture: a GIF as a PNG of its fullest frame (stillSticker), a PNG or JPEG as
-   * it is; a WebP or WebM (a Telegram sticker) made a PNG by the relay, when it was installed with --media. Null
-   * when it could not go out.
+   * One sticker to WeCom, as a still picture (stillSticker): a GIF as a PNG of its fullest frame, a PNG or JPEG as
+   * it is, a WebP or WebM (a Telegram sticker) first made a PNG by the relay, when it was installed with --media.
+   * WeCom turns a see-through background black, so that is filled with WECOM_STICKER_BACKGROUND. Null when it could
+   * not go out.
    */
   private async deliverWecomSticker(user: string, key: string): Promise<string | null> {
     const file = await this.stickerFile(key);
     if (!file) return null;
     const api = this.wecomApi();
+    const background = this.wecomStickerBackground();
     try {
-      let picture = await stillSticker(file);
+      let picture = await stillSticker(file, background);
       if (!picture && (file.type === "video/webm" || file.type === "image/webp")) {
         if (!(await api.abilities())?.png) {
           console.log("wecom: sticker not sent: the relay does not convert it", { type: file.type });
           return null;
         }
-        picture = { bytes: await api.convert("png", file.bytes), type: "image/png" };
+        const converted = { bytes: await api.convert("png", file.bytes), type: "image/png" };
+        picture = (await stillSticker(converted, background)) ?? converted;
       }
       if (!picture) return null;
       const ext = ({ "image/gif": "gif", "image/png": "png", "image/jpeg": "jpg" } as Record<string, string>)[picture.type];
@@ -1325,6 +1331,12 @@ export class Resident extends Think<Env> {
       console.error("wecom: sticker not sent", { error: wecomProblem(error) });
       return null;
     }
+  }
+
+  /** What a see-through sticker background becomes on WeCom: WeChat's light chat grey unless set; "none" leaves it. */
+  private wecomStickerBackground(): Rgb | null {
+    const text = this.cfg.WECOM_STICKER_BACKGROUND?.trim() || DEFAULT_WECOM_STICKER_BACKGROUND;
+    return hexColour(text);
   }
 
   /**
