@@ -1,0 +1,53 @@
+name: Resident Hands
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Job payload sent by Aelios-resident"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run resident hands
+        env:
+          JOB_PAYLOAD: ${{ inputs.job }}
+          RESIDENT_URL: ${{ vars.RESIDENT_URL || secrets.RESIDENT_URL }}
+          MODEL_BASE_URL: ${{ vars.MODEL_BASE_URL || secrets.MODEL_BASE_URL }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          MODEL_NAME: ${{ vars.MODEL_NAME }}
+          HANDS_PUBLISH_REPO: ${{ vars.HANDS_PUBLISH_REPO }}
+          HANDS_PUBLISH_TOKEN: ${{ secrets.HANDS_GH_TOKEN }}
+          HANDS_RETENTION_DAYS: "30"
+          HANDS_OUTPUT_DIR: ${{ runner.temp }}/resident-output
+          GITHUB_TOKEN: ${{ secrets.HANDS_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.HANDS_GH_TOKEN || github.token }}
+        run: node scripts/hands.mjs
+
+      - name: Keep generated files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resident-files-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resident-output/
+          if-no-files-found: ignore
+          retention-days: 30
+          include-hidden-files: false

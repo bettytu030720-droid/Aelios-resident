@@ -234,3 +234,187 @@ await test("at most 60 progress lines a task, and the newest 200 tasks kept", ()
   assert.ok(tasks.get(added[5]));
   assert.ok(tasks.get(task.id), "the newest is kept");
 });
+
+await test("built-in background worker: automatic tool progress lines, https link extraction, and sessionless notes", () => {
+  assert.equal(t.localStepProgress("report_progress", { line: "x" }), null);
+  assert.equal(t.localStepProgress("report_result", { status: "done", summary: "x" }), null);
+  assert.equal(t.localStepProgress("web_search", { query: "合成树脂价格" }), "正在搜：合成树脂价格");
+  assert.equal(t.localStepProgress("web_fetch", { url: "https://example.com/a" }), "正在读：https://example.com/a");
+  assert.equal(t.localStepProgress("memory_recall", { query: "生日" }), "正在查记忆：生日");
+  assert.equal(t.localStepProgress("memory_remember", { content: "x" }), "正在记下新内容");
+  assert.equal(t.localStepProgress("memory_notebook", { action: "list" }), "正在翻小本本目录");
+  assert.equal(t.localStepProgress("memory_notebook", { action: "read", name: "经济师进度" }), "正在看小本本：经济师进度");
+  assert.equal(t.localStepProgress("memory_notebook", { action: "append", name: "经济师进度" }), "正在写小本本：经济师进度");
+  assert.equal(t.localStepProgress("mcp_demo_echo", {}), "正在用工具：demo_echo");
+
+  assert.deepEqual(
+    t.extractHttpsLinks("详见 https://example.com/a，还有 (https://example.com/b)。忽略 http://insecure.example 和重复的 https://example.com/a！"),
+    ["https://example.com/a", "https://example.com/b"]
+  );
+
+  const { tasks } = store();
+  const { task } = tasks.add({ title: "查资料", job: "查一下" });
+  tasks.result(task.id, { status: "done", summary: "查完了", links: ["https://example.com/a"] });
+  const localDone = tasks.get(task.id);
+  assert.ok(!t.resultNote(localDone).includes("Session:"), "no Session line when run locally");
+  assert.ok(!t.quietNote(localDone, "3 hours").includes("session link:"), "no session link when run locally");
+});
+
+await test("GitHub Actions and Cursor Cloud Agents triggers: URL validation, dispatch payload, and error messages", async () => {
+  const ghUrl = "https://api.github.com/repos/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml/dispatches";
+  const cursorUrl = "https://api.cursor.com/v0/agents";
+  assert.equal(t.triggerKind(URL_OK), "claude");
+  assert.equal(t.triggerKind(ghUrl), "github");
+  assert.equal(t.triggerKind(`${ghUrl}#dev`), "github");
+  assert.equal(t.triggerKind(cursorUrl), "cursor");
+  assert.equal(t.fireUrlProblem(ghUrl), null);
+  assert.equal(t.fireUrlProblem(`${ghUrl}#dev`), null);
+  assert.equal(t.fireUrlProblem(cursorUrl), null);
+  assert.match(t.fireUrlProblem("https://api.github.com/repos/a/b/issues") ?? "", /API 触发器/);
+  assert.match(t.fireUrlProblem("https://api.cursor.com/v0/other") ?? "", /API 触发器/);
+
+  const realFetch = globalThis.fetch;
+  try {
+    let seen;
+    globalThis.fetch = async (url, init) => {
+      seen = { url, init };
+      return new Response(null, { status: 204 });
+    };
+    const ghOut = await t.fire(`${ghUrl}#dev`, "ghp_123", "task: t_1\ncode: c\ntitle: 修错字\n\n改一下");
+    assert.deepEqual(ghOut, {
+      sessionId: "gh_wusaki0723/aelios-resident_resident-hands.yml",
+      sessionUrl: "https://github.com/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml"
+    });
+    assert.equal(seen.url, ghUrl);
+    assert.equal(seen.init.headers.authorization, "Bearer ghp_123");
+    assert.equal(seen.init.headers.accept, "application/vnd.github+json");
+    assert.deepEqual(JSON.parse(seen.init.body), {
+      ref: "dev",
+      inputs: { job: "task: t_1\ncode: c\ntitle: 修错字\n\n改一下" }
+    });
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    assert.match((await t.fire(ghUrl, "ghp_123", "x")).error ?? "", /找不到这个仓库、workflow 或分支/);
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Unprocessable" }), { status: 422 });
+    assert.match((await t.fire(ghUrl, "ghp_123", "x")).error ?? "", /workflow_dispatch/);
+
+    globalThis.fetch = async (url, init) => {
+      seen = { url, init };
+      return new Response(JSON.stringify({ id: "ag_1", webUrl: "https://cursor.com/agents?id=ag_1" }), { status: 200 });
+    };
+    const curOut = await t.fire(cursorUrl, "cur_123", "task: t_1\ncode: c\ntitle: 修错字\nrepository: wusaki0723/aelios-resident\n\n改一下");
+    assert.deepEqual(curOut, { sessionId: "ag_1", sessionUrl: "https://cursor.com/agents?id=ag_1" });
+    assert.deepEqual(JSON.parse(seen.init.body), {
+      prompt: { text: "task: t_1\ncode: c\ntitle: 修错字\nrepository: wusaki0723/aelios-resident\n\n改一下" },
+      source: { repository: "https://github.com/wusaki0723/aelios-resident" }
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test("scripts/hands.mjs: parses job payload, edits files via tools, sends auxiliary header and reports back", async () => {
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { parseJobPayload, runHands } = await import("../scripts/hands.mjs");
+
+  const sample = "task: t_0123456789\ncode: 0123456789abcdef0123456789abcdef\ntitle: 修错字\nrepository: wusaki0723/aelios-resident\n\n把 hello.txt 里的 old 改成 new";
+  const parsed = parseJobPayload(sample);
+  assert.deepEqual([parsed.task, parsed.title, parsed.repository], ["t_0123456789", "修错字", "wusaki0723/aelios-resident"]);
+  assert.equal(parsed.model, "", "no model header unless one was picked");
+
+  const dir = mkdtempSync(join(tmpdir(), "hands-test-"));
+  writeFileSync(join(dir, "hello.txt"), "hello old world\n", "utf8");
+  const realFetch = globalThis.fetch;
+  const reports = [];
+  const modelCalls = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes("/tasks/")) {
+        reports.push({ url: String(url), code: init.headers["x-task-code"], body: JSON.parse(init.body) });
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      if (String(url).endsWith("/chat/completions")) {
+        modelCalls.push({ headers: init.headers, body: JSON.parse(init.body) });
+        if (modelCalls.length === 1) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    tool_calls: [
+                      {
+                        id: "c1",
+                        type: "function",
+                        function: {
+                          name: "edit_file",
+                          arguments: JSON.stringify({ path: "hello.txt", old_string: "old", new_string: "new" })
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: "已经改好了并提了 PR：https://github.com/wusaki0723/aelios-resident/pull/42"
+                }
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const done = await runHands({
+      residentUrl: "https://resident.example",
+      modelBaseUrl: "https://aelios.example/v1",
+      modelApiKey: "k_test",
+      model: "chatgpt/gpt-5",
+      jobText: sample,
+      workdir: dir
+    });
+    assert.equal(done.status, "done");
+    assert.equal(readFileSync(join(dir, "hello.txt"), "utf8"), "hello new world\n");
+    assert.equal(modelCalls[0].headers["x-aelios-purpose"], "auxiliary");
+    assert.equal(modelCalls[0].body.model, "chatgpt/gpt-5");
+    assert.deepEqual(
+      reports.map((r) => [r.url.replace("https://resident.example", ""), r.body]),
+      [
+        ["/tasks/t_0123456789/progress", { line: "正在改文件：hello.txt" }],
+        [
+          "/tasks/t_0123456789/result",
+          {
+            status: "done",
+            summary: "已经改好了并提了 PR：https://github.com/wusaki0723/aelios-resident/pull/42",
+            links: ["https://github.com/wusaki0723/aelios-resident/pull/42"]
+          }
+        ]
+      ]
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test("the task payload carries arbitrary model IDs without choosing a subscription harness", async () => {
+  const task = { id: "t_0123456789", title: "修错字", job: "改一下", repo: "octo/hello" };
+  assert.equal(t.payload(task, "c", null), "task: t_0123456789\ncode: c\ntitle: 修错字\nrepository: octo/hello\n\n改一下");
+  const { parseJobPayload } = await import("../scripts/hands.mjs");
+  const picked = parseJobPayload(t.payload(task, "c", null, "my-provider/my-model"));
+  assert.equal(picked.model, "my-provider/my-model");
+  assert.equal(picked.repository, "octo/hello");
+});

@@ -35,7 +35,7 @@ import {
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import type { Adapter } from "chat";
 import { webSearchTool } from "agents/websearch/ai-sdk";
-import { generateText, tool, type ModelMessage, type ToolSet, type UIMessage } from "ai";
+import { asSchema, generateText, tool, type JSONSchema7, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
 import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
@@ -44,6 +44,7 @@ import { EffectiveHistoryError, installEffectiveHistory } from "./effective-hist
 import { historyPathComplete } from "./history-path";
 import { readAuxiliaryAnswer, removeAuxiliaryTurn } from "./letter-auxiliary";
 import { fakeModel } from "./fake-model";
+import { TaskWorker } from "./task-worker";
 import { ALARM_PREFIX, CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, LETTER_PREFIX, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { inQuietHours, quietHoursInWords, quietHoursOf } from "./quiet-hours";
 import {
@@ -107,7 +108,6 @@ import {
 } from "./wecom";
 import {
   CLOUD_TASK_DESCRIPTION,
-  FIRE_URL,
   QUIET_MINUTES,
   TASKS_PER_DAY,
   TASKS_PER_TURN,
@@ -121,6 +121,8 @@ import {
   resultNote,
   routinePrompt,
   taskOfNote,
+  triggerKind,
+  type TaskExecution,
   type NewTask,
   type Task,
   type TaskCard
@@ -1015,16 +1017,22 @@ export class Resident extends Think<Env> {
     return this.#taskStore;
   }
 
-  // Off unless they turn it on: it needs a paid Claude plan, which not everyone has.
+  // Off unless they turn it on. Without a routine trigger URL, tasks run on a background thread here.
   private cloudTasksOn(): boolean {
     return this.cfg.CLOUD_TASKS?.trim().toLowerCase() === "on";
   }
 
-  private taskTrigger(): { url: string; token: string } | null {
-    if (!this.cloudTasksOn()) return null;
+  private taskMode(): "cloud" | "local" | "incomplete" | "off" {
+    if (!this.cloudTasksOn()) return "off";
     const url = this.cfg.CLOUD_TASK_URL?.trim() ?? "";
     const token = this.cfg.CLOUD_TASK_TOKEN?.trim() ?? "";
-    return FIRE_URL.test(url) && token ? { url, token } : null;
+    if (!url && !token) return "local";
+    return triggerKind(url) && token ? (triggerKind(url) === "github" ? "local" : "cloud") : "incomplete";
+  }
+
+  private taskTrigger(): { url: string; token: string } | null {
+    if (!this.cloudTasksOn() || !triggerKind(this.cfg.CLOUD_TASK_URL?.trim() ?? "") || !this.cfg.CLOUD_TASK_TOKEN?.trim()) return null;
+    return { url: this.cfg.CLOUD_TASK_URL!.trim(), token: this.cfg.CLOUD_TASK_TOKEN!.trim() };
   }
 
   private quietMinutes(): number {
@@ -1032,9 +1040,15 @@ export class Resident extends Think<Env> {
     return Number.isFinite(minutes) && minutes > 0 ? minutes : QUIET_MINUTES;
   }
 
-  /** cloud_task, once the scheduled task's trigger is filled in. */
+  /** The model the hands work with. Empty: the chat's own here, and the workflow's own on GitHub Actions. */
+  private taskModel(): string {
+    return this.cfg.CLOUD_TASK_MODEL?.trim() ?? "";
+  }
+
+  /** cloud_task, once CLOUD_TASKS is on (either with a routine trigger or in the built-in background worker). */
   private taskTools(): ToolSet {
-    if (!this.taskTrigger()) return {};
+    const mode = this.taskMode();
+    if (mode !== "cloud" && mode !== "local") return {};
     return {
       cloud_task: tool({
         description: CLOUD_TASK_DESCRIPTION,
@@ -1042,6 +1056,7 @@ export class Resident extends Think<Env> {
           title: z.string().describe("A few words in their language, for the task's card."),
           job: z.string().describe("The whole job, for a session that knows nothing else."),
           repo: z.string().optional().describe("owner/name of the GitHub repository to work in, if there is one."),
+          execution: z.enum(["local", "linux", "external"]).optional().describe("Use local by default; linux explicitly requests the configured GitHub Actions environment."),
           follow_up_of: z.string().optional().describe("The id (t_…) of an earlier task this one continues.")
         }),
         execute: async (input) => this.sendTask(input)
@@ -1061,7 +1076,7 @@ export class Resident extends Think<Env> {
     return null;
   }
 
-  private async sendTask(input: { title: string; job: string; repo?: string; follow_up_of?: string }): Promise<Record<string, unknown>> {
+  private async sendTask(input: { title: string; job: string; repo?: string; follow_up_of?: string; execution?: TaskExecution }): Promise<Record<string, unknown>> {
     const refused = this.taskRefusal();
     if (refused) return { error: refused };
     const earlier = input.follow_up_of?.trim() ?? "";
@@ -1069,19 +1084,37 @@ export class Resident extends Think<Env> {
     if (earlier && !follows) return { error: `No task ${earlier}.` };
     const id = this.activeTurn!.requestId;
     this.#turnTasks.set(id, (this.#turnTasks.get(id) ?? 0) + 1);
-    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id }, follows);
+    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution: input.execution }, follows);
     if ("error" in task) return { error: task.error };
     return { task: task.id, title: task.title, session_url: task.sessionUrl, note: "Sent. Its result comes back to you later as a note." };
   }
 
-  /** Adds a task and fires it; a quiet check is set for when it should have reported. */
+  /** Adds a task and either runs it in the background here or fires the cloud trigger; sets a quiet check too. */
   private async startTask(input: NewTask, follows: Task | null): Promise<Task | { error: string }> {
+    const mode = this.taskMode();
+    if (mode === "off") return { error: "云端 Claude Code 关着" };
+    if (mode === "incomplete") return { error: "云端 Claude Code 还没接好：设置页里填触发网址和 token" };
     const trigger = this.taskTrigger();
-    if (!trigger) return { error: this.cloudTasksOn() ? "云端 Claude Code 还没接好：设置页里填触发网址和 token" : "云端 Claude Code 关着" };
+    const kind = trigger ? triggerKind(trigger.url) : null;
+    const execution = input.execution ?? (kind && kind !== "github" ? "external" : "local");
+    if (execution === "linux" && kind !== "github") return { error: "Linux 后台还没接好：请配置 GitHub Actions 触发网址和 token" };
+    if (execution === "external" && !trigger) return { error: "外部后台还没接好" };
     const store = this.cloudTasks();
     const added = store.add(input);
     if ("error" in added) return added;
-    const fired = await fire(trigger.url, trigger.token, payload(added.task, added.code, follows), this.env.CLOUD_TASK_API_BASE);
+    if (execution === "local") {
+      store.sent(added.task.id, "");
+      store.prune();
+      try {
+        await this.schedule(1, "runLocalTask", { id: added.task.id, code: added.code });
+      } catch (error) {
+        store.drop(added.task.id);
+        return { error: `后台没排上：${error instanceof Error ? error.message : String(error)}` };
+      }
+      await this.schedule(this.quietMinutes() * 60, "taskQuiet", { id: added.task.id });
+      return store.get(added.task.id) ?? added.task;
+    }
+    const fired = await fire(trigger!.url, trigger!.token, payload(added.task, added.code, follows, this.taskModel()), this.env.CLOUD_TASK_API_BASE);
     if ("error" in fired) {
       store.drop(added.task.id);
       return fired;
@@ -1090,6 +1123,110 @@ export class Resident extends Think<Env> {
     store.prune();
     await this.schedule(this.quietMinutes() * 60, "taskQuiet", { id: added.task.id });
     return store.get(added.task.id) ?? added.task;
+  }
+
+  /** Tools the built-in background worker may use: search, web pages, memory, notebook, MCP, and task reporting. */
+  private localTaskTools(task: Task, code: string, onReported: () => void): ToolSet {
+    const tools: ToolSet = {};
+    const memory = aeliosConfig(this.cfg);
+    if (memory) Object.assign(tools, memoryTools(memory));
+    const source = searchSource(this.cfg);
+    if (source) {
+      tools.web_search = webSearchTool({
+        source,
+        description: "Search the web for current information: news, facts, prices, events. Open a result with web_fetch.",
+        maxDescriptionChars: 400
+      });
+    }
+    if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache(), this.siteKeys().all()));
+    Object.assign(tools, this.mcpTools());
+    tools.report_progress = tool({
+      description: "Send one short progress line in the job's language while you work.",
+      inputSchema: z.object({ line: z.string().describe("What step you are on, in one short line.") }),
+      execute: async ({ line }) => {
+        const res = await this.taskReport(task.id, code, "progress", { line });
+        return res.body;
+      }
+    });
+    tools.report_result = tool({
+      description: "Report the result once when you are done, or stuck on something only they can decide.",
+      inputSchema: z.object({
+        status: z.enum(["done", "failed", "needs_you"]),
+        summary: z.string().describe("A few sentences in the job's language: what you did, and what they need to know or decide."),
+        links: z.array(z.string()).optional().describe("Relevant https links, at most 8.")
+      }),
+      execute: async (input) => {
+        const res = await this.taskReport(task.id, code, "result", input);
+        if (res.status === 200) onReported();
+        return res.body;
+      }
+    });
+    return tools;
+  }
+
+  private workerTask(id: string, code: string): Task {
+    const task = this.cloudTasks().reporting(id, code);
+    if (!task || task === "expired") throw new Error("Invalid task capability");
+    return task;
+  }
+
+  /** Host-only provider settings and JSON tool descriptors; never inserted into child history. */
+  async taskWorkerConfig(id: string, code: string) {
+    const task = this.workerTask(id, code);
+    const tools = this.localTaskTools(task, code, () => {});
+    const descriptors = await Promise.all(Object.entries(tools).map(async ([name, item]) => ({
+      name, description: typeof item.description === "string" ? item.description : "", schema: await asSchema(item.inputSchema).jsonSchema as JSONSchema7
+    })));
+    return {
+      model: this.taskModel() || this.savedModel() || this.defaultModel,
+      memory: aeliosConfig(this.cfg), gatewayId: this.cfg.AI_GATEWAY_ID?.trim() ?? "",
+      custom: { CUSTOM_BASE_URL: this.cfg.CUSTOM_BASE_URL, CUSTOM_API_KEY: this.cfg.CUSTOM_API_KEY, CUSTOM_FORMAT: this.cfg.CUSTOM_FORMAT },
+      tools: descriptors
+    };
+  }
+
+  async taskWorkerTool(id: string, code: string, name: string, input: unknown) {
+    const task = this.workerTask(id, code);
+    if (!["sent", "working"].includes(task.status)) return { error: "Task already finished" };
+    const item = this.localTaskTools(task, code, () => {})[name];
+    if (!item?.execute) throw new Error("Unknown task tool");
+    const schema = asSchema(item.inputSchema);
+    const checked = schema.validate ? await schema.validate(input) : { success: true as const, value: input };
+    if (!checked.success) throw new Error("Invalid task tool input");
+    return item.execute(checked.value as never, { toolCallId: `task_${id}`, messages: [], context: undefined });
+  }
+
+  async taskWorkerUsage(id: string, code: string, step: StepLike): Promise<void> {
+    this.workerTask(id, code);
+    this.recordUsage(step, { kind: "task", via: "" });
+  }
+
+  async taskWorkerFinished(id: string, code: string, result: unknown): Promise<void> {
+    const task = this.workerTask(id, code);
+    if (["sent", "working", "quiet"].includes(task.status)) await this.taskReport(id, code, "result", result);
+  }
+
+  /** Each lineage retains its own native Think history and workspace, with durable submission recovery. */
+  async runLocalTask(job: { id: string; code: string }): Promise<void> {
+    const task = this.workerTask(job.id, job.code);
+    if (!["sent", "working"].includes(task.status)) return;
+    let root = task;
+    const seen = new Set<string>();
+    while (root.follows && !seen.has(root.id)) {
+      seen.add(root.id);
+      const previous = this.cloudTasks().get(root.follows);
+      if (!previous) break;
+      root = previous;
+    }
+    try {
+      const child = await this.subAgent(TaskWorker, `task-${root.id}`);
+      const follows = task.follows ? this.cloudTasks().get(task.follows) : null;
+      // The one-time reporting code belongs to host RPC, never to model-visible messages.
+      const brief = payload(task, "", follows).replace(/^code:.*\n/m, "");
+      await child.enqueue({ id: task.id, code: job.code, brief });
+    } catch {
+      await this.taskWorkerFinished(job.id, job.code, { status: "failed", summary: "后台子线程没能启动。" });
+    }
   }
 
   /** A report from a task's session: a progress line, or its result (which the resident then tells them about). */
@@ -1143,13 +1280,26 @@ export class Resident extends Think<Env> {
     return cards.length ? cards : undefined;
   }
 
-  /** The settings page's 云端 Claude Code: whether it is set up, the scheduled task's prompt, the recent tasks. */
-  async webTasks(origin?: string): Promise<{ on: boolean; configured: boolean; origin: string; prompt: string; today: number; limit: number; tasks: TaskCard[] }> {
+  /** The settings page's 云端 Claude Code: whether it is set up, how it runs, the scheduled task's prompt, the recent tasks. */
+  async webTasks(origin?: string): Promise<{
+    on: boolean;
+    configured: boolean;
+    mode: "cloud" | "local" | "incomplete" | "off";
+    linuxAvailable: boolean;
+    origin: string;
+    prompt: string;
+    today: number;
+    limit: number;
+    tasks: TaskCard[];
+  }> {
     if (origin) await this.noteOrigin(origin);
     const own = (await this.ctx.storage.get<string>("origin")) ?? "";
+    const mode = this.taskMode();
     return {
       on: this.cloudTasksOn(),
-      configured: Boolean(this.taskTrigger()),
+      configured: mode === "cloud" || mode === "local",
+      mode,
+      linuxAvailable: triggerKind(this.cfg.CLOUD_TASK_URL?.trim() ?? "") === "github" && !!this.taskTrigger(),
       origin: own,
       prompt: own ? routinePrompt(own) : "",
       today: this.cloudTasks().sentToday(),
@@ -1164,7 +1314,7 @@ export class Resident extends Think<Env> {
     if (this.cloudTasks().sentToday() >= TASKS_PER_DAY) return { error: `24 小时内已经派了 ${TASKS_PER_DAY} 单，明天再试` };
     const job =
       'This is a test from the resident\'s settings page, to see that this scheduled task starts and can report back. Do nothing else: send the progress line "收到了", then report the result with status done and the summary "接通了".';
-    const task = await this.startTask({ title: "接通测试", job, test: true }, null);
+    const task = await this.startTask({ title: "接通测试", job, test: true, execution: this.taskTrigger() ? "external" : "local" }, null);
     return "error" in task ? task : this.webTasks();
   }
 
@@ -2542,11 +2692,13 @@ export class Resident extends Think<Env> {
       `表情包：${this.stickersOn() ? `开，${this.stickerSummary()}` : "关"}`,
       await this.voiceLine(),
       `云端 Claude Code：${
-        this.taskTrigger()
+        this.taskMode() === "cloud"
           ? `接好了，24 小时内派了 ${this.cloudTasks().sentToday()} 单，在干的 ${this.cloudTasks().open()} 单`
-          : this.cloudTasksOn()
-            ? "开了，还差触发网址或 token"
-            : "关"
+          : this.taskMode() === "local"
+            ? `自己后台干，24 小时内派了 ${this.cloudTasks().sentToday()} 单，在干的 ${this.cloudTasks().open()} 单`
+            : this.cloudTasksOn()
+              ? "开了，还差触发网址或 token"
+              : "关"
       }`,
       `别的 MCP：${
         this.webMcp()

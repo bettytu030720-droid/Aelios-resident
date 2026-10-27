@@ -164,7 +164,8 @@ const taskGroup = page.CONFIG_GROUPS.find((group) => group.id === 'tasks');
 const taskFields = (on) => [
   { key: 'CLOUD_TASKS', kind: 'choice', value: on, fromWorker: '', choices: ['on', 'off'] },
   { key: 'CLOUD_TASK_URL', kind: 'text', value: '', fromWorker: '' },
-  { key: 'CLOUD_TASK_TOKEN', kind: 'secret', value: '', fromWorker: '', saved: false, workerHas: true }
+  { key: 'CLOUD_TASK_TOKEN', kind: 'secret', value: '', fromWorker: '', saved: false, workerHas: true },
+  { key: 'CLOUD_TASK_MODEL', kind: 'text', value: '', fromWorker: '' }
 ];
 page.config = { fields: taskFields('') };
 page.cloud = { on: false, configured: false, origin: 'https://r.example', prompt: 'p', today: 0, limit: 10, tasks: [] };
@@ -180,6 +181,34 @@ assert.equal(page.tagText(taskGroup.fields[2]), 'Cloudflare：CLOUD_TASK_TOKEN',
 assert.equal(page.cloudHost(), 'r.example');
 page.cloud = { ...page.cloud, on: true, configured: true, today: 3 };
 assert.equal(page.sectionSummary('tasks'), '接好了 · 24 小时内派了 3 单');
+page.cloud = { ...page.cloud, on: true, configured: true, mode: 'local', today: 2 };
+assert.equal(page.sectionSummary('tasks'), '自己后台干 · 24 小时内派了 2 单');
+assert.ok(!page.sectionNeeds('tasks'));
+page.cloud = { ...page.cloud, linuxAvailable: true };
+assert.equal(page.sectionSummary('tasks'), '自己后台干 · Linux 已接好 · 24 小时内派了 2 单');
+assert.ok(!page.sectionNeeds('tasks'));
+assert.match(page.groupHint(taskGroup), /Think 原生子 agent/);
+assert.match(page.groupHint(taskGroup), /日常仍默认本地/);
+assert.match(page.helpFor(taskGroup.fields[1]), /固定 Actions 执行仓库/);
+assert.ok(html.includes('x-show="cloud.linuxAvailable"'));
+assert.ok(html.includes('execution: linux'));
+assert.ok(html.includes('没有 shell 或 JavaScript 执行后端'));
+assert.ok(html.includes('没有住户下载入口'));
+page.cloud = { ...page.cloud, mode: 'cloud', linuxAvailable: false, today: 3 };
+assert.equal(page.sectionSummary('tasks'), '接好了 · 24 小时内派了 3 单');
+// The hands' model: off until it is turned on, then one tap fills it, and tapping it again saves nothing.
+const taskModel = taskGroup.fields.find((field) => field.key === 'CLOUD_TASK_MODEL');
+assert.equal(page.shown(taskModel), true, 'the model is offered once tasks are on');
+assert.equal(taskGroup.title, '后台帮忙');
+assert.match(page.helpFor(taskModel), /接口实际接受的模型 ID/);
+assert.match(page.helpFor(taskModel), /没有固定默认模型/);
+assert.ok(!html.includes('copilot/'));
+assert.ok(html.includes('HANDS_PUBLISH_REPO') && html.includes('Actions artifact'));
+assert.equal(page.picksFor(taskModel).join('|'), 'anthropic/claude-sonnet-5.5|anthropic/claude-opus-5.5');
+assert.equal(page.pickLabel(taskModel, 'anthropic/claude-sonnet-5.5'), 'Claude Sonnet（示例）');
+assert.equal(page.textInEffect(taskModel), '', 'empty means: the chat model here, the workflow\'s own on GitHub Actions');
+page.config = { fields: taskFields('on').map((field) => field.key === 'CLOUD_TASK_MODEL' ? { ...field, value: 'my-provider/my-model' } : field) };
+assert.equal(page.textInEffect(taskModel), 'my-provider/my-model');
 assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');
 console.log('PASS cloud tasks: a card under the reply, escaped and https only; the settings appear once it is turned on');
 // Keys for sites web_fetch reads: counted in the 搜网和读网页 row, only while reading pages is on.

@@ -52,6 +52,8 @@ interface Env {
   CLOUD_TASKS?: string;
   CLOUD_TASK_URL?: string;
   CLOUD_TASK_TOKEN?: string;
+  // Exact endpoint model ID; empty uses the chat model locally or repository MODEL_NAME on GitHub Actions.
+  CLOUD_TASK_MODEL?: string;
   // Local tests only: where the trigger is fired instead of api.anthropic.com, and how many minutes before a task is quiet.
   CLOUD_TASK_API_BASE?: string;
   CLOUD_TASK_QUIET_MINUTES?: string;

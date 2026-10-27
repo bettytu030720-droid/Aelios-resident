@@ -600,12 +600,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <template x-if="group.id === 'tasks'">
           <div class="tasks-extra" x-show="shown(metaOf('CLOUD_TASK_URL'))">
             <div class="field">
-              <div class="name"><span>第一次怎么接</span></div>
+              <div class="name"><span x-text="cloud.mode === 'local' ? '现在怎么干' : '第一次怎么接'"></span></div>
+              <p class="hint" x-show="cloud.mode === 'local'">日常默认交给 Think 原生子 agent：聊天与文件工作区存在独立的 SQLite 空间里，可读、写、搜索文件，并用已接好的搜网、读网页、记忆和 MCP 工具。这里没有 shell 或 JavaScript 执行后端，保存的文件目前也没有住户下载入口。配好 GitHub Actions 后，需要命令行、构建或文档工具链的单子才明确选 Linux 环境。</p>
+              <p class="hint" x-show="cloud.linuxAvailable">Linux 环境已接好，日常仍默认在本地子 agent 干；需要跑命令时，它可为那一单选择 GitHub Actions。</p>
               <ol class="steps">
-                <li>打开 claude.ai/code/routines，新建一个定时任务，把下面这段贴进提示词，选好模型、要它干活的仓库和云端环境。</li>
-                <li>「触发」选 API，建好后复制网址、点「生成 token」，填到上面。</li>
-                <li>在这个任务用的云端环境里，网络访问选「自定义」、勾上常用的包管理器，再把 <code x-text="cloudHost() || '住户的域名'"></code> 加进允许的网站，不然结果交不回来。</li>
-                <li>点「试一下」，几分钟后下面那单变成「做完了」就接通了。</li>
+                <li><strong>GitHub Actions（免 Claude 订阅）</strong>：选一个固定的执行仓库，放入配套工作流和脚本，在该仓库 Actions 变量/Secrets 里填好 <code>RESIDENT_URL</code>、<code>MODEL_BASE_URL</code>（比如你的 Aelios <code>/v1</code> 地址）、<code>MODEL_NAME</code> 和 Secret <code>MODEL_API_KEY</code>；上面触发网址填 <code>https://api.github.com/repos/用户名/仓库名/actions/workflows/resident-hands.yml/dispatches</code>，token 填有 Actions 写权限的 GitHub PAT。触发网址指向执行仓库，目标仓库按每张单子指定；改其他仓库时另配有对应仓库权限的 Secret <code>HANDS_GH_TOKEN</code>。配好后日常仍默认本地，只有单子明确选择 <code>execution: linux</code> 才启动 Actions。文件默认交付为 Actions artifact；只有明确设置 <code>HANDS_PUBLISH_REPO</code> 、配置有发布权限的 <code>HANDS_GH_TOKEN</code> PAT 并开启该仓库的 Pages（gh-pages 分支）才公开托管，私人文档不要放那里。</li>
+                <li><strong>claude.ai 定时任务（有 Claude 订阅）</strong>：打开 claude.ai/code/routines 新建定时任务，把下面这段贴进提示词，触发选 API，复制网址和生成的 token 填到上面，并在云端环境的网络访问里把 <code x-text="cloudHost() || '住户的域名'"></code> 加进允许的网站。</li>
+                <li><strong>Cursor Cloud Agents（有 Cursor 订阅）</strong>：把下面提示词放进仓库说明，触发网址填 <code>https://api.cursor.com/v0/agents</code>，token 填 Cursor API Key。</li>
+                <li>点「试一下」，有配置触发器时测试对应的 Actions 或外部服务；没有时测试本地子 agent。下面那单变成「做完了」表示测试通过。</li>
               </ol>
               <textarea class="prompt-box" readonly x-show="cloud.prompt" :value="cloud.prompt" aria-label="定时任务的提示词" @focus="$event.target.select()"></textarea>
               <p class="hint" x-show="!cloud.prompt">从网页上发一句话或者刷新一下，这里就会出现提示词（要先知道住户的网址）。</p>
@@ -872,10 +874,14 @@ function resident() {
         help: '只接受大于 8000 的整数，默认 30000，也可设为 50000。按当前携带的聊天估算，含旧交接信、工具调用和结果、图片，不含人设、工具定义和历史思考；不按累计聊天总量算。' },
       { key: 'LETTER_IDLE_MINUTES', label: '写信前要闲置多久（分钟）', help: '聊天达到门槛后，也要等这么久没人说话才自动写。最多比缓存时长少 1 分钟。off 只靠手动 /handoff。', def: '55（缓存 5m 时 4）', more: true }
     ] },
-    { id: 'tasks', title: '云端 Claude Code', hint: '它的手脚：你叫它改代码、做文件、查资料时，它把活写成一张单子，交给你 claude.ai 上的一个定时任务，开一个云端 Claude Code 会话去干，用你订阅的额度。干完结果交回来，它再告诉你。会话在 claude.ai 里也看得到，可以点开接着聊。', fields: [
-      { key: 'CLOUD_TASKS', label: '用云端 Claude Code', def: 'off', labels: ON_OFF, help: '要有 Claude 的付费订阅（Pro、Max 这些）才能用。没有就关着，它不会提这件事。' },
-      { key: 'CLOUD_TASK_URL', label: '触发网址', needs: 'CLOUD_TASKS', help: '定时任务的 API 触发器上那个 Fire URL。', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/trig_…/fire' },
-      { key: 'CLOUD_TASK_TOKEN', label: 'token', needs: 'CLOUD_TASKS', help: '点「生成 token」得到的 sk-ant-oat01-… 那串，只显示一次。想更稳就存进 Cloudflare 的 Secret（名字 CLOUD_TASK_TOKEN），这里空着。别发在聊天里。' }
+    { id: 'tasks', title: '后台帮忙', hint: '日常交给 Think 原生子 agent，在独立的持久聊天和 SQLite 文件工作区里做事，完成后把总结交回来。GitHub Actions 是选装的 Linux 环境：即使接好了，日常仍默认本地；需要 shell、构建或文档工具链时才为那一单选 Linux。接 claude.ai 或 Cursor 时，可继续默认交给对应外部会话。', fields: [
+      { key: 'CLOUD_TASKS', label: '让它后台帮忙', def: 'off', labels: ON_OFF, help: '打开后可派后台单子。每单可选 local（持久子 agent）、linux（已配置的 Actions）或 external（claude.ai / Cursor）；GitHub 接好后默认仍是 local。' },
+      { key: 'CLOUD_TASK_URL', label: '触发网址', needs: 'CLOUD_TASKS', help: '留空只用本地子 agent；填固定 Actions 执行仓库的 .../workflows/resident-hands.yml/dispatches 可选装 Linux 环境。claude.ai 的 .../routines/trig_…/fire 或 Cursor 的 https://api.cursor.com/v0/agents 则默认走外部会话。', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/trig_…/fire' },
+      { key: 'CLOUD_TASK_TOKEN', label: 'token', needs: 'CLOUD_TASKS', help: '对应上面的触发网址（GitHub PAT、claude.ai 生成的 token 或 Cursor API Key）。想更稳就存进 Cloudflare 的 Secret（名字 CLOUD_TASK_TOKEN），这里空着。用自己后台干时不用填。别发在聊天里。' },
+      { key: 'CLOUD_TASK_MODEL', label: '派活用哪个模型', needs: 'CLOUD_TASKS',
+        help: '填 MODEL_BASE_URL 接口实际接受的模型 ID，可以直接输入。留空：自己后台用聊天模型，GitHub Actions 用仓库变量 MODEL_NAME，没有固定默认模型。下面只是示例，先确认你的接口支持。',
+        picks: ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5'],
+        pickLabels: { 'anthropic/claude-sonnet-5.5': 'Claude Sonnet（示例）', 'anthropic/claude-opus-5.5': 'Claude Opus（示例）' } }
     ] },
     { id: 'custom', title: '供应商', hint: '接了 Aelios，聊天的模型和 key 在 Aelios 后台配；这里管住户自己往外发的请求。', fields: [
       { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', def: 'default',
@@ -1968,6 +1974,7 @@ function resident() {
           return this.mcp.servers.length ? this.mcp.servers.map(function (server) { return server.name; }).join('、') : '没接';
         case 'tasks':
           if (this.inEffect(this.metaOf('CLOUD_TASKS')) !== 'on') return '关';
+          if (this.cloud.mode === 'local') return '自己后台干' + (this.cloud.linuxAvailable ? ' · Linux 已接好' : '') + ' · 24 小时内派了 ' + this.cloud.today + ' 单';
           return this.cloud.configured ? '接好了 · 24 小时内派了 ' + this.cloud.today + ' 单' : '开了，还没接好';
         case 'thinking':
           return this.letterWriteStatus() + ' · ' + this.letterDeliveryCounts();

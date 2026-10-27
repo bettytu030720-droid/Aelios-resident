@@ -91,7 +91,10 @@ export const FIELDS: readonly Field[] = [
   { key: "VOICE_BASE_URL", kind: "text", check: address },
   { key: "CLOUD_TASKS", kind: "choice", choices: ["on", "off"] },
   { key: "CLOUD_TASK_URL", kind: "text", check: fireUrlProblem },
-  { key: "CLOUD_TASK_TOKEN", kind: "secret" }
+  { key: "CLOUD_TASK_TOKEN", kind: "secret" },
+  // Which model the hands work with: the built-in background thread, and the GitHub Actions job (its harness comes
+  // from the prefix: copilot/… runs GitHub's Copilot CLI, anything else the repository's own hands.mjs loop).
+  { key: "CLOUD_TASK_MODEL", kind: "text" }
 ];
 
 /** One setting as the web door shows it. Secrets only say whether they are set, never what they are. */

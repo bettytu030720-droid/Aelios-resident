@@ -24,6 +24,7 @@ import { TELEGRAM_WEBHOOK_PATH, commandOf, isAllowed, timingSafeEqual, type Tele
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { Resident } from "./resident";
+export { TaskWorker } from "./task-worker";
 
 const WECOM_PATH = "/messengers/wecom/webhook";
 // A WeCom push is a few kilobytes of XML.

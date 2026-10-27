@@ -1505,13 +1505,50 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(await ask("/status"), /云端 Claude Code：接好了，24 小时内派了 5 单，在干的 3 单/);
     });
 
+    await step("without a routine trigger, CLOUD_TASKS runs on the resident's own background worker and reports back", async () => {
+      await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "" });
+      const partial = await tasks();
+      assert.deepEqual([partial.on, partial.configured, partial.mode], [true, false, "incomplete"]);
+      assert.match(await ask("/status"), /云端 Claude Code：开了，还差触发网址或 token/);
+
+      await set({ CLOUD_TASK_URL: "", CLOUD_TASK_TOKEN: "" });
+      const localState = await tasks();
+      assert.deepEqual([localState.on, localState.configured, localState.mode], [true, true, "local"]);
+      assert.match(await ask("/status"), /云端 Claude Code：自己后台干，24 小时内派了 5 单，在干的 3 单/);
+
+      const firesBefore = (await fires()).length;
+      const out = await ask("派活");
+      const afterAsk = (await sent()).length;
+      assert.equal((await fires()).length, firesBefore, "not sent to the external routine trigger");
+      const id = out.match(/\bt_[0-9a-f]{10}\b/)?.[0];
+      assert.ok(id, out);
+      const reportOut = (await waitForSends(afterAsk, 1)).join("\n");
+      assert.ok(reportOut.startsWith(`云端回来了：(Not from them: your cloud task ${id} "修 README 的错字" reported back: it is done.`), reportOut);
+      assert.match(reportOut, /后台做好了：.*第 28 章/);
+      assert.ok(!reportOut.includes("Session:"), "no external session link in a local worker note");
+      const card = (await tasks()).tasks.find((t) => t.id === id);
+      assert.deepEqual([card.status, card.sessionUrl, card.links], ["done", "", ["https://example.com/note"]]);
+      assert.equal(card.progress, "正在看小本本：经济师进度");
+
+      await set({ CLOUD_TASK_URL: "https://api.github.com/repos/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml/dispatches#dev", CLOUD_TASK_TOKEN: "good-token" });
+      const ghRes = await web("/web/tasks/test", KEY, {});
+      assert.equal(ghRes.status, 200);
+      const ghCard = (await ghRes.json()).tasks[0];
+      assert.equal(ghCard.sessionUrl, "https://github.com/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml");
+      const ghDispatch = (await log()).filter((e) => e.kind === "github.dispatch").at(-1);
+      assert.equal(ghDispatch?.body?.ref, "dev");
+      assert.match(ghDispatch?.body?.inputs?.job ?? "", /title: 接通测试/);
+
+      await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
+    });
+
     await step("ten a day at most, on the settings page and in the chat", async () => {
-      for (let i = 0; i < 5; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
+      for (let i = 0; i < 3; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
       const over = await web("/web/tasks/test", KEY, {});
       assert.equal(over.status, 400);
       assert.match((await over.json()).error, /已经派了 10 单/);
       assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
-      assert.equal((await fires()).length, 12, "10 sent, the wrong token and the busy trigger tried");
+      assert.equal((await fires()).length, 10, "8 sent to the Claude trigger (1 ran locally, 1 via GitHub Actions), the wrong token and the busy trigger tried");
     });
   }
 

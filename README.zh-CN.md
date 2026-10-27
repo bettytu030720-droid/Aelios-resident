@@ -20,7 +20,7 @@
 - **搜网、读网页**：优先用你自己的搜索 key，没有就用 Cloudflare 的；长网页先压短再给它看。
 - **表情包**：导入 Telegram 贴纸包或 zip，聊天时偶尔发一张，还能自己画像素小表情。
 - **接别的 MCP**：在设置页填个地址，或者在聊天里叫它自己接。
-- **叫云端 Claude Code 干活**：有 Claude 付费订阅的话，改代码、做文件这类活可以交给 claude.ai 上的云端 Claude Code，用你订阅的额度，干完它告诉你。默认关着。
+- **后台帮忙**：默认关着。日常用有独立历史和文件工作区的持久 Think 子 agent；选装固定 GitHub Actions 执行仓库后，需要 Linux 的单子才明确选用，也可保留 Claude / Cursor 外部会话。
 - **时间流**：网页门右上角一个小按钮，看每次调模型用了多少 token、多少是从缓存读的、按 Anthropic 官方价大约多少钱：上面是今天、7 天、30 天三个总计，下面一条条列出来。只存数字，不存聊天内容。
 
 ## 怎么运作
@@ -146,7 +146,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 ### 设置页
 
-点网页门右上角的齿轮。先是一张目录：长期记忆、IM（Telegram 和企业微信）、心跳和闹钟、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
+点网页门右上角的齿轮。先是一张目录：长期记忆、IM（Telegram 和企业微信）、心跳和闹钟、语音、表情包、搜网和读网页、别的 MCP、后台帮忙、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
 
 - 改完点「保存」，下一句就生效。
 - 取值顺序：这里存的优先；没存的用 Cloudflare 里同名的变量；那边也没有就用默认值，默认值用灰字写在输入框里。
@@ -349,11 +349,19 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 - 工具说明每轮都要带，所以会截短；最多接 8 个服务，一轮最多 40 个工具。
 - 住户休眠醒来时，接着的服务要几秒才连回来。还没连上的那个照样列着上次的工具（调用时多等它一会儿），工具清单不变，缓存不断。
 
-### 叫云端 Claude Code 干活
+### 后台帮忙
 
-要有 Claude 的付费订阅（Pro、Max 等），默认关着。在设置页「云端 Claude Code」打开后，你叫它改代码、修 bug、做文件、查一大堆资料时，它把活写成一张单子，交给你 claude.ai 上的一个定时任务；定时任务开一个云端 Claude Code 会话去干，用你订阅的额度。住户自己不用装写代码的工具，也不占它的上下文。
+默认关着。在设置页「后台帮忙」打开后，你叫它查一大堆资料、写小本本、改代码、修 bug、做文件时，它把活写成一张单子交出去干，中间步骤不占聊天的上下文、也不打断缓存：
 
-第一次接（设置页上有同样的步骤和要复制的提示词）：
+- **日常用持久的 Think 原生子 agent**：它有独立于陪伴主聊天的历史和 SQLite 文件工作区，可读、写、搜索文件，并使用住户接好的搜网、读网页、长期记忆、小本本和 MCP 工具。模型调用标为辅助调用。这个工作区没有 JavaScript 执行后端，也没有 shell；目前没有通过住户下载其中文件的入口。
+- **每单选择执行环境**：`cloud_task` 支持 `execution: local | linux | external`。没有触发网址时默认 `local`；配置 GitHub Actions 后仍默认 `local`，需要 shell、安装依赖、构建、测试或文档工具链时，才明确选 `linux`。配置 claude.ai 或 Cursor 时，可保留默认 `external`；`external` 指这类外部会话，不是 GitHub 工作流。
+- **选装固定的 Actions 执行仓库**：在一个执行仓库里放配套 `.github/workflows/resident-hands.yml` 和 `scripts/hands.mjs`。`CLOUD_TASK_URL` 填 `https://api.github.com/repos/用户名/执行仓库/actions/workflows/resident-hands.yml/dispatches`（末尾可加 `#分支名`，默认 `main`），`CLOUD_TASK_TOKEN` 填有该仓库 Actions 写权限的 Fine-grained PAT。每单另外指定目标仓库，不用给每个目标仓库复制工作流或模型密钥。
+- **Harness 和模型**：Actions 用零依赖 Node.js 工具循环。在执行仓库填变量 `RESIDENT_URL`、`MODEL_BASE_URL`（写到 `/v1`）、`MODEL_NAME`，Secret 填 `MODEL_API_KEY`。设置页的 `CLOUD_TASK_MODEL` 可以覆盖 `MODEL_NAME`，按接口实际接受的模型 ID 填，没有固定 Actions 默认模型。本地子 agent 留空时用聊天模型。
+- **仓库和权限**：每单的 `repo` 用 `owner/repo` 指定目标仓库。工作流自带 token 通常只管执行仓库；要改其他仓库，在执行仓库 Secret 配 `HANDS_GH_TOKEN`，授予对应目标仓库 Contents 和 Pull requests 写权限。它与派单 token 分开。改动走分支和 PR；Cloudflare 构建和预览取决于已有仓库关联与设置。只有环境变量不能自动授予权限，也不能代替安装工作流。
+- **Linux 文件和页面交付**：Actions 的交付工具把选定输出保存为 artifact，需要 GitHub 访问权限才能下载，按工作流设置保留；这不代表本地子 agent 工作区有下载入口。公开托管可选：执行仓库变量 `HANDS_PUBLISH_REPO` 填获准发布的 `owner/repo`，在该发布仓库开启 GitHub Pages，选择 **Deploy from a branch → gh-pages → / (root)**，并配有发布权限的 `HANDS_GH_TOKEN` PAT。默认 `GITHUB_TOKEN` 不触发按分支部署的 Pages 构建。只公开愿意公开的内容。Actions 提示词要求非公开成品真正加密，密码通过最终回报私下交付，不提交、不打日志；无法加密时保留在受访问权限控制的附件里。文档工具和字体按需安装，生成后检查文字和排版。
+- **保留外部服务**：claude.ai 定时任务用 `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`，Cursor 用 `https://api.cursor.com/v0/agents`，都要对应的触发 token 和服务环境；它们不提供 Actions 的可选 Linux 环境。
+
+第一次接 claude.ai 定时任务（设置页上有同样的步骤和要复制的提示词）：
 
 1. 打开 [claude.ai/code/routines](https://claude.ai/code/routines) 新建一个定时任务，把设置页上那段提示词贴进去，选好模型、仓库和云端环境。
 2. 「触发」里加一个 API，复制网址，点「生成 token」。网址填在设置页；token 填在设置页，或者存成 Cloudflare 的 Secret `CLOUD_TASK_TOKEN`。token 只显示一次，别发在聊天里。
@@ -370,7 +378,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 - 提示词里写明了：在新分支上干、开 PR，不往默认分支推，不删东西，不花钱，除非单子里明说。
 - 3 小时没交回结果（一直在报进度的会多等，最多 12 小时），它会告诉你一声，附上链接。
 
-每单都是一个新会话。这个触发 API 还在预览阶段，Anthropic 那边对触发次数也有每小时的上限。
+本地接着做时，`follow_up_of` 沿用前一单的子 agent 工作区和历史。Actions 每次启动新 runner，上一单的结果只是上下文，不保留 Linux 文件系统。Claude 定时任务每次打开新的外部会话；Anthropic 的触发 API 仍在预览阶段，有每小时次数限制。
 
 ### 供应商：用自己的 key、接中转
 
@@ -420,9 +428,10 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 | `VOICE_REPLY` | `mirror` | `mirror` 你发语音才回语音；`always` 每条都是语音；`tool` 它想发才发 |
 | `VOICE_API_KEY` | 空 | 那一家的 key；存在 AI Gateway 的 Provider Keys 里就不用填 |
 | `VOICE_BASE_URL` | 空 | 一般不填；填了就不走 AI Gateway，直接发到这个地址 |
-| `CLOUD_TASKS` | `off` | `on` 让它把活交给云端 Claude Code（要 Claude 付费订阅） |
-| `CLOUD_TASK_URL` | 空 | 定时任务 API 触发器的网址：`https://api.anthropic.com/v1/claude_code/routines/trig_…/fire` |
-| `CLOUD_TASK_TOKEN` | 空 | 那个触发器的 token；可以存成 Cloudflare 的 Secret |
+| `CLOUD_TASKS` | `off` | `on` 打开持久本地子 agent，单子可另外选择已配置的 Linux 或外部执行环境 |
+| `CLOUD_TASK_URL` | 空 | 选填：Actions 执行仓库或 Claude / Cursor 触发网址；GitHub 增加可选 Linux 环境，不改变默认本地执行 |
+| `CLOUD_TASK_TOKEN` | 空 | 那个触发器的 token（填了触发网址时要填）；可以存成 Cloudflare 的 Secret |
+| `CLOUD_TASK_MODEL` | 空 | 填接口实际接受的模型 ID，覆盖 GitHub Actions 的 `MODEL_NAME`；留空时自己后台用聊天模型、Actions 用仓库变量，没有内置的 Actions 默认模型 |
 | `AI_GATEWAY_ID` | 空（用 `default`） | 搜网、语音、没接 Aelios 时的模型走哪个 AI Gateway |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | 空 | 中转的地址（写到 `/v1`）和 key；模型填 `custom/…` 时用 |
 | `CUSTOM_FORMAT` | `openai` | 中转用哪种格式：`openai` 或 `anthropic`（带缓存） |

@@ -22,7 +22,7 @@ It is built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
 - **Searches the web and reads pages**: your own search keys come first, Cloudflare's search otherwise; long pages are shortened before it reads them.
 - **Stickers**: import a Telegram sticker pack or a zip and it sends one now and then. It can also draw its own little pixel stickers.
 - **Other MCP servers**: add one by address on the settings page, or ask it to connect one in the chat.
-- **Hands work to cloud Claude Code**: with a paid Claude plan it can pass coding and file work to cloud Claude Code on claude.ai, using your plan's allowance, and tell you when it is done. Off by default.
+- **Background help**: off by default. Daily work runs in a persistent Think child with its own history and file workspace. Optionally connect a fixed GitHub Actions execution repository for tasks that explicitly need Linux, or use existing Claude/Cursor external sessions.
 - **Usage timeline**: a button at the top right of the web door shows how many tokens each call to a model used, how much of it was read from the prompt cache, and roughly what it cost at Anthropic's list prices: today, 7 days and 30 days on top, every call below. Only numbers are kept, never the chat.
 
 ## How it fits together
@@ -148,7 +148,7 @@ Click the pencil at the top right of the web door. After you save, the next repl
 
 ### The settings page
 
-Click the gear at the top right of the web door. It opens on a list of sections: Long-term memory (「长期记忆」), IM (Telegram and WeCom), Heartbeat & alarms (「心跳和闹钟」), Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Other MCP (「别的 MCP」), Cloud Claude Code (「云端 Claude Code」), Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line under each shows its current state. Open one to see only that section; settings you rarely change are under **More settings** (「更多设置」).
+Click the gear at the top right of the web door. It opens on a list of sections: Long-term memory (「长期记忆」), IM (Telegram and WeCom), Heartbeat & alarms (「心跳和闹钟」), Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Other MCP (「别的 MCP」), Background help (「后台帮忙」), Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line under each shows its current state. Open one to see only that section; settings you rarely change are under **More settings** (「更多设置」).
 
 - Click **Save** (「保存」) and the change applies from the next message.
 - Where a value comes from: a value saved here wins; otherwise the Cloudflare variable of the same name; otherwise the default, which is shown in grey in the input box.
@@ -351,11 +351,19 @@ Enter a server's address (https) under **Other MCP** (「别的 MCP」), and its
 - Tool descriptions go to the model on every turn, so they are shortened; at most 8 servers, at most 40 tools per turn.
 - When the resident wakes from sleep, connected servers take a few seconds to come back. One that has not reconnected yet keeps its last tool list (a call to it just waits a little longer), so the tool list does not change and the cache is not broken.
 
-### Handing work to cloud Claude Code
+### Background help
 
-This needs a paid Claude plan (Pro, Max and so on) and is off by default. Once turned on under **Cloud Claude Code** (「云端 Claude Code」), when you ask it to change code, fix a bug, produce files or dig through lots of material, it writes the work up as a job and passes it to a routine on your claude.ai. The routine opens a cloud Claude Code session that does the work, using your plan's allowance. The resident needs no coding tools of its own, and none of this uses its context.
+Off by default. Once turned on under **Background help** (「后台帮忙」), when you ask it to dig through lots of material, write to the notebook, change code or produce files, it writes the work up as a job and hands it off so none of the intermediate steps use the chat's context or break its cache:
 
-The first time (the settings page shows the same steps and the prompt to copy):
+- **Daily work in a persistent Think child**: local work has its own conversation history and SQLite file workspace, separate from the companion chat. It can read, write and search files and use the resident's search, web-reading, memory, notebook and connected MCP tools. It uses the selected model as an auxiliary call. This workspace does not include a JavaScript execution backend or a shell. Files saved there currently have no download endpoint on the resident.
+- **Choose execution per task**: `cloud_task` accepts `execution: local | linux | external`. With no trigger, local is the default. Configuring a GitHub Actions URL adds an optional Linux environment while keeping local as the default; choose `linux` explicitly for shell commands, dependency installation, builds, tests or document toolchains. A configured claude.ai or Cursor trigger may remain the default external mode; `external` uses that configured provider, not the GitHub workflow.
+- **Optional fixed Actions execution repository**: keep the included `.github/workflows/resident-hands.yml` and `scripts/hands.mjs` in one execution repository. Set `CLOUD_TASK_URL` to `https://api.github.com/repos/<owner>/<execution-repo>/actions/workflows/resident-hands.yml/dispatches` (optional `#branch`, defaults to `main`) and `CLOUD_TASK_TOKEN` to a fine-grained PAT with Actions write access to it. The target repository is supplied separately on each task; it need not contain the workflow or model credentials.
+- **Harness and model**: Actions runs the zero-dependency Node.js tool loop. In the execution repository, set variables `RESIDENT_URL`, `MODEL_BASE_URL` (ending in `/v1`) and `MODEL_NAME`, and secret `MODEL_API_KEY`. `CLOUD_TASK_MODEL` overrides `MODEL_NAME`; use the exact model ID accepted by that endpoint. No Actions model is selected implicitly. Left empty, the local child uses the chat model.
+- **Repositories and permissions**: a task's `repo` names its target as `owner/repo`. The workflow token normally covers only the execution repository. For other repositories, configure `HANDS_GH_TOKEN` in the execution repository with access to the selected targets (Contents and Pull requests write). The dispatch token is separate. Code changes go to a branch and PR. Cloudflare builds or preview links depend on existing repository integration and settings; an environment variable alone does not grant access or install a workflow.
+- **Linux files and pages**: the Actions delivery tool copies chosen output files into an artifact; downloading requires GitHub access and retention follows the workflow settings. This does not expose local child workspace files for download. Public hosting is optional: set execution-repository variable `HANDS_PUBLISH_REPO` to an authorized `owner/repo`, enable GitHub Pages there with **Deploy from a branch → gh-pages → / (root)**, and configure `HANDS_GH_TOKEN` with publishing access. The default `GITHUB_TOKEN` does not trigger branch-based Pages builds. Only intentionally public material belongs on Pages. The Actions prompt requires real password-based encryption for nonpublic deliverables, with passwords returned privately rather than committed or logged; if encryption is unavailable, retain access-controlled artifacts. Document tools and fonts are installed as needed; check generated text and layout.
+- **Existing external providers**: a paid Claude routine uses `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`; Cursor uses `https://api.cursor.com/v0/agents`. Both need their corresponding trigger token and provider environment. They do not provide the optional Actions Linux mode.
+
+The first time you connect a claude.ai routine (the settings page shows the same steps and the prompt to copy):
 
 1. Open [claude.ai/code/routines](https://claude.ai/code/routines), create a routine, paste in the prompt from the settings page, and choose the model, repository and cloud environment.
 2. Under the trigger, add an API trigger, copy its URL and click "Generate token". Enter the URL on the settings page; enter the token there too, or store it as the Cloudflare secret `CLOUD_TASK_TOKEN`. The token is shown only once; don't send it in the chat.
@@ -372,7 +380,7 @@ After that:
 - The prompt says to work on a new branch and open a PR, never push to the default branch, delete anything or spend money unless the job says so.
 - If no result comes back within 3 hours (longer for a job that keeps reporting progress, up to 12 hours), it tells you, with the link.
 
-Each job is a new session. This trigger API is still in preview, and Anthropic also limits how many triggers can fire per hour.
+For local follow-ups, `follow_up_of` continues the earlier child workspace and history. Actions starts a fresh runner; an earlier result is context, not a saved Linux filesystem. Claude routine runs start new external sessions. The Anthropic trigger API is still in preview and has hourly trigger limits.
 
 ### Providers: your own keys and relays
 
@@ -422,9 +430,10 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `VOICE_REPLY` | `mirror` | `mirror` answers voice with voice; `always` makes every reply a voice message; `tool` lets it choose |
 | `VOICE_API_KEY` | empty | That provider's key; not needed if stored in AI Gateway's Provider Keys |
 | `VOICE_BASE_URL` | empty | Usually left empty; when set, voice requests go straight to this address instead of through AI Gateway |
-| `CLOUD_TASKS` | `off` | `on` lets it hand work to cloud Claude Code (needs a paid Claude plan) |
-| `CLOUD_TASK_URL` | empty | The routine's API trigger URL: `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire` |
-| `CLOUD_TASK_TOKEN` | empty | That trigger's token; can be stored as a Cloudflare secret |
+| `CLOUD_TASKS` | `off` | `on` enables persistent local child work and optional per-task Linux or external execution |
+| `CLOUD_TASK_URL` | empty | Optional Actions execution-repository or Claude/Cursor trigger URL; GitHub adds Linux without changing the local default |
+| `CLOUD_TASK_TOKEN` | empty | That trigger's token (when `CLOUD_TASK_URL` is set); can be stored as a Cloudflare secret |
+| `CLOUD_TASK_MODEL` | empty | Exact model ID accepted by the configured endpoint; overrides GitHub Actions `MODEL_NAME`. Empty uses the chat model locally or the repository variable on Actions; no built-in Actions model default |
 | `AI_GATEWAY_ID` | empty (`default`) | Which AI Gateway search, voice and, without Aelios, the models go through |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | empty | The relay's address (up to `/v1`) and key; used for `custom/…` models |
 | `CUSTOM_FORMAT` | `openai` | The relay's format: `openai` or `anthropic` (with caching) |

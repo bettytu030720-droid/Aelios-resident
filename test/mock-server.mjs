@@ -307,6 +307,15 @@ const server = http.createServer(async (req, res) => {
     return reply({ type: "routine_fire", claude_code_session_id: `session_test_${n}`, claude_code_session_url: `https://claude.ai/code/session_test_${n}` });
   }
 
+  const ghDispatch = url.pathname.match(/^\/repos\/([\w.-]+\/[\w.-]+)\/actions\/workflows\/([\w.-]+\.ya?ml|\d+)\/dispatches$/);
+  if (ghDispatch) {
+    const headers = Object.fromEntries(["authorization", "accept", "x-github-api-version"].map((h) => [h, req.headers[h] ?? null]));
+    log.push({ kind: "github.dispatch", repo: ghDispatch[1], workflow: ghDispatch[2], headers, body: json });
+    if (req.headers.authorization !== "Bearer good-token") return reply({ message: "Bad credentials" }, 401);
+    res.writeHead(204);
+    return res.end();
+  }
+
   const mcp = url.pathname.match(/^\/(ext|ext2|keyed|oauth)\/mcp$/);
   if (mcp) {
     const who = mcp[1];
