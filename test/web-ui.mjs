@@ -5,7 +5,8 @@ import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = readFileSync('public/app.js', 'utf8');
 assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
-const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {} });
+const resized = [];
+const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {}, ResizeObserver: class { constructor(fn) { resized.push(fn); } observe() {} } });
 vm.runInContext(code, context);
 // What Alpine would add to the page's state.
 vm.runInContext('function testPage() { var p = resident(); p.$nextTick = function (fn) { fn(); }; p.$refs = {}; return p; }', context);
@@ -873,3 +874,112 @@ asker.dismissPush();
 assert.equal(asker.pushInvite(), false);
 assert.ok(readFileSync('public/sw.js', 'utf8').includes("addEventListener('push'"));
 console.log('PASS notifications are offered once, only where they can work');
+
+// The conversation keeps to its bottom while she is there: new lines, however tall, the keyboard or the + panel
+// making it shorter, a sticker loading. Scrolled up, it stays where she reads, and opening a fold does not pull it.
+const scroller = vm.runInContext('testPage()', context);
+const listeners = {};
+const stream = { scrollHeight: 2000, scrollTop: 1400, clientHeight: 600, addEventListener(name, fn) { listeners[name] = fn; } };
+scroller.$refs = { stream };
+scroller.authed = true;
+for (const name of ['loadModel', 'loadAlarms', 'loadTasks']) scroller[name] = async () => {};
+let served = [{ id: 'a', role: 'assistant', text: '早', kind: 'chat', via: 'web', at: 1 }];
+// New lines make the conversation taller once Alpine has drawn them.
+let grow = 0;
+scroller.$nextTick = (fn) => { stream.scrollHeight += grow; grow = 0; fn(); };
+scroller.api = async () => { grow = 900; return { data: served }; };
+await scroller.refresh();
+assert.equal(stream.scrollTop, stream.scrollHeight, 'at the bottom, it follows a line taller than the margin');
+scroller.watchStream();
+assert.equal(resized.length, 1);
+assert.ok(listeners.load && listeners.loadeddata, 'pictures and stickers that load are followed too');
+stream.clientHeight = 300;
+stream.scrollTop = 1800;
+resized[0]();
+assert.equal(stream.scrollTop, stream.scrollHeight, 'the keyboard opens: still the last line above the box');
+stream.scrollHeight += 200;
+listeners.load();
+assert.equal(stream.scrollTop, stream.scrollHeight, 'a sticker loads: still at the bottom');
+stream.scrollTop = 500;
+scroller.onScroll();
+assert.equal(scroller.nearBottom, false);
+served = [...served, { id: 'b', role: 'assistant', text: '在吗', kind: 'chat', via: 'web', at: 2 }];
+await scroller.refresh();
+stream.scrollHeight += grow; // drawn all the same
+grow = 0;
+assert.deepEqual([stream.scrollTop, scroller.unseen], [500, 1], 'scrolled up: it stays, and counts what came');
+resized[0]();
+listeners.load();
+assert.equal(stream.scrollTop, 500, 'the keyboard or a picture does not pull her down');
+stream.scrollTop = stream.scrollHeight - stream.clientHeight;
+scroller.onScroll();
+assert.equal(scroller.nearBottom, true);
+stream.scrollHeight += 800;
+scroller.toggleBusy('b');
+assert.equal(scroller.nearBottom, false, 'opening a fold at the bottom moves the bottom away');
+resized[0]();
+assert.equal(stream.scrollTop, stream.scrollHeight - 800 - stream.clientHeight, 'so what she opened stays in view');
+console.log('PASS the conversation keeps to its bottom while she is there (new lines, the keyboard, a sticker loading), and stays put when she has scrolled up or opened a fold');
+
+// + opens what it can do, the smiley the stickers, with no tabs between them; the same button again closes it.
+const panelPage = vm.runInContext('testPage()', context);
+let stickerLoads = 0;
+panelPage.loadStickerList = () => { stickerLoads += 1; };
+panelPage.togglePanel('tools');
+assert.deepEqual([panelPage.panel, panelPage.panelTab], ['open', 'tools']);
+panelPage.togglePanel('stickers');
+assert.deepEqual([panelPage.panel, panelPage.panelTab, stickerLoads], ['open', 'stickers', 1], 'the smiley switches to the stickers');
+panelPage.togglePanel('stickers');
+assert.equal(panelPage.panel, '', 'and closes them');
+panelPage.togglePanel();
+assert.equal(panelPage.panelTab, 'tools');
+panelPage.togglePanel('tools');
+assert.equal(panelPage.panel, '');
+assert.ok(!html.includes('class="tabs"'), 'no 功能 / 表情包 tabs');
+assert.ok(html.includes(`@click="togglePanel('tools')"`) && html.includes(`@click="togglePanel('stickers')"`));
+console.log('PASS + opens what it can do and the smiley the stickers, without tabs');
+
+// A thread's card that waits for her: 不用了 puts it aside on every card of it at once; a failure puts it back.
+const asideCalls = [];
+const aside = vm.runInContext('testPage()', context);
+aside.notify = () => {};
+aside.refresh = async () => {};
+aside.loadTasks = async () => {};
+const waitingCard = () => ({ id: 't_0123456789', title: '看 PR', status: 'needs_you', choices: [], chosen: '', waiting: true, thread: 't_0123456789' });
+aside.lines = [{ id: 'a1', role: 'assistant', kind: 'chat', text: '派了', tasks: [waitingCard()] }, { id: 'a2', role: 'assistant', kind: 'chat', text: '它在等你', tasks: [waitingCard()] }];
+aside.cloud = { ...aside.cloud, tasks: [waitingCard(), { ...waitingCard(), id: 't_1111111111', status: 'working', waiting: false }] };
+assert.equal(aside.workingTasks(), 2, 'one at work, one waiting for her');
+assert.equal(aside.taskStatusText(aside.stateOf(aside.lines[0].tasks[0])), '等你拍板');
+aside.api = async (path, options) => { asideCalls.push([path, options.body]); return { ok: true }; };
+await aside.settle(aside.lines[0].tasks[0]);
+assert.deepEqual(copy(asideCalls), [['/web/task/settle', { id: 't_0123456789' }]]);
+assert.deepEqual(aside.lines.map((line) => line.tasks[0].waiting), [false, false], 'both cards of it stop asking');
+assert.equal(aside.taskStatusText(aside.stateOf(aside.lines[1].tasks[0])), '处理过了');
+assert.equal(aside.taskStatusText(aside.stateOf({ ...waitingCard(), waiting: false, chosen: '好' })), '拍板了');
+await aside.settle(aside.lines[0].tasks[0]);
+assert.equal(asideCalls.length, 1, 'not twice');
+aside.lines = [{ id: 'a3', role: 'assistant', kind: 'chat', text: 'x', tasks: [waitingCard()] }];
+aside.api = async () => { throw new Error('这张卡已经不等你了'); };
+await aside.settle(aside.lines[0].tasks[0]);
+assert.equal(aside.lines[0].tasks[0].waiting, true, 'a put-aside that did not get through is undone');
+aside.threads = { loaded: true, on: true, threads: [{ id: 'a', status: 'needs_you', waiting: false }, { id: 'b', status: 'needs_you', waiting: true }, { id: 'c', status: 'working', waiting: false }] };
+assert.deepEqual(copy(aside.threadsIn('open').map((thread) => thread.id)), ['b', 'c'], 'a thread put aside is listed with the finished ones');
+aside.thread = { ...aside.thread, loaded: true, runs: 'external', status: 'needs_you', tasks: [{ ...waitingCard(), waiting: false }] };
+assert.equal(aside.threadWaiting(), null);
+assert.match(aside.threadSub(), /处理过了$/);
+aside.thread.tasks = [waitingCard()];
+assert.equal(aside.threadWaiting().id, 't_0123456789');
+assert.equal(aside.lineState({ task: 't_0123456789', status: 'needs_you' }), 'needs_you');
+const threadPage = html.slice(html.indexOf('<template x-if="threadWaiting()">'), html.indexOf('<div class="thread-say"'));
+assert.ok(threadPage.includes('@click="settle(threadWaiting())">不用了</button>') && threadPage.includes('choose(threadWaiting(), choice)'));
+assert.ok(markup.includes('@click="settle(task)">不用了</button>'), 'and on the card in the chat');
+console.log('PASS 不用了 puts aside a card that waits for her, on every card of it, in the thread list and on its page');
+
+// Its page: no row of shortcuts (they are in the chat), a pen for the persona, the model's pill opens the picker,
+// and the page scrolls instead of squeezing what is on it.
+const profile = html.slice(html.indexOf('<section class="page" x-show="authed && view === \'profile\'">'), html.indexOf('<!-- ===== the persona ===== -->'));
+assert.ok(!profile.includes('class="quick"'));
+assert.ok(profile.includes('aria-label="改人设"') && !profile.includes('>改</button>'));
+assert.ok(profile.includes('<button class="pill" type="button" @click="openPicker()"'));
+assert.match(readFileSync('public/app.css', 'utf8'), /\.page > \* \{ flex-shrink: 0; \}/);
+console.log('PASS its page: no shortcut row, a pen for the persona, the model pill opens the picker, and it scrolls');

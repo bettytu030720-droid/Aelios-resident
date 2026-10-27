@@ -228,7 +228,8 @@ function resident() {
     ]
   };
   // How a cloud task stands, in words (cloud-tasks.ts TaskStatus).
-  var TASK_STATUS = { sent: '派出去了', working: '在干活', done: '做完了', failed: '没做成', needs_you: '等你拍板', quiet: '没回音' };
+  // chosen and settled: a task that waited for her and no longer does (stateOf).
+  var TASK_STATUS = { sent: '派出去了', working: '在干活', done: '做完了', failed: '没做成', needs_you: '等你拍板', quiet: '没回音', chosen: '拍板了', settled: '处理过了' };
   // A tool call in a few words (its name when it is none of these).
   var TOOL_WORDS = {
     memory_recall: '翻了记忆', memory_remember: '记下了', memory_notebook: '翻了小本本', memory_forget: '忘掉了', memory_keep_moment: '存了一刻',
@@ -374,6 +375,7 @@ function resident() {
     async start() {
       var self = this;
       this.applyTheme();
+      this.$nextTick(function () { self.watchStream(); });
       try {
         matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { if (self.themePref === 'auto') self.applyTheme(); });
       } catch (e) {}
@@ -602,16 +604,19 @@ function resident() {
       var next = Object.assign({}, this.openBusy);
       next[id] = !next[id];
       this.openBusy = next;
+      this.resettle();
     },
     toggleTool(key) {
       var next = Object.assign({}, this.openTool);
       next[key] = !next[key];
       this.openTool = next;
+      this.resettle();
     },
     toggleLetter(id) {
       var next = Object.assign({}, this.openLetter);
       next[id] = !next[id];
       this.openLetter = next;
+      this.resettle();
     },
     stickersOf(line) {
       return (line.stickers || []).filter(function (sticker) { return /^\/stickers\/[0-9a-f]{24}$/.test(sticker.url); });
@@ -685,7 +690,8 @@ function resident() {
       this.lines = lines;
       this.settleOutbox();
       if (lines.length > before && !stick) this.unseen += lines.length - before;
-      if (stick) this.scrollSoon(false);
+      // At the bottom before the new lines came: follow them, however tall they are.
+      if (stick) this.scrollSoon(true);
     },
     // A line typed here leaves the outbox once the server has its copy.
     // Each line of hers settles one item, oldest first, so two sent together do not both go with the first.
@@ -711,12 +717,29 @@ function resident() {
     },
     scrollSoon(force) {
       var self = this;
+      if (force) this.nearBottom = true;
       this.$nextTick(function () {
         var el = self.$refs && self.$refs.stream;
-        if (!el) return;
-        if (force || self.isNearBottom()) el.scrollTop = el.scrollHeight;
+        if (!el || !(force || self.isNearBottom())) return;
+        el.scrollTop = el.scrollHeight;
         self.unseen = 0;
       });
+    },
+    // The conversation keeps to its bottom while she is there: when the keyboard, the + panel or a quote makes it
+    // shorter, when it comes into view (Alpine shows it a frame later), and when a picture or sticker in it loads.
+    watchStream() {
+      var self = this;
+      var el = this.$refs && this.$refs.stream;
+      if (!el) return;
+      var pin = function () { if (self.nearBottom && el.clientHeight) el.scrollTop = el.scrollHeight; };
+      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(pin).observe(el);
+      el.addEventListener('load', pin, true);
+      el.addEventListener('loadeddata', pin, true);
+    },
+    // Opening or closing something in the conversation moves its bottom without a scroll: say where she is now.
+    resettle() {
+      var self = this;
+      this.$nextTick(function () { self.nearBottom = self.isNearBottom(); });
     },
 
     // ---- saying something ----
@@ -783,8 +806,10 @@ function resident() {
         el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.38) + 'px';
       });
     },
+    // + opens what it can do, the smiley the stickers; the same button again closes it.
     togglePanel(tab) {
-      if (this.panel && (!tab || this.panelTab === tab)) { this.panel = ''; return; }
+      tab = tab || 'tools';
+      if (this.panel && this.panelTab === tab) { this.panel = ''; return; }
       this.panel = 'open';
       this.panelTab = tab || 'tools';
       if (this.panelTab === 'stickers') this.loadStickerList();
@@ -1006,6 +1031,7 @@ function resident() {
       this.choosing = task.id;
       // The card says what she picked at once; it goes back if the choice did not get through.
       task.chosen = choice;
+      task.waiting = false;
       try {
         var done = this.api('/web/task/choose', { method: 'POST', body: { id: task.id, text: choice } });
         this.sending += 1;
@@ -1014,16 +1040,47 @@ function resident() {
         this.notify('告诉它了');
       } catch (error) {
         task.chosen = null;
+        task.waiting = true;
         this.notify(error.message);
       } finally {
         this.sending = Math.max(0, this.sending - 1);
         this.choosing = '';
         await this.refresh().catch(function () {});
         this.loadTasks().catch(function () {});
+        if (this.view === 'thread' && this.thread.id) this.loadThread(this.thread.id).catch(function () {});
       }
     },
+    // A card that waits for her with nothing left to decide: it stops asking. The resident is not told.
+    async settle(task) {
+      if (this.choosing || !task || !task.waiting) return;
+      this.choosing = task.id;
+      // Every card of it in the chat stops asking at once (the one that sent it and the one that reports on it).
+      var mark = function (waiting) {
+        task.waiting = waiting;
+        this.lines.forEach(function (line) { (line.tasks || []).forEach(function (t) { if (t.id === task.id) t.waiting = waiting; }); });
+      }.bind(this);
+      mark(false);
+      try {
+        await this.api('/web/task/settle', { method: 'POST', body: { id: task.id } });
+        this.notify('不再等你了');
+      } catch (error) {
+        mark(true);
+        this.notify(error.message);
+      } finally {
+        this.choosing = '';
+        this.refresh().catch(function () {});
+        this.loadTasks().catch(function () {});
+        if (this.view === 'thread' && this.thread.id) this.loadThread(this.thread.id).catch(function () {});
+      }
+    },
+    // How a task stands: one that waited for her and was dealt with (picked, put aside or carried on) asks no more.
+    stateOf(task) {
+      if (!task) return '';
+      if (task.status !== 'needs_you' || task.waiting !== false) return task.status;
+      return task.chosen ? 'chosen' : 'settled';
+    },
     taskPill(status) {
-      return { working: 'warn', sent: 'warn', needs_you: 'hot', done: 'ok', failed: 'bad', quiet: 'bad' }[status] || '';
+      return { working: 'warn', sent: 'warn', needs_you: 'hot', done: 'ok', failed: 'bad', quiet: 'bad', chosen: 'ok' }[status] || '';
     },
     taskNote(task) {
       if (task.status === 'sent' || task.status === 'working') return task.progress || '派出去了，等它开工';
@@ -1036,7 +1093,7 @@ function resident() {
         .concat((task.links || []).filter(https).map(function (url) { return { url: url, text: self.linkText(url) }; }));
     },
     workingTasks() {
-      return (this.cloud.tasks || []).filter(function (task) { return task.status === 'sent' || task.status === 'working' || (task.status === 'needs_you' && !task.chosen); }).length;
+      return (this.cloud.tasks || []).filter(function (task) { return task.status === 'sent' || task.status === 'working' || task.waiting; }).length;
     },
 
     // ---- alarms: cards in the chat, and moving one ----
@@ -1384,14 +1441,24 @@ function resident() {
       }
     },
     threadsIn(group) {
-      var open = function (t) { return t.status === 'sent' || t.status === 'working' || t.status === 'needs_you'; };
+      var open = function (t) { return t.status === 'sent' || t.status === 'working' || t.waiting; };
       return this.threads.threads.filter(function (t) { return group === 'open' ? open(t) : !open(t); });
     },
     runsText(runs) {
       return { local: '在住户这里干', linux: '在 GitHub Actions 上干', external: '在 claude.ai 上干' }[runs] || '';
     },
     threadSub() {
-      return this.runsText(this.thread.runs) + (this.thread.loaded ? ' · ' + this.taskStatusText(this.thread.status) : '');
+      var latest = (this.thread.tasks || []).at(-1);
+      return this.runsText(this.thread.runs) + (this.thread.loaded ? ' · ' + this.taskStatusText(latest ? this.stateOf(latest) : this.thread.status) : '');
+    },
+    // The task of this thread that waits for her, if one does.
+    threadWaiting() {
+      return (this.thread.tasks || []).find(function (task) { return task.waiting; }) || null;
+    },
+    // How a report in the thread stands, by its task.
+    lineState(line) {
+      var task = (this.thread.tasks || []).find(function (t) { return t.id === line.task; });
+      return task && task.status === line.status ? this.stateOf(task) : line.status;
     },
     sizeText(n) {
       return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';

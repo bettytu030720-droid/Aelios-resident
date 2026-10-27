@@ -247,6 +247,38 @@ await test("a decision's answers are kept with it, picked once, and cleared by t
   assert.equal(tasks.choose(task.id, "好"), false);
 });
 
+await test("a task that waits for them stops waiting once it is dealt with: picked, put aside, or carried on", () => {
+  const { db, tasks } = store();
+  const { task } = tasks.add({ title: "a", job: "a" });
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, false, "not before it asks");
+  assert.equal(tasks.settle(task.id), false, "nothing to put aside yet");
+  // One without answers to pick (as every one from before there were any): only putting it aside ends it.
+  tasks.result(task.id, { status: "needs_you", summary: "要你看一下", links: [] });
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, true);
+  assert.equal(tasks.threads()[0].waiting, true, "the thread waits too");
+  assert.equal(tasks.settle(task.id), true);
+  assert.deepEqual([tasks.card(tasks.get(task.id)).waiting, tasks.get(task.id).chosen, tasks.get(task.id).status], [false, "", "needs_you"], "what it reported stays");
+  assert.equal(tasks.threads()[0].waiting, false);
+  assert.equal(tasks.settle(task.id), false, "once");
+  // A new report asks again.
+  tasks.result(task.id, { status: "needs_you", summary: "再看一下", links: [], choices: ["好", "不好"] });
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, true);
+  assert.equal(tasks.choose(task.id, "好"), true);
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, false, "a pick deals with it");
+  assert.equal(tasks.settle(task.id), false);
+  // Carried on: a later task of its thread (the resident's follow-up, or their own words in the thread) answers it.
+  tasks.result(task.id, { status: "needs_you", summary: "第三次", links: [] });
+  const next = tasks.add({ title: "a", job: "接着做", follows: task.id }).task;
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, false);
+  assert.equal(tasks.choose(task.id, "好"), false);
+  // ...unless that later task never went out and was dropped: then it waits again.
+  tasks.drop(next.id);
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, true);
+  // A pick made before settled was kept counts as dealt with.
+  db.prepare("UPDATE res_tasks SET settled = 0, chosen = '好' WHERE id = ?").run(task.id);
+  assert.equal(tasks.card(tasks.get(task.id)).waiting, false);
+});
+
 await test("at most 60 progress lines a task, and the newest 200 tasks kept", () => {
   const { db, tasks } = store();
   const { task } = tasks.add({ title: "a", job: "a" });

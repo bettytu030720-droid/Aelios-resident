@@ -78,6 +78,8 @@ export type Task = {
   /** For needs_you: the answers it offers, shown as buttons; and the one they picked, once they did. */
   choices: string[];
   chosen: string;
+  /** For needs_you: dealt with, by an answer they picked or by their saying it needs none. */
+  settled: boolean;
   test: boolean;
   createdAt: number;
   updatedAt: number;
@@ -100,7 +102,11 @@ export type TaskCard = Pick<
   | "updatedAt"
   | "runs"
   | "direct"
-> & { thread: string };
+> & {
+  thread: string;
+  /** Still waits for them: needs_you, not dealt with, and not carried on by a later task of its thread. */
+  waiting: boolean;
+};
 
 export function fireUrlProblem(value: string): string | null {
   return triggerKind(value)
@@ -454,6 +460,7 @@ type Row = {
   links: string;
   choices: string;
   chosen: string;
+  settled: number;
   notices: number;
   test: number;
   created_at: number;
@@ -479,19 +486,23 @@ function taskOf(row: Row): Task {
     links: JSON.parse(row.links || "[]") as string[],
     choices: JSON.parse(row.choices || "[]") as string[],
     chosen: row.chosen ?? "",
+    // A pick made before settled was kept counts too.
+    settled: Boolean(row.settled) || Boolean(row.chosen),
     test: Boolean(row.test),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
 
-export function cardOf(task: Task): TaskCard {
+/** A task as the web page shows it. `newest`: no later task of its thread carried it on (TaskStore.card knows). */
+export function cardOf(task: Task, newest = true): TaskCard {
   const { id, title, status, sessionUrl, progress, summary, links, choices, chosen, test, createdAt, updatedAt, runs, direct } = task;
-  return { id, title, status, sessionUrl, progress, summary, links, choices, chosen, test, createdAt, updatedAt, runs, direct, thread: task.root };
+  const waiting = status === "needs_you" && !task.settled && newest;
+  return { id, title, status, sessionUrl, progress, summary, links, choices, chosen, test, createdAt, updatedAt, runs, direct, thread: task.root, waiting };
 }
 
 /** One thread as the web page lists it: its first task's id, its newest task's title and state. */
-export type ThreadCard = { id: string; title: string; status: TaskStatus; runs: TaskExecution; tasks: number; updatedAt: number };
+export type ThreadCard = { id: string; title: string; status: TaskStatus; runs: TaskExecution; tasks: number; updatedAt: number; waiting: boolean };
 
 function hex(bytes: number): string {
   return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -528,14 +539,16 @@ export class TaskStore {
       ["runs", () => sql`ALTER TABLE res_tasks ADD COLUMN runs TEXT NOT NULL DEFAULT ''`],
       ["direct", () => sql`ALTER TABLE res_tasks ADD COLUMN direct INTEGER NOT NULL DEFAULT 0`],
       ["choices", () => sql`ALTER TABLE res_tasks ADD COLUMN choices TEXT NOT NULL DEFAULT '[]'`],
-      ["chosen", () => sql`ALTER TABLE res_tasks ADD COLUMN chosen TEXT NOT NULL DEFAULT ''`]
+      ["chosen", () => sql`ALTER TABLE res_tasks ADD COLUMN chosen TEXT NOT NULL DEFAULT ''`],
+      ["settled", () => sql`ALTER TABLE res_tasks ADD COLUMN settled INTEGER NOT NULL DEFAULT 0`]
     ] as const) {
       try {
         if (column === "root") sql`SELECT root FROM res_tasks LIMIT 0`;
         else if (column === "runs") sql`SELECT runs FROM res_tasks LIMIT 0`;
         else if (column === "direct") sql`SELECT direct FROM res_tasks LIMIT 0`;
         else if (column === "choices") sql`SELECT choices FROM res_tasks LIMIT 0`;
-        else sql`SELECT chosen FROM res_tasks LIMIT 0`;
+        else if (column === "chosen") sql`SELECT chosen FROM res_tasks LIMIT 0`;
+        else sql`SELECT settled FROM res_tasks LIMIT 0`;
       } catch {
         add();
       }
@@ -603,7 +616,7 @@ export class TaskStore {
    */
   result(id: string, result: { status: TaskStatus; summary: string; links: string[]; choices?: string[] }): boolean {
     this.sql`UPDATE res_tasks SET status = ${result.status}, summary = ${result.summary}, links = ${JSON.stringify(result.links)},
-      choices = ${JSON.stringify(result.choices ?? [])}, chosen = ${""}, updated_at = ${Date.now()}, notices = notices + 1 WHERE id = ${id}`;
+      choices = ${JSON.stringify(result.choices ?? [])}, chosen = ${""}, settled = ${0}, updated_at = ${Date.now()}, notices = notices + 1 WHERE id = ${id}`;
     const [row] = this.sql<{ notices: number; test: number; direct: number }>`SELECT notices, test, direct FROM res_tasks WHERE id = ${id}`;
     return Boolean(row && !row.test && !row.direct && row.notices <= NOTICES_MAX);
   }
@@ -611,9 +624,22 @@ export class TaskStore {
   /** The answer they picked on a card that waits for their decision; false when it waits for none (or no longer). */
   choose(id: string, choice: string): boolean {
     const task = this.get(id);
-    if (!task || task.status !== "needs_you" || task.chosen || !task.choices.includes(choice)) return false;
-    this.sql`UPDATE res_tasks SET chosen = ${choice}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    if (!task || !this.card(task).waiting || !task.choices.includes(choice)) return false;
+    this.sql`UPDATE res_tasks SET chosen = ${choice}, settled = ${1}, updated_at = ${Date.now()} WHERE id = ${id}`;
     return true;
+  }
+
+  /** They say a task that waits for them needs nothing more: it stops waiting. False when it was not waiting. */
+  settle(id: string): boolean {
+    const task = this.get(id);
+    if (!task || !this.card(task).waiting) return false;
+    this.sql`UPDATE res_tasks SET settled = ${1}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    return true;
+  }
+
+  /** A task as the web page shows it, knowing whether a later task of its thread carried it on. */
+  card(task: Task): TaskCard {
+    return cardOf(task, task.status !== "needs_you" || this.latest(task.root)?.id === task.id);
   }
 
   /**
@@ -664,7 +690,10 @@ export class TaskStore {
       if (card) {
         card.tasks += 1;
         card.title = task.title;
-      } else if (cards.size < limit) cards.set(task.root, { id: task.root, title: task.title, status: task.status, runs: task.runs, tasks: 1, updatedAt: task.updatedAt });
+      } else if (cards.size < limit) {
+        const waiting = task.status === "needs_you" && !task.settled;
+        cards.set(task.root, { id: task.root, title: task.title, status: task.status, runs: task.runs, tasks: 1, updatedAt: task.updatedAt, waiting });
+      }
     }
     return [...cards.values()];
   }

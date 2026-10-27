@@ -76,6 +76,8 @@ const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, t
     #turnTasks = new Map();
     #usageLabels = new Map();
     #webTurns = new Map();
+    #turnVoice = null;
+    #lastReply = new Map();
     #webSeenAt = 0;
     #theirTurns = new Set();
     #readOutside = new Set();
