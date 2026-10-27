@@ -1401,10 +1401,20 @@ export class Resident extends Think<Env> {
     return task;
   }
 
-  /** The GitHub token, for a run of the hands to clone, push and open pull requests with. */
-  async handsToken(id: string, code: string): Promise<{ status: number; body: { github_token?: string; error?: string } }> {
+  /**
+   * The GitHub token, for a run of the hands to clone, push and open pull requests with. It is the first thing a
+   * run asks for, so a run that GitHub's "Re-run" started again for a task that failed or went quiet is let in here.
+   */
+  async handsToken(id: string, code: string): Promise<{ status: number; body: { github_token?: string; error?: string; finished?: boolean } }> {
+    const store = this.cloudTasks();
+    const earlier = store.reporting(id, code);
+    if (earlier && earlier !== "expired" && store.rerun(id)) {
+      await this.ctx.storage.delete(`hands_calls:${id}`);
+      await this.schedule(this.quietMinutes() * 60, "taskQuiet", { id });
+    }
     const task = this.handsTask(id, code);
-    if ("error" in task) return { status: task.status, body: { error: task.error } };
+    // Finished: done, or waiting for their answer. The run says so in its log and leaves the card as it is.
+    if ("error" in task) return { status: task.status, body: { error: task.error, ...(task.status === 409 ? { finished: true } : {}) } };
     const token = this.githubToken();
     return token ? { status: 200, body: { github_token: token } } : { status: 409, body: { error: "no GitHub token is set" } };
   }

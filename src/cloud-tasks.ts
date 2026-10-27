@@ -545,6 +545,18 @@ export class TaskStore {
     this.sql`UPDATE res_tasks SET session_url = ${sessionUrl}, updated_at = ${Date.now()} WHERE id = ${id}`;
   }
 
+  /**
+   * A GitHub Actions run started again with GitHub's "Re-run", which brings the same task and code: a task that
+   * failed or went quiet takes up its work again, with a fresh card. False for any other.
+   */
+  rerun(id: string): boolean {
+    const task = this.get(id);
+    if (!task || task.runs !== "linux" || (task.status !== "failed" && task.status !== "quiet")) return false;
+    this.sql`UPDATE res_tasks SET status = ${"working"}, progress = ${""}, progress_at = ${null}, progress_count = ${0}, summary = ${""},
+      links = ${"[]"}, choices = ${"[]"}, chosen = ${""}, settled = ${0}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    return true;
+  }
+
   /** A task that could not be sent is not kept: it cost nothing and counts for nothing. */
   drop(id: string): void {
     this.sql`DELETE FROM res_tasks WHERE id = ${id}`;

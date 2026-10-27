@@ -254,6 +254,8 @@ async function tokenFromResident(origin, parsed) {
   try { response = await fetch(`${origin}/tasks/${parsed.task}/hands`, { method: "POST", headers: { "x-task-code": parsed.code }, signal: AbortSignal.timeout(30_000) }); }
   catch { throw new Error("住户那边连不上，拿不到 GitHub token"); }
   const body = await response.json().catch(() => null);
+  // GitHub's "Re-run" brings the same task: one that failed is taken up again, one that is done stays done.
+  if (body?.finished === true) throw Object.assign(new Error("这一单住户那边已经有结果了（做完了，或在等你拿主意），GitHub 上「重新运行」跑的还是这一单，所以没再做。要再做一遍，跟住户说一声，让它新派一单。"), { finished: true });
   if (!response.ok || typeof body?.github_token !== "string" || !body.github_token) throw new Error(`住户没给 GitHub token（HTTP ${response.status}）${typeof body?.error === "string" ? `：${body.error.slice(0, 200)}` : ""}`);
   return body.github_token;
 }
@@ -367,6 +369,12 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
     }
     return await finish({ status: "failed", summary: "达到最大步数仍未完成（最多 30 步）。" });
   } catch (error) {
+    // A task that has its result already keeps it: this run only says why it stopped, and is not reported as stopped.
+    if (error?.finished) {
+      log(error.message);
+      if (reportedFile) writeFileSync(reportedFile, "");
+      return { status: "failed", summary: error.message, links: [], finished: true };
+    }
     // What went wrong, with secrets taken out: a failed command says which one and what it printed.
     const reason = redact(string(error?.message || error)).split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6).join("\n").slice(0, 800);
     const summary = /^(模型|住户|Report delivery failed)/.test(reason) ? reason : `后台执行失败：${reason}`;
@@ -409,7 +417,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     runHands({ ...common, modelBaseUrl: env.MODEL_BASE_URL, modelApiKey: env.MODEL_API_KEY, model: env.MODEL_NAME, prepare: onActions, askToken: onActions && !env.GH_TOKEN, retentionDays: Number(env.HANDS_RETENTION_DAYS) || 7, log: (line) => console.log(line) })
       .then((result) => {
         if (result.status !== "failed") return;
-        if (onActions) console.log(`::error title=没做完::${annotation(result.summary)}`);
+        if (onActions) console.log(`::error title=${result.finished ? "没再做" : "没做完"}::${annotation(result.summary)}`);
         process.exitCode = 1;
       })
       .catch((error) => { console.error(`Resident hands failed; result delivery may also have failed: ${string(error?.message).slice(0, 300)}`); process.exitCode = 1; });
