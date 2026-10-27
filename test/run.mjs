@@ -1220,6 +1220,22 @@ if (phase === "voice") {
     }
   };
   await set({ VOICE_BASE_URL: "http://127.0.0.1:9999/voice", VOICE_API_KEY: "test-voice-key" });
+  // Every voice message it sends shows on the web page too, with the reply it says, playable from /web/media.
+  const webVoiceOfLastReply = async () => {
+    for (let i = 0; i < 40; i += 1) {
+      const lines = (await (await web("/web/messages", KEY)).json()).data;
+      const reply = lines.findLast((line) => line.role === "assistant" && line.kind === "chat");
+      if (reply?.voice?.key) return reply.voice;
+      await sleep(250);
+    }
+    return null;
+  };
+  const playsOnWeb = async (voice) => {
+    assert.ok(voice && /^[0-9a-f]{32}$/.test(voice.key), "the web page shows the voice with its reply");
+    const audio = await web(`/web/media?key=${voice.key}`, KEY);
+    assert.equal(audio.status, 200);
+    assert.equal(audio.headers.get("content-type"), "audio/mpeg");
+  };
 
   await step("with no voice provider, a voice message she sends still reaches the model (here: not heard, no AI binding), and nothing about sending voice is added", async () => {
     const before = (await sent()).length;
@@ -1258,6 +1274,8 @@ if (phase === "voice") {
     assert.match(tts.body.text, /今天好累呀/);
     assert.ok(!/这是第二个气泡。\n\n/.test(tts.body.text), "said as one message");
     assert.ok((await ofKind("tg.sendChatAction")).some((e) => e.body.action === "record_voice"), "shows recording");
+    await playsOnWeb(await webVoiceOfLastReply());
+    assert.equal((await voiceCalls()).filter((call) => call.endpoint.startsWith("v1/text-to-speech")).length, 1, "said once, for both");
   });
 
   await step("in mirror mode a typed message is answered in text", async () => {
@@ -1277,6 +1295,7 @@ if (phase === "voice") {
     await sleep(2000);
     assert.equal((await sent()).length, before, "no '我好像没说出话来' after it");
     assert.equal((await voiceCalls()).at(-1).body.text, "晚安呀，[laughs] 早点睡。");
+    await playsOnWeb(await webVoiceOfLastReply());
   });
 
   await step("an older ElevenLabs model reads no tags, so none are taught", async () => {
@@ -2457,7 +2476,15 @@ if (phase === "web") {
     assert.equal((await lines()).find((line) => line.id === earlier.id).voice.key, read.data.key, "and shown with the message");
     assert.equal((await json("/web/speak", { id: mine.id })).status, 400, "only its own lines");
     assert.equal((await sent()).length, 0, "nothing went to Telegram");
-    await set({ VOICE_PROVIDER: "", VOICE_ID: "", VOICE_API_KEY: "", VOICE_BASE_URL: "" });
+    // send_voice in a turn on the web, with no Telegram or WeCom chat: made all the same, and shown with its reply.
+    await set({ VOICE_REPLY: "tool" });
+    await say({ text: "发条语音" });
+    all = await lines();
+    const sentVoice = all.findLast((line) => line.role === "assistant");
+    assert.ok(sentVoice.activity.some((item) => item.name === "send_voice" && /Sent as a voice message/.test(item.output)), JSON.stringify(sentVoice.activity));
+    assert.match(sentVoice.voice?.key ?? "", /^[0-9a-f]{32}$/, "the voice it sent is on the web page");
+    assert.equal((await web(`/web/media?key=${sentVoice.voice.key}`, KEY)).headers.get("content-type"), "audio/mpeg");
+    await set({ VOICE_PROVIDER: "", VOICE_ID: "", VOICE_API_KEY: "", VOICE_BASE_URL: "", VOICE_REPLY: "" });
     assert.equal((await json("/web/speak", { id: earlier.id })).data.key, read.data.key, "a voice already made still plays");
     const unspoken = (await lines()).find((line) => line.role === "assistant" && !line.voice);
     assert.match((await json("/web/speak", { id: unspoken.id })).data.error ?? "", /还没设置声音/);

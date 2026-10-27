@@ -830,6 +830,13 @@ export class Resident extends Think<Env> {
   #heardVoice = false;
   /** The voice message send_voice sent in the turn now running, if it did. */
   #spoke: { id: string; threadId: string } | null = null;
+  /** The voice made in the turn now running (send_voice), kept for the web page: onChatResponse puts it with the reply. */
+  #turnVoice: string | null = null;
+  /**
+   * Each chat's newest reply, for a reply said as a voice message there: that goes out after the turn, so the voice is
+   * put with the reply once it is made (voiceReply).
+   */
+  #lastReply = new Map<string, { id: string; at: number }>();
 
   /**
    * A Telegram turn: the voice messages she sent go into her message as text (voice.ts), and the photos as pictures
@@ -880,8 +887,12 @@ export class Resident extends Think<Env> {
       send: async (text) => {
         const asText = unmarked(text, dialectOf(this.cfg));
         const sent = await this.speakTo(threadId, text);
+        // The reply this voice says was saved a moment ago (onChatResponse): the web page shows it with that.
+        const reply = this.#lastReply.get(threadId);
+        this.#lastReply.delete(threadId);
         if ("error" in sent) return { posted: null, text: asText };
-        return { posted: { id: sent.id, threadId }, text: needsText(text) ? asText : "" };
+        if (sent.key && reply && Date.now() - reply.at < 10 * 60_000) this.media().saySpoken(reply.id, sent.key);
+        return { posted: { id: sent.id ?? "", threadId }, text: needsText(text) ? asText : "" };
       }
     };
   }
@@ -900,19 +911,25 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * Say a reply in the voice set up on the settings page and send it to her chat. Why it was not sent comes back
-   * instead, and is kept for /status.
+   * Say a reply in the voice set up on the settings page and send it to her chat, if there is one. The web page shows
+   * every voice message too: a copy is kept (MediaStore), and its key comes back for the caller to put with the reply.
+   * Why it was not sent comes back instead, and is kept for /status.
    */
-  private async speakTo(threadId: string, text: string, style?: string): Promise<{ id: string } | { error: string }> {
+  private async speakTo(
+    threadId: string | null,
+    text: string,
+    style?: string
+  ): Promise<{ id: string | null; key: string | null } | { error: string }> {
     const speak = speaker(this.cfg);
     const said = speakable(text);
     if (!speak) return { error: "voice messages are not set up" };
     if (!said) return { error: "nothing to say aloud" };
     if (said.length > SPEAK_MAX_CHARS) return { error: `too long for a voice message (${said.length} characters; at most ${SPEAK_MAX_CHARS})` };
     try {
-      const id = await this.sendVoiceTo(threadId, await speak(said, { style }));
+      const voice = await speak(said, { style });
+      const id = threadId ? await this.sendVoiceTo(threadId, voice) : null;
       await this.ctx.storage.delete("voice_error");
-      return { id };
+      return { id, key: this.keepSpoken(voice) };
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).slice(0, 300);
       console.error("voice: no voice message sent", { error: reason });
@@ -932,16 +949,18 @@ export class Resident extends Think<Env> {
     return {
       send_voice: tool({
         description:
-          "Send them a voice message in your voice, to the chat they last wrote from (Telegram or WeCom). It is not " +
+          "Send them a voice message in your voice, to the chat they last wrote from (Telegram or WeCom), and to the web " +
+          "page. It is not " +
           "shown as text, so don't write the same words again; if there is nothing else to say, end your turn without " +
           "writing anything.",
         inputSchema: inputSchema as z.ZodType<{ text: string; style?: string }>,
         execute: async ({ text, style: how }) => {
+          // To her chat when there is one; the web page shows it either way, with this reply (onChatResponse).
           const thread = await this.herThread();
-          if (!thread) return "Not sent: they have not written to you from Telegram or WeCom yet.";
           const sent = await this.speakTo(thread, text, how);
           if ("error" in sent) return `Not sent (${sent.error}). Say it in text instead.`;
-          this.#spoke = { id: sent.id, threadId: thread };
+          if (thread && sent.id) this.#spoke = { id: sent.id, threadId: thread };
+          this.#turnVoice = sent.key;
           return "Sent as a voice message.";
         }
       })
@@ -2094,6 +2113,7 @@ export class Resident extends Think<Env> {
     // A failed turn can finish before an assistant row exists, so no response hook is guaranteed.
     this.#drafts.clear();
     this.#spoke = null;
+    this.#turnVoice = null;
     this.#draftActive = null;
     if (ctx.requestId && !this.#letterPromptId) {
       const via = ctx.messenger
@@ -2769,10 +2789,13 @@ export class Resident extends Think<Env> {
   }
 
   /** With VOICE_REPLY=always, a check-in goes out as a voice message too. False when it was not sent as one. */
-  private async checkinAsVoice(reply: string): Promise<boolean> {
+  private async checkinAsVoice(reply: string, messageId: string): Promise<boolean> {
     if (replyOf(this.cfg) !== "always" || !speaker(this.cfg)) return false;
     const thread = await this.herThread();
-    if (!thread || "error" in (await this.speakTo(thread, reply))) return false;
+    if (!thread) return false;
+    const sent = await this.speakTo(thread, reply);
+    if ("error" in sent) return false;
+    if (sent.key) this.media().saySpoken(messageId, sent.key);
     if (needsText(reply)) for (const bubble of splitIntoBubbles(unmarked(reply, dialectOf(this.cfg)))) await this.toHer(bubble);
     return true;
   }
@@ -2819,6 +2842,7 @@ export class Resident extends Think<Env> {
     if (!this.#drafts.size) this.#draftActive = null;
     const searches = (result.requestId && this.#searches.get(result.requestId)) || [];
     const web = result.requestId ? this.#webTurns.get(result.requestId) : undefined;
+    const door = result.requestId ? this.#turnThread.get(result.requestId) : undefined;
     if (result.requestId) {
       this.#webTurns.delete(result.requestId);
       this.#searches.delete(result.requestId);
@@ -2858,13 +2882,19 @@ export class Resident extends Think<Env> {
     const proactive =
       isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
     if (proactive && reply && reply !== SKIP) {
-      let delivered = await this.checkinAsVoice(reply);
+      let delivered = await this.checkinAsVoice(reply, result.message.id);
       if (!delivered) for (const bubble of splitIntoBubbles(reply)) delivered = (await this.toHer(bubble)) || delivered;
       this.ctx.waitUntil(this.pushOut(reply, delivered ? "delivered" : "proactive"));
     }
+    // A voice message send_voice sent in this turn shows on the web page with this reply.
+    const voiced = this.#turnVoice;
+    this.#turnVoice = null;
+    if (voiced) this.media().saySpoken(result.message.id, voiced);
+    // A reply to Telegram or WeCom said as a voice message is made after this: it finds its reply here (voiceReply).
+    if (door) this.#lastReply.set(door, { id: result.message.id, at: Date.now() });
     // A reply on the web page: said in the voice too when it should be, and pushed when the page has been left.
     if (web && !proactive && reply && reply !== SKIP) {
-      this.ctx.waitUntil(this.speakOnWeb(result.message.id, reply, web.voice));
+      if (!voiced) this.ctx.waitUntil(this.speakOnWeb(result.message.id, reply, web.voice));
       if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
     }
     if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
@@ -3319,7 +3349,7 @@ export class Resident extends Think<Env> {
     if (said.length > SPEAK_MAX_CHARS) return { error: `太长了，最多念 ${SPEAK_MAX_CHARS} 字` };
     try {
       const spoken = await speak(said);
-      const saved = media.put("spoken", "audio/mpeg", spoken.audio, spoken.seconds || null);
+      const saved = media.put("spoken", audioTypeOf(spoken.audio) ?? "audio/mpeg", spoken.audio, spoken.seconds || null);
       if ("error" in saved) return saved;
       media.saySpoken(id, saved.key);
       return { key: saved.key, seconds: spoken.seconds || null };
@@ -3330,6 +3360,12 @@ export class Resident extends Think<Env> {
     }
   }
 
+  /** A voice it made, kept for the web page to play: its key, or null when it could not be kept. */
+  private keepSpoken(voice: Spoken): string | null {
+    const saved = this.media().put("spoken", audioTypeOf(voice.audio) ?? "audio/mpeg", voice.audio, voice.seconds || null);
+    return "error" in saved ? null : saved.key;
+  }
+
   /** A reply on the web page said in the voice too (VOICE_REPLY always, or mirror after a voice message of hers). */
   private async speakOnWeb(messageId: string, reply: string, heardVoice: boolean): Promise<void> {
     const mode = replyOf(this.cfg);
@@ -3338,9 +3374,8 @@ export class Resident extends Think<Env> {
     const said = speakable(reply);
     if (!speak || !said || said.length > SPEAK_MAX_CHARS) return;
     try {
-      const spoken = await speak(said);
-      const saved = this.media().put("spoken", "audio/mpeg", spoken.audio, spoken.seconds || null);
-      if (!("error" in saved)) this.media().saySpoken(messageId, saved.key);
+      const key = this.keepSpoken(await speak(said));
+      if (key) this.media().saySpoken(messageId, key);
       await this.ctx.storage.delete("voice_error");
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).slice(0, 300);
