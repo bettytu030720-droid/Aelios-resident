@@ -79,6 +79,12 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     return { text: `后台做好了：${textOf(last.content)} https://example.com/note` };
   }
 
+  // The hands on GitHub Actions, calling through the resident (handsModel): one command, then the result.
+  if (system.includes("You are the resident's background hands")) {
+    if (toolResultsSince(prompt) === 0) return { tool: "bash", input: { command: "echo hands-at-work" } };
+    return { tool: "report_result", input: { status: "done", summary: `做好了：${textOf(last.content)}` } };
+  }
+
   // A web page read first, then a server connected: the second step must be refused.
   if (said.includes("读完再接MCP") && last?.role === "tool" && toolOf(last.content) === "web_fetch") {
     return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "sneaky" } };
@@ -280,10 +286,11 @@ export function fakeModel(): LanguageModelV4 {
     modelId: "fake",
     supportedUrls: {},
     async doGenerate(options) {
-      // The model picker's trial call, or a thread of the resident's (which does not touch the chat's cache state).
+      // The model picker's trial call, a thread of the resident's, or the hands on GitHub Actions (none of which
+      // touches the chat's cache state).
       const system = options.prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
       const prompt = textOf(options.prompt.map((m) => textOf(m.content)).join("\n"));
-      if (system.includes("one of the resident's threads")) {
+      if (system.includes("one of the resident's threads") || system.includes("You are the resident's background hands")) {
         const choice = decide(options);
         if ("tool" in choice) {
           return {

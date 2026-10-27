@@ -1561,7 +1561,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "" });
       const partial = await tasks();
       assert.deepEqual([partial.on, partial.configured, partial.mode], [true, false, "incomplete"]);
-      assert.match(await ask("/status"), /后台帮忙：开了，自己的线程能干；触发网址或 token 没填对/);
+      assert.match(await ask("/status"), /后台帮忙：开了，自己的线程能干；claude.ai 的触发网址或 token 没填对/);
 
       await set({ CLOUD_TASK_URL: "", CLOUD_TASK_TOKEN: "" });
       const localState = await tasks();
@@ -1626,21 +1626,82 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal((await fetch(`${WORKER}/web/thread/file?id=${localThread}&path=/page.html`)).status, 401);
     });
 
-    await step("GitHub Actions: the card links to the run it started", async () => {
-      await set({ CLOUD_TASK_URL: "https://api.github.com/repos/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml/dispatches#dev", CLOUD_TASK_TOKEN: "good-token" });
-      assert.equal((await tasks()).mode, "linux");
-      const ghRes = await web("/web/tasks/test", KEY, {});
+    await step("GitHub Actions with one token: the resident sets up a private repository, starts runs there, and lends a run its GitHub token and model", async () => {
+      // A token that cannot write workflow files says so on the settings page.
+      await set({ CLOUD_TASK_GITHUB_TOKEN: "no-workflow-token" });
+      const refused = await web("/web/tasks/github", KEY, {});
+      assert.equal(refused.status, 400);
+      assert.match((await refused.json()).error, /写不了工作流文件/);
+      const bad = await tasks();
+      assert.deepEqual([bad.github.on, bad.github.repo], [true, ""]);
+      assert.match(bad.github.problem, /写不了工作流文件/);
+
+      await set({ CLOUD_TASK_GITHUB_TOKEN: "good-token" });
+      const setUp = await web("/web/tasks/github", KEY, {});
+      assert.equal(setUp.status, 200);
+      const shown = await setUp.json();
+      assert.equal(shown.mode, "linux");
+      assert.deepEqual([shown.github.repo, shown.github.url, shown.github.problem], ["octo/resident-hands", "https://github.com/octo/resident-hands", ""]);
+      assert.match(shown.github.tokenPage, /scopes=repo,workflow/);
+      assert.ok(!JSON.stringify(shown).includes("good-token"), "the token is not sent back");
+      const made = (await log()).filter((e) => e.kind === "github.create");
+      assert.equal(made.length, 1);
+      assert.equal(made[0].body.private, true);
+      assert.deepEqual((await log()).filter((e) => e.kind === "github.file").map((e) => [e.path, e.branch]).at(-1), [".github/workflows/resident-hands.yml", "main"]);
+
+      // A test run there: the job and the resident's address go in, and the card links to that run.
+      const ghRes = await web("/web/tasks/test", KEY, { execution: "linux" });
       assert.equal(ghRes.status, 200);
       const ghCard = (await ghRes.json()).tasks[0];
       const dispatches = (await log()).filter((e) => e.kind === "github.dispatch");
       const ghDispatch = dispatches.at(-1);
-      assert.equal(ghCard.sessionUrl, `https://github.com/wusaki0723/aelios-resident/actions/runs/${dispatches.length}`);
-      assert.equal(ghDispatch?.body?.ref, "dev");
-      assert.equal(ghDispatch?.body?.return_run_details, true);
-      assert.match(ghDispatch?.body?.inputs?.job ?? "", /title: 接通测试/);
+      assert.equal(ghCard.runs, "linux");
+      assert.equal(ghCard.sessionUrl, `https://github.com/octo/resident-hands/actions/runs/${dispatches.length}`);
+      assert.equal(ghDispatch.repo, "octo/resident-hands");
+      assert.deepEqual([ghDispatch.body.ref, ghDispatch.body.return_run_details, ghDispatch.body.inputs.resident], ["main", true, WORKER]);
+      assert.match(ghDispatch.body.inputs.job, /title: 接通测试/);
+      assert.ok(!/^model:/m.test(ghDispatch.body.inputs.job), "the resident picks the model, not the job");
+      assert.equal((await log()).filter((e) => e.kind === "github.create").length, 1, "set up once");
       assert.match(await ask("/status"), /后台帮忙：开，交给自己的线程，要跑命令的交给 GitHub Actions/);
 
+      // The run, as public/hands.mjs does it: the GitHub token, model steps through the resident, the result.
+      const [, id, code] = ghDispatch.body.inputs.job.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/);
+      const lend = (taskCode) => fetch(`${WORKER}/tasks/${id}/hands`, { method: "POST", headers: { "x-task-code": taskCode } });
+      assert.equal((await lend("0".repeat(32))).status, 403);
+      assert.deepEqual(await (await lend(code)).json(), { github_token: "good-token" });
+      const tools = [
+        { type: "function", function: { name: "bash", description: "Run a shell command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+        { type: "function", function: { name: "report_result", description: "Report the result.", parameters: { type: "object", properties: { status: { type: "string" }, summary: { type: "string" } }, required: ["status", "summary"] } } }
+      ];
+      const think = (messages, bearer = code) =>
+        fetch(`${WORKER}/tasks/${id}/model/chat/completions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: "resident", messages, tools })
+        });
+      const brief = [{ role: "system", content: "You are the resident's background hands for small jobs." }, { role: "user", content: "title: 接通测试\n\nsay hi" }];
+      assert.equal((await think(brief, "0".repeat(32))).status, 403);
+      const first = await (await think(brief)).json();
+      assert.equal(first.object, "chat.completion");
+      assert.equal(first.choices[0].finish_reason, "tool_calls");
+      const [bash] = first.choices[0].message.tool_calls;
+      assert.deepEqual([bash.function.name, JSON.parse(bash.function.arguments)], ["bash", { command: "echo hands-at-work" }]);
+      const second = await (await think([...brief, first.choices[0].message, { role: "tool", tool_call_id: bash.id, content: "hands-at-work" }])).json();
+      const [result] = second.choices[0].message.tool_calls;
+      assert.equal(result.function.name, "report_result");
+      assert.match(JSON.parse(result.function.arguments).summary, /hands-at-work/, "the command's output reached the model");
+      const rows = (await (await web("/web/usage", KEY)).json()).rows;
+      assert.ok(rows.slice(0, 2).every((row) => row.kind === "worker"), "counted as a thread's work");
+      const reported = await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "x-task-code": code, "content-type": "application/json" }, body: JSON.stringify({ status: "done", summary: "接通了" }) });
+      assert.equal(reported.status, 200);
+      assert.equal((await think(brief)).status, 409, "a finished task cannot use the model any more");
+      assert.equal((await lend(code)).status, 409);
+
       await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
+      assert.equal((await tasks()).mode, "all", "claude.ai and GitHub Actions both set up");
+      assert.match(await ask("/status"), /默认交给 claude.ai 的云端 Claude Code，轻活交给自己的线程，也能交给 GitHub Actions/);
+      await set({ CLOUD_TASK_GITHUB_TOKEN: "" });
+      assert.equal((await tasks()).mode, "external");
     });
 
     await step("ten a day at most, on the settings page and in the chat", async () => {
@@ -1649,7 +1710,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal(over.status, 400);
       assert.match((await over.json()).error, /已经派了 10 单/);
       assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
-      assert.equal((await fires()).length, 10, "8 sent to the Claude trigger (1 ran locally, 1 via GitHub Actions), the wrong token and the busy trigger tried");
+      assert.equal((await fires()).length, 10, "8 sent to the Claude trigger (1 ran locally, 1 on GitHub Actions), the wrong token and the busy trigger tried");
     });
   }
 

@@ -181,12 +181,13 @@ function resident() {
     ] },
     { id: 'tasks', title: '后台帮忙', hint: '查资料、写东西这类活交给线程，做完回来告诉你。', fields: [
       { key: 'CLOUD_TASKS', label: '让它后台帮忙', def: 'off', labels: ON_OFF, help: '打开就能用，线程跑在住户自己这里，不能跑代码。' },
-      { key: 'CLOUD_TASK_URL', label: '再接一双手', needs: 'CLOUD_TASKS', help: '可不填。留空就只用住户自己的线程。', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/trig_…/fire' },
-      { key: 'CLOUD_TASK_TOKEN', label: 'token', needs: 'CLOUD_TASKS', help: '跟上面的网址配对，也能存成 Cloudflare 的 Secret。' },
+      { key: 'CLOUD_TASK_GITHUB_TOKEN', label: 'GitHub token', needs: 'CLOUD_TASKS', help: '可不填。填了能跑代码、开 PR，仓库住户自己建。' },
+      { key: 'CLOUD_TASK_URL', label: 'claude.ai 触发网址', needs: 'CLOUD_TASKS', help: '可不填。有 Claude 订阅时接，走订阅干活。', placeholder: 'https://api.anthropic.com/v1/claude_code/routines/trig_…/fire' },
+      { key: 'CLOUD_TASK_TOKEN', label: 'claude.ai 的 token', needs: 'CLOUD_TASKS', help: '跟上面的网址配对。' },
       { key: 'CLOUD_TASK_MODEL', label: '线程用哪个模型', needs: 'CLOUD_TASKS',
-        help: '留空用聊天的模型（Actions 用仓库的 MODEL_NAME）。',
-        picks: ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5'],
-        pickLabels: { 'anthropic/claude-sonnet-5.5': 'Claude Sonnet（示例）', 'anthropic/claude-opus-5.5': 'Claude Opus（示例）' } }
+        help: '留空用 Workers AI 的 glm-4.7-flash，每天有免费额度。',
+        picks: ['anthropic/claude-haiku-5.5', 'anthropic/claude-sonnet-5.5'],
+        pickLabels: { 'anthropic/claude-haiku-5.5': 'Claude Haiku（示例）', 'anthropic/claude-sonnet-5.5': 'Claude Sonnet（示例）' } }
     ] },
     { id: 'custom', title: '供应商', hint: '接了 Aelios，聊天的模型和 key 在 Aelios 后台配；这里管住户自己往外发的请求。', fields: [
       { key: 'AI_GATEWAY_ID', label: 'AI Gateway 的名字', def: 'default',
@@ -359,7 +360,7 @@ function resident() {
     siteError: '',
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
     stickers: { on: true, packs: [], left: 0 },
-    cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', today: 0, limit: 10, tasks: [] },
+    cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] },
     threads: { loaded: false, on: false, threads: [] },
     thread: emptyThread(),
     fileView: emptyFileView(),
@@ -1985,7 +1986,7 @@ function resident() {
     sectionNeeds(id) {
       if (id === 'thinking') return Boolean(this.letterError || (this.letter.write && this.letter.write.state === 'failed') || this.letterCanRetry());
       var voice = this.config.voice || {};
-      if (id === 'tasks') return this.inEffect(this.metaOf('CLOUD_TASKS')) === 'on' && !this.cloud.configured;
+      if (id === 'tasks') return this.inEffect(this.metaOf('CLOUD_TASKS')) === 'on' && (!this.cloud.configured || Boolean(this.cloud.github && this.cloud.github.problem));
       if (id === 'im') return this.doorNeeds('telegram') || this.doorNeeds('wecom');
       return id === 'voice' && Boolean(voice.gap) && voice.gap !== 'off';
     },
@@ -2032,7 +2033,7 @@ function resident() {
           return this.mcp.servers.length ? this.mcp.servers.map(function (server) { return server.name; }).join('、') : '没接';
         case 'tasks':
           if (this.inEffect(this.metaOf('CLOUD_TASKS')) !== 'on') return '关';
-          var hands = { local: '自己的线程', linux: '自己的线程 + GitHub Actions', external: 'claude.ai + 自己的线程', incomplete: '触发网址没填对' }[this.cloud.mode] || '开';
+          var hands = { local: '自己的线程', linux: '自己的线程 + GitHub Actions', external: 'claude.ai + 自己的线程', all: 'claude.ai + 自己的线程 + GitHub Actions', incomplete: '触发网址没填对' }[this.cloud.mode] || '开';
           return hands + ' · 24 小时内派了 ' + this.cloud.today + ' 单';
         case 'thinking':
           return this.letterWriteStatus() + ' · ' + this.letterDeliveryCounts();
@@ -2094,6 +2095,8 @@ function resident() {
         await this.loadLetter();
         if (key.indexOf('AELIOS_') === 0) this.aelios = Boolean((await this.api('/web/check')).aelios);
         if (key.indexOf('CLOUD_TASK') === 0) await this.loadTasks();
+        // A new GitHub token: the resident sets its repository up now, so a token that cannot do it says so here.
+        if (key === 'CLOUD_TASK_GITHUB_TOKEN' && value) await this.setUpGitHub();
         if (key === 'ALARMS' || key === 'TIME_ZONE') await this.loadAlarms();
         if (key === 'WEB_PUSH') await this.loadPushState();
       } catch (error) {
@@ -2302,12 +2305,24 @@ function resident() {
         this.notify('复制不了，点一下那段文字全选后自己复制');
       }
     },
-    async testTask() {
+    async setUpGitHub() {
       if (this.cloudBusy) return;
-      this.cloudBusy = true;
+      this.cloudBusy = 'github';
       this.cloudError = '';
       try {
-        this.cloud = await this.api('/web/tasks/test', { method: 'POST', body: {} });
+        this.cloud = await this.api('/web/tasks/github', { method: 'POST', body: {} });
+      } catch (error) {
+        await this.loadTasks().catch(function () {});
+      } finally {
+        this.cloudBusy = false;
+      }
+    },
+    async testTask(execution) {
+      if (this.cloudBusy) return;
+      this.cloudBusy = execution || true;
+      this.cloudError = '';
+      try {
+        this.cloud = await this.api('/web/tasks/test', { method: 'POST', body: execution ? { execution: execution } : {} });
         this.notify('派出去了，几分钟后回来看');
       } catch (error) {
         this.cloudError = error.message;

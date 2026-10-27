@@ -4,6 +4,8 @@ import http from "node:http";
 import { GIF, PNG } from "./zip.mjs";
 
 const log = [];
+// GitHub repositories the hands set up, by owner/name.
+const ghRepos = new Map();
 let nextMessageId = 1000;
 let faults = { ingestFailures: 0, letterModel: "ok" };
 const ORIGIN = "http://127.0.0.1:9999";
@@ -131,6 +133,7 @@ const server = http.createServer(async (req, res) => {
     faults = { ingestFailures: 0, letterModel: "ok" };
     wecomTokens = 0;
     webhooks.clear();
+    ghRepos.clear();
     return reply({ ok: true });
   }
   if (url.pathname === "/__faults" && req.method === "POST") {
@@ -309,11 +312,42 @@ const server = http.createServer(async (req, res) => {
     return reply({ type: "routine_fire", claude_code_session_id: `session_test_${n}`, claude_code_session_url: `https://claude.ai/code/session_test_${n}` });
   }
 
+  // GitHub for the hands (src/hands-repo.ts): the token "good-token" is octo's; "no-workflow-token" cannot write
+  // workflow files. The repository it makes is kept here, and a run starts only once its workflow is in.
+  const ghAuth = req.headers.authorization;
+  if (url.pathname === "/user" && req.method === "GET") {
+    log.push({ kind: "github.user", auth: ghAuth ?? null });
+    if (ghAuth !== "Bearer good-token" && ghAuth !== "Bearer no-workflow-token") return reply({ message: "Bad credentials" }, 401);
+    return reply({ login: "octo" });
+  }
+  if (url.pathname === "/user/repos" && req.method === "POST") {
+    log.push({ kind: "github.create", body: json });
+    ghRepos.set(`octo/${json.name}`, { private: Boolean(json.private), files: new Map() });
+    return reply({ private: Boolean(json.private), default_branch: "main", html_url: `https://github.com/octo/${json.name}` }, 201);
+  }
+  const ghRepo = url.pathname.match(/^\/repos\/([\w.-]+\/[\w.-]+)$/);
+  if (ghRepo && req.method === "GET") {
+    const found = ghRepos.get(ghRepo[1]);
+    return found ? reply({ private: found.private, default_branch: "main", html_url: `https://github.com/${ghRepo[1]}` }) : reply({ message: "Not Found" }, 404);
+  }
+  const ghFile = url.pathname.match(/^\/repos\/([\w.-]+\/[\w.-]+)\/contents\/(.+)$/);
+  if (ghFile) {
+    const found = ghRepos.get(ghFile[1]);
+    if (!found) return reply({ message: "Not Found" }, 404);
+    const kept = found.files.get(ghFile[2]);
+    if (req.method === "GET") return kept ? reply({ sha: kept.sha, content: Buffer.from(kept.text).toString("base64") }) : reply({ message: "Not Found" }, 404);
+    log.push({ kind: "github.file", path: ghFile[2], branch: json?.branch ?? null });
+    if (ghAuth === "Bearer no-workflow-token") return reply({ message: "refusing to allow a Personal Access Token to create or update workflow without `workflow` scope" }, 404);
+    found.files.set(ghFile[2], { text: Buffer.from(json.content, "base64").toString("utf8"), sha: `sha_${log.length}` });
+    return reply({}, kept ? 200 : 201);
+  }
+
   const ghDispatch = url.pathname.match(/^\/repos\/([\w.-]+\/[\w.-]+)\/actions\/workflows\/([\w.-]+\.ya?ml|\d+)\/dispatches$/);
   if (ghDispatch) {
     const headers = Object.fromEntries(["authorization", "accept", "x-github-api-version"].map((h) => [h, req.headers[h] ?? null]));
     log.push({ kind: "github.dispatch", repo: ghDispatch[1], workflow: ghDispatch[2], headers, body: json });
     if (req.headers.authorization !== "Bearer good-token") return reply({ message: "Bad credentials" }, 401);
+    if (!ghRepos.get(ghDispatch[1])?.files.has(`.github/workflows/${ghDispatch[2]}`)) return reply({ message: "Not Found" }, 404);
     // Asked for run details, GitHub names the run it started (200); without, it answers 204.
     if (!json?.return_run_details) {
       res.writeHead(204);

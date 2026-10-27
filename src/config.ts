@@ -94,8 +94,9 @@ export const FIELDS: readonly Field[] = [
   { key: "CLOUD_TASKS", kind: "choice", choices: ["on", "off"] },
   { key: "CLOUD_TASK_URL", kind: "text", check: fireUrlProblem },
   { key: "CLOUD_TASK_TOKEN", kind: "secret" },
-  // Which model the threads work with: the resident's own, and the GitHub Actions job's (scripts/hands.mjs). Empty:
-  // the chat's model here, and the repository's MODEL_NAME on Actions.
+  // A GitHub token with repo and workflow: the resident sets up a private repository and runs jobs there on Actions.
+  { key: "CLOUD_TASK_GITHUB_TOKEN", kind: "secret" },
+  // Which model the threads work with, here and on GitHub Actions. Empty: Workers AI's glm-4.7-flash.
   { key: "CLOUD_TASK_MODEL", kind: "text" }
 ];
 

@@ -237,52 +237,73 @@ await chooser.choose(refused, '用 A');
 assert.equal(refused.chosen, null, 'a choice that did not get through can be made again');
 assert.equal(chooser.sending, 0);
 const taskGroup = page.CONFIG_GROUPS.find((group) => group.id === 'tasks');
+const taskField = (key) => taskGroup.fields.find((field) => field.key === key);
 const taskFields = (on) => [
   { key: 'CLOUD_TASKS', kind: 'choice', value: on, fromWorker: '', choices: ['on', 'off'] },
+  { key: 'CLOUD_TASK_GITHUB_TOKEN', kind: 'secret', value: '', fromWorker: '', saved: false, workerHas: false },
   { key: 'CLOUD_TASK_URL', kind: 'text', value: '', fromWorker: '' },
   { key: 'CLOUD_TASK_TOKEN', kind: 'secret', value: '', fromWorker: '', saved: false, workerHas: true },
   { key: 'CLOUD_TASK_MODEL', kind: 'text', value: '', fromWorker: '' }
 ];
+assert.deepEqual(Array.from(taskGroup.fields, (field) => field.key), ['CLOUD_TASKS', 'CLOUD_TASK_GITHUB_TOKEN', 'CLOUD_TASK_URL', 'CLOUD_TASK_TOKEN', 'CLOUD_TASK_MODEL']);
+const github = { on: false, repo: '', url: '', problem: '', tokenPage: 'https://github.com/settings/tokens/new?scopes=repo,workflow&description=Aelios-resident' };
 page.config = { fields: taskFields('') };
-page.cloud = { on: false, configured: false, origin: 'https://r.example', prompt: 'p', today: 0, limit: 10, tasks: [] };
-assert.equal(page.inEffect(taskGroup.fields[0]), 'off', 'off unless turned on');
-assert.equal(page.shown(taskGroup.fields[1]), false);
+page.cloud = { on: false, configured: false, origin: 'https://r.example', prompt: 'p', github, today: 0, limit: 10, tasks: [] };
+assert.equal(page.inEffect(taskField('CLOUD_TASKS')), 'off', 'off unless turned on');
+assert.equal(page.shown(taskField('CLOUD_TASK_GITHUB_TOKEN')), false);
+assert.equal(page.shown(taskField('CLOUD_TASK_URL')), false);
 assert.equal(page.sectionSummary('tasks'), '关');
 assert.ok(!page.sectionNeeds('tasks'));
 page.config = { fields: taskFields('on') };
-assert.equal(page.shown(taskGroup.fields[1]), true);
+assert.equal(page.shown(taskField('CLOUD_TASK_GITHUB_TOKEN')), true);
+assert.equal(page.shown(taskField('CLOUD_TASK_URL')), true);
 assert.ok(page.sectionNeeds('tasks'), 'not known to be set up until the resident says so');
-assert.equal(page.tagText(taskGroup.fields[2]), 'Cloudflare：CLOUD_TASK_TOKEN', 'a token kept as a Cloudflare secret is shown as such');
+assert.equal(page.tagText(taskField('CLOUD_TASK_TOKEN')), 'Cloudflare：CLOUD_TASK_TOKEN', 'a token kept as a Cloudflare secret is shown as such');
 assert.equal(page.cloudHost(), 'r.example');
 page.cloud = { ...page.cloud, on: true, configured: true, mode: 'local', today: 2 };
 assert.equal(page.sectionSummary('tasks'), '自己的线程 · 24 小时内派了 2 单');
 assert.ok(!page.sectionNeeds('tasks'), 'threads here need nothing more');
-page.cloud = { ...page.cloud, mode: 'linux' };
+page.cloud = { ...page.cloud, mode: 'linux', github: { ...github, on: true, repo: 'octo/resident-hands', url: 'https://github.com/octo/resident-hands' } };
 assert.equal(page.sectionSummary('tasks'), '自己的线程 + GitHub Actions · 24 小时内派了 2 单');
-page.cloud = { ...page.cloud, mode: 'external', today: 3 };
+assert.ok(!page.sectionNeeds('tasks'));
+page.cloud = { ...page.cloud, github: { ...github, on: true, problem: '这个 token 写不了工作流文件：生成时要勾上 workflow。' } };
+assert.ok(page.sectionNeeds('tasks'), 'a token that could not set the repository up needs looking at');
+page.cloud = { ...page.cloud, mode: 'all', github: { ...github, on: true, repo: 'octo/resident-hands' } };
+assert.equal(page.sectionSummary('tasks'), 'claude.ai + 自己的线程 + GitHub Actions · 24 小时内派了 2 单');
+page.cloud = { ...page.cloud, mode: 'external', today: 3, github };
 assert.equal(page.sectionSummary('tasks'), 'claude.ai + 自己的线程 · 24 小时内派了 3 单');
 page.cloud = { ...page.cloud, mode: 'incomplete', configured: false };
 assert.equal(page.sectionSummary('tasks'), '触发网址没填对 · 24 小时内派了 3 单');
 assert.ok(page.sectionNeeds('tasks'));
-// Plain words, and the setup that keeps a run's log and files private.
+// Plain words: one short line each, and the steps folded away.
 assert.match(page.groupHint(taskGroup), /线程/);
-assert.ok(!/Think|SQLite|子 agent|Harness|Cursor/.test(page.groupHint(taskGroup) + page.helpFor(taskGroup.fields[0]) + page.helpFor(taskGroup.fields[1])));
-assert.match(page.helpFor(taskGroup.fields[1]), /留空就只用住户自己的线程/);
+assert.ok(!/Think|SQLite|子 agent|Harness|Cursor|Secrets|MODEL_NAME/.test(page.groupHint(taskGroup) + taskGroup.fields.map((field) => page.helpFor(field)).join('')));
+assert.match(page.helpFor(taskField('CLOUD_TASK_GITHUB_TOKEN')), /可不填/);
+assert.match(page.helpFor(taskField('CLOUD_TASK_URL')), /可不填/);
 assert.ok([page.groupHint(taskGroup), ...taskGroup.fields.map((field) => page.helpFor(field))].every((text) => text.length <= 50), 'one short line each');
-assert.ok(html.includes('<details>\n              <summary>想再接 GitHub Actions 或 claude.ai</summary>'), 'the how-to is folded away');
-assert.ok(html.includes('<strong>私有</strong>仓库') && html.includes('别用 fork'));
-assert.ok(html.includes('Allow GitHub Actions to create and approve pull requests'));
-assert.ok(!/Cursor|cursor\.com|linuxAvailable|没有住户下载入口/.test(html));
-// The hands' model: off until it is turned on, then one tap fills it, and tapping it again saves nothing.
-const taskModel = taskGroup.fields.find((field) => field.key === 'CLOUD_TASK_MODEL');
+assert.ok(html.includes('<summary>怎么接</summary>'), 'the how-to is folded away');
+assert.ok(html.includes(':href="cloud.github.tokenPage"') && html.includes('去 GitHub 生成 token'), 'one tap to make the token, with its scopes ticked');
+assert.ok(html.includes('私有仓库 <code>resident-hands</code>'));
+assert.ok(!/Allow GitHub Actions to create|MODEL_BASE_URL|RESIDENT_URL|scripts\/hands\.mjs|Cursor|cursor\.com|linuxAvailable/.test(html), 'nothing to set up by hand on GitHub');
+// A new GitHub token sets the repository up at once; 试一下 next to it tries GitHub Actions itself.
+const githubCalls = [];
+const githubPage = Object.assign(Object.create(Object.getPrototypeOf(page)), page, {
+  cloudBusy: false,
+  api: async (path, init) => { githubCalls.push([path, init && init.body]); return { ...page.cloud, github: { ...github, on: true, repo: 'octo/resident-hands' } }; }
+});
+await githubPage.setUpGitHub();
+await githubPage.testTask('linux');
+assert.equal(JSON.stringify(githubCalls), JSON.stringify([['/web/tasks/github', {}], ['/web/tasks/test', { execution: 'linux' }]]));
+assert.equal(githubPage.cloud.github.repo, 'octo/resident-hands');
+// The threads' model: offered once tasks are on; empty means Workers AI's, not the chat's.
+const taskModel = taskField('CLOUD_TASK_MODEL');
 assert.equal(page.shown(taskModel), true, 'the model is offered once tasks are on');
 assert.equal(taskGroup.title, '后台帮忙');
-assert.match(page.helpFor(taskModel), /聊天的模型/);
-assert.match(page.helpFor(taskModel), /MODEL_NAME/);
+assert.match(page.helpFor(taskModel), /Workers AI 的 glm-4\.7-flash/);
 assert.ok(!html.includes('copilot/'));
-assert.equal(page.picksFor(taskModel).join('|'), 'anthropic/claude-sonnet-5.5|anthropic/claude-opus-5.5');
-assert.equal(page.pickLabel(taskModel, 'anthropic/claude-sonnet-5.5'), 'Claude Sonnet（示例）');
-assert.equal(page.textInEffect(taskModel), '', 'empty means: the chat model here, the workflow\'s own on GitHub Actions');
+assert.equal(page.picksFor(taskModel).join('|'), 'anthropic/claude-haiku-5.5|anthropic/claude-sonnet-5.5');
+assert.equal(page.pickLabel(taskModel, 'anthropic/claude-haiku-5.5'), 'Claude Haiku（示例）');
+assert.equal(page.textInEffect(taskModel), '', 'empty means Workers AI\'s glm-4.7-flash, here and on GitHub Actions');
 page.config = { fields: taskFields('on').map((field) => field.key === 'CLOUD_TASK_MODEL' ? { ...field, value: 'my-provider/my-model' } : field) };
 assert.equal(page.textInEffect(taskModel), 'my-provider/my-model');
 assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');

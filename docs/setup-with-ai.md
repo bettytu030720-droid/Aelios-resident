@@ -388,6 +388,22 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 
 `routine-prompt.txt` 交给用户以后删掉。
 
+### 叫 GitHub Actions 干活
+
+没有 Claude 订阅也能用，要跑命令、开 PR 时用；默认关着。问用户要不要；要的话：
+
+1. `CLOUD_TASKS` 填 `on`（照上面的命令）。
+2. **token 请用户自己填**：网页门 →「···」→「后台帮忙」→ 点「去 GitHub 生成 token」（`repo` 和 `workflow` 已经勾好），拉到底点 Generate token，复制粘到「GitHub token」。别让用户把 token 发给你。
+3. 存好以后住户自己在用户的 GitHub 账号下建私有仓库 `resident-hands`、放进工作流，设置页会显示这个仓库，或者写着 token 缺什么权限。GitHub 那边不用再设任何 Secret。
+4. 试一下：
+
+   ```bash
+   curl -sS -X POST <住户地址>/web/tasks/test -H "x-web-key: <网页钥匙>" -H "content-type: application/json" -d '{"execution":"linux"}' \
+     | grep -o '"error":"[^"]*"' || echo 派出去了
+   ```
+
+   一两分钟后最新那单「接通测试」的 `status` 变成 `done` 就接通了。没变的话请用户点那一单的 `sessionUrl` 看运行日志。
+
 ### 企业微信
 
 用户要在企业微信（或开了微信插件的微信）里聊才配。要准备：一个企业微信企业（自己建一个免费的就行），和一台有固定公网 IP、能跑 systemd 的 Linux 机器当转发机。转发机不开端口，经 Cloudflare Tunnel 出来。整套顺序照 README.zh-CN.md「企业微信」，转发机照 [relay/wecom/README.md](../relay/wecom/README.md)。
