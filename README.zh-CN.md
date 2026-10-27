@@ -116,11 +116,11 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 **能做的**：
 
 - 文字来回；你发的图片；装了 `--media` 后语音条来回都行。没装的话，它的语音回复改成文字，你发的语音它可能听不了。
-- 表情包要在「IM」里打开「在企业微信上发表情包」。默认关：企业微信只认 JPG 和 PNG，GIF 发过去只显示第一帧。打开后 PNG、JPG 直接发，GIF 成了静图，Telegram 包里的 WebP、WebM 要转发机装了 `--media`。关着时它知道这里发不了表情，网页和 Telegram 上照发。
+- 表情包要在「IM」里打开「在企业微信上发表情包」（默认关），发出去是静图：企业微信不放动图，动图就挑最完整的那一帧转成 PNG，透明底留着，小图放大一倍、像素照样清楚；PNG、JPG 直接发；Telegram 包里的 WebP、WebM 要转发机装了 `--media`。关着时它知道这里发不了表情，网页和 Telegram 上照发。
 - `/status`、`/letter`、`/handoff`，跟 Telegram 一样。
 - 定时找你、心跳、闹钟、云端干完活的回报，都发到你最后说话的那扇门：最后在企业微信说的话，就发到企业微信。
 
-**限制**：企业微信只显示纯文字，Markdown 会去掉（链接变成文字加网址）；超过 2048 字节的回复会拆开；没有「正在输入」；语音条最长 60 秒；企业微信每分钟给同一个人最多发 30 条左右；GIF 不会动。
+**限制**：企业微信只显示纯文字，Markdown 会去掉（链接变成文字加网址）；超过 2048 字节的回复会拆开；没有「正在输入」；语音条最长 60 秒；企业微信每分钟给同一个人最多发 30 条左右；表情包不会动。
 
 ### 换模型
 
@@ -382,7 +382,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 | `WECOM_CORP_ID` / `WECOM_AGENT_ID` / `WECOM_SECRET` | 空 | 企业 ID，自建应用的 AgentId 和 Secret。企业微信这几项全空就是没接 |
 | `WECOM_TOKEN` / `WECOM_AES_KEY` | 空 | 应用「接收消息」的 Token 和 EncodingAESKey（43 位）；先存在这里，再去企业微信保存 URL |
 | `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | 空 | [转发机](relay/wecom/README.md)经 Cloudflare Tunnel 出来的网址，和它的钥匙（至少 32 位） |
-| `WECOM_STICKERS` | `off` | `on` 在企业微信上也发表情包；GIF 在那里只显示第一帧 |
+| `WECOM_STICKERS` | `off` | `on` 在企业微信上也发表情包，发成静图（动图取最完整的一帧） |
 | `TIME_ZONE` | `Asia/Singapore` | 消息前的时间、定时用哪个时区 |
 | `DEBOUNCE_SECONDS` | `3` | 连发几条在这个秒数内算一轮 |
 | `CHECKIN_SCHEDULE` | 空（不主动找） | `every day at 09:00`、`every weekday at 21:30`、`every 3 hours` 这类写法 |

@@ -1936,8 +1936,9 @@ if (phase === "wecom") {
     assert.equal((await ofKind("wecom.upload")).length, uploads, "nothing uploaded");
   });
 
-  await step("turned on, a sticker goes out after the words, as a picture uploaded to WeCom", async () => {
+  await step("turned on, a sticker goes out after the words, as a still PNG uploaded to WeCom", async () => {
     await set({ WECOM_STICKERS: "on" });
+    const converts = (await ofKind("wecom.convert")).length;
     const before = (await wecomSent()).length;
     await push({ MsgType: "text", Content: "发表情" });
     const out = await waitFor(wecomSent, before, 1);
@@ -1947,7 +1948,9 @@ if (phase === "wecom") {
     const image = all.find((e) => e.body.msgtype === "image");
     assert.ok(image, JSON.stringify(all.map((e) => e.body.msgtype)) + JSON.stringify(last.body));
     const upload = (await ofKind("wecom.upload")).at(-1);
-    assert.deepEqual([upload.type, upload.media.type, upload.media.file, upload.filelength], ["image", "image/gif", "sticker.gif", true]);
+    assert.deepEqual([upload.type, upload.media.type, upload.media.file, upload.filelength], ["image", "image/png", "sticker.png", true]);
+    assert.equal(upload.media.head.slice(1, 4), "PNG", "the GIF made a PNG");
+    assert.equal((await ofKind("wecom.convert")).length, converts, "by the resident, not the relay");
     assert.equal(image.body.image.media_id.startsWith("wecom-media-"), true);
     assert.equal(all.at(-1).body.msgtype, "image", "after the words");
   });
@@ -1978,7 +1981,7 @@ if (phase === "wecom") {
     assert.deepEqual((await wecomSent()).slice(before).map((e) => e.body.msgtype), ["voice"], JSON.stringify(out.map((e) => e.body)));
   });
 
-  await step("a relay installed without --media: voice replies go out as text, and the settings page says why", async () => {
+  await step("a relay installed without --media: voice replies go out as text, the settings page says why, a GIF sticker still goes", async () => {
     await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ wecomMedia: false }) });
     // Saving a WeCom setting asks the relay again.
     await set({ WECOM_RELAY_URL: "http://127.0.0.1:9999/wecom-relay/" });
@@ -1988,6 +1991,14 @@ if (phase === "wecom") {
     const out = await waitFor(wecomSent, before, 2);
     assert.deepEqual(out.map((e) => e.body.msgtype), ["text", "text"]);
     assert.match(out[0].body.text.content, /\[voice, could not be heard\]/);
+    // A GIF sticker needs no relay to become a still picture.
+    const uploads = (await ofKind("wecom.upload")).length;
+    const said = (await wecomSent()).length;
+    await push({ MsgType: "text", Content: "发表情" });
+    await waitFor(wecomSent, said, 1);
+    await sleep(1500);
+    const sticker = (await ofKind("wecom.upload")).slice(uploads);
+    assert.deepEqual(sticker.map((e) => [e.type, e.media.type]), [["image", "image/png"]]);
     await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ wecomMedia: true }) });
     await set({ VOICE_PROVIDER: "off" });
   });

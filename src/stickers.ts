@@ -9,7 +9,8 @@
 // (WebM video, WebP or TGS) sent as a real sticker, so its transparent background stays transparent; without
 // it a GIF goes to Telegram as an animation, a still picture as a photo.
 
-import { encodeGif, type Rgb } from "./gif";
+import { encodeGif, fullestGifFrame, type Rgb } from "./gif";
+import { encodePng } from "./png";
 
 export const PACK_FORMAT = "resident-stickers/1";
 export const MAX_PACKS = 20;
@@ -393,6 +394,36 @@ export function drawSticker(drawing: Drawing): { web: StickerFile; telegram: Sti
   });
   const telegram = encodeGif({ width: 2 * W, height: 2 * H, palette: [BACKGROUND, WHITE, ...colors], frames: big, delays, transparent: false });
   return { web: { bytes: web, type: "image/gif" }, telegram: { bytes: telegram, type: "image/gif" } };
+}
+
+// ---- for chats that show no animation ----
+
+// A still sticker is enlarged (by a whole number, so pixel art stays crisp) to at least this many pixels across.
+const STILL_MIN_SIDE = 240;
+
+/**
+ * A sticker as one still picture, for WeCom, which shows a GIF as its first frame and keeps only JPG and PNG: a
+ * GIF becomes a PNG of its fullest frame, see-through where it was, enlarged when small. PNG and JPEG stay as
+ * they are; a GIF this cannot read goes as it is. Null for anything else (WebP, WebM), which only the relay can
+ * turn into a picture.
+ */
+export async function stillSticker(file: StickerFile): Promise<StickerFile | null> {
+  if (file.type === "image/png" || file.type === "image/jpeg") return file;
+  if (file.type !== "image/gif") return null;
+  const frame = fullestGifFrame(file.bytes);
+  if (!frame) return file;
+  const { width, height, rgba } = frame;
+  const times = Math.max(1, Math.min(4, Math.ceil(STILL_MIN_SIDE / Math.max(width, height))));
+  if (times === 1) return { bytes: await encodePng(width, height, rgba), type: "image/png" };
+  const W = width * times;
+  const big = new Uint8Array(W * height * times * 4);
+  const pixels = new Uint32Array(rgba.buffer, rgba.byteOffset, width * height);
+  const out = new Uint32Array(big.buffer);
+  for (let y = 0; y < height * times; y += 1) {
+    const from = Math.floor(y / times) * width;
+    for (let x = 0; x < W; x += 1) out[y * W + x] = pixels[from + Math.floor(x / times)];
+  }
+  return { bytes: await encodePng(W, height * times, big), type: "image/png" };
 }
 
 // ---- what the model is told ----

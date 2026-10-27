@@ -133,6 +133,7 @@ import {
   readPack,
   slug,
   sniff,
+  stillSticker,
   telegramSetName,
   unzip,
   type Drawing,
@@ -1299,26 +1300,25 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * One sticker to WeCom, as a picture: its web picture as it is when that is a GIF, PNG or JPEG; a WebM (a video
-   * sticker) made a GIF and a WebP made a PNG by the relay, when it was installed with --media. Null when it could
-   * not go out.
+   * One sticker to WeCom, as a still picture: a GIF as a PNG of its fullest frame (stillSticker), a PNG or JPEG as
+   * it is; a WebP or WebM (a Telegram sticker) made a PNG by the relay, when it was installed with --media. Null
+   * when it could not go out.
    */
   private async deliverWecomSticker(user: string, key: string): Promise<string | null> {
     const file = await this.stickerFile(key);
     if (!file) return null;
     const api = this.wecomApi();
-    const into: Partial<Record<string, keyof Abilities>> = { "video/webm": "gif", "image/webp": "png" };
     try {
-      let picture = file;
-      const to = into[file.type];
-      if (to) {
-        if (!(await api.abilities())?.[to]) {
+      let picture = await stillSticker(file);
+      if (!picture && (file.type === "video/webm" || file.type === "image/webp")) {
+        if (!(await api.abilities())?.png) {
           console.log("wecom: sticker not sent: the relay does not convert it", { type: file.type });
           return null;
         }
-        picture = { bytes: await api.convert(to, file.bytes), type: `image/${to}` };
+        picture = { bytes: await api.convert("png", file.bytes), type: "image/png" };
       }
-      const ext = { "image/gif": "gif", "image/png": "png", "image/jpeg": "jpg" }[picture.type];
+      if (!picture) return null;
+      const ext = ({ "image/gif": "gif", "image/png": "png", "image/jpeg": "jpg" } as Record<string, string>)[picture.type];
       if (!ext) return null;
       return await api.sendFile(user, "image", { bytes: picture.bytes, type: picture.type, name: `sticker.${ext}` });
     } catch (error) {

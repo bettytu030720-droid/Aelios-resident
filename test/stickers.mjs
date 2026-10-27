@@ -1,8 +1,10 @@
-// Unit tests for sticker packs and drawn stickers (src/stickers.ts, src/gif.ts). Usage: node test/stickers.mjs
+// Unit tests for sticker packs, drawn stickers and still stickers for WeCom (src/stickers.ts, src/gif.ts, src/png.ts).
+// Usage: node test/stickers.mjs
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { inflateSync, crc32 } from "node:zlib";
 import { build } from "esbuild";
 import { GIF, PNG, WEBM, zip } from "./zip.mjs";
 
@@ -15,6 +17,7 @@ const load = async (entry) => {
 };
 const m = await load("src/stickers.ts");
 const gif = await load("src/gif.ts");
+const png = await load("src/png.ts");
 rmSync(dir, { recursive: true, force: true });
 
 async function test(name, fn) {
@@ -251,4 +254,155 @@ await test("drawings that cannot be drawn say why", () => {
   assert.match(m.drawSticker({ palette: { XY: "#000" }, frames: [rows] }).error, /one character/);
   assert.match(m.drawSticker({ palette: { X: "#000" }, frames: [rows.map(() => "XXXXZZZZ")] }).error, /Not in the palette: Z/);
   assert.ok(!("error" in m.drawSticker({ palette: { X: "#000" }, frames: [rows], outline: false })));
+});
+
+// ---- still stickers, for WeCom ----
+
+/** A GIF built frame by frame: each frame its own rectangle, disposal, transparent index and interlacing. */
+function rawGif({ width, height, palette, frames }) {
+  const bytes = [];
+  const word = (v) => bytes.push(v & 0xff, (v >> 8) & 0xff);
+  bytes.push(..."GIF89a".split("").map((c) => c.charCodeAt(0)));
+  word(width);
+  word(height);
+  bytes.push(0x80 | 1, 0, 0); // a global table of 4 colours
+  for (let i = 0; i < 4; i += 1) bytes.push(...(palette[i] ?? [0, 0, 0]));
+  for (const f of frames) {
+    bytes.push(0x21, 0xf9, 4, ((f.disposal ?? 0) << 2) | (f.transparent != null ? 1 : 0), 10, 0, f.transparent ?? 0, 0);
+    bytes.push(0x2c);
+    word(f.left ?? 0);
+    word(f.top ?? 0);
+    word(f.w);
+    word(f.h);
+    bytes.push(f.interlace ? 0x40 : 0);
+    // Interlaced data comes in the four passes' row order.
+    let indices = f.indices;
+    if (f.interlace) {
+      const order = [];
+      for (const [start, step] of [[0, 8], [4, 8], [2, 4], [1, 2]]) for (let y = start; y < f.h; y += step) order.push(y);
+      indices = Uint8Array.from(order.flatMap((y) => [...f.indices.subarray(y * f.w, (y + 1) * f.w)]));
+    }
+    bytes.push(2);
+    const data = gif.lzw(indices, 2);
+    for (let at = 0; at < data.length; at += 255) {
+      const block = data.subarray(at, at + 255);
+      bytes.push(block.length, ...block);
+    }
+    bytes.push(0);
+  }
+  bytes.push(0x3b);
+  return Uint8Array.from(bytes);
+}
+
+/** A PNG read back with node's own zlib: its size, colour type, pixels, and whether every CRC is right. */
+function readPng(bytes) {
+  const buf = Buffer.from(bytes);
+  assert.deepEqual([...buf.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  let at = 8;
+  const chunks = [];
+  while (at < buf.length) {
+    const length = buf.readUInt32BE(at);
+    const type = buf.subarray(at + 4, at + 8).toString("latin1");
+    const data = buf.subarray(at + 8, at + 8 + length);
+    assert.equal(buf.readUInt32BE(at + 8 + length), crc32(buf.subarray(at + 4, at + 8 + length)), `${type} CRC`);
+    chunks.push({ type, data });
+    at += 12 + length;
+  }
+  assert.deepEqual(chunks.map((c) => c.type), ["IHDR", "IDAT", "IEND"]);
+  const ihdr = chunks[0].data;
+  const width = ihdr.readUInt32BE(0);
+  const height = ihdr.readUInt32BE(4);
+  const raw = inflateSync(chunks[1].data);
+  const rgba = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    assert.equal(raw[y * (width * 4 + 1)], 0, "filter none");
+    rgba.set(raw.subarray(y * (width * 4 + 1) + 1, (y + 1) * (width * 4 + 1)), y * width * 4);
+  }
+  return { width, height, depth: ihdr[8], colour: ihdr[9], rgba };
+}
+
+const RED = [255, 0, 0];
+const BLUE = [0, 0, 255];
+
+await test("the GIF reader draws frames as a browser would: rectangles, kept or cleared, put back, interlaced", () => {
+  const W = 4;
+  const H = 8;
+  const fill = (w, h, index) => new Uint8Array(w * h).fill(index);
+  // Frame 1: the left half red, kept. Frame 2: one blue pixel on the right, put back after (disposal 3).
+  // Frame 3: the right half blue (more of the picture now), then cleared (disposal 2). Frame 4: nothing new.
+  const bytes = rawGif({
+    width: W,
+    height: H,
+    palette: [[0, 0, 0], RED, BLUE],
+    frames: [
+      { w: 2, h: H, indices: fill(2, H, 1), disposal: 1, transparent: 0 },
+      { left: 3, top: 0, w: 1, h: 1, indices: fill(1, 1, 2), disposal: 3, transparent: 0 },
+      { left: 2, top: 0, w: 2, h: H, indices: fill(2, H, 2), disposal: 2, transparent: 0, interlace: true },
+      { left: 0, top: 0, w: 1, h: 1, indices: fill(1, 1, 0), transparent: 0 }
+    ]
+  });
+  const frame = gif.fullestGifFrame(bytes);
+  assert.deepEqual([frame.width, frame.height], [W, H]);
+  const at = (x, y) => [...frame.rgba.subarray((y * W + x) * 4, (y * W + x) * 4 + 4)];
+  // The fullest is frame 3: the red half kept from frame 1, the blue half of its own.
+  assert.deepEqual(at(0, 0), [...RED, 255]);
+  assert.deepEqual(at(3, 7), [...BLUE, 255]);
+  assert.deepEqual(at(2, 5), [...BLUE, 255], "interlaced rows in their places");
+  // Without frame 3, the fullest is frame 2, the red half and one blue pixel.
+  const two = gif.fullestGifFrame(
+    rawGif({ width: W, height: H, palette: [[0, 0, 0], RED, BLUE], frames: [
+      { w: 2, h: H, indices: fill(2, H, 1), disposal: 1, transparent: 0 },
+      { left: 3, top: 0, w: 1, h: 1, indices: fill(1, 1, 2), disposal: 3, transparent: 0 },
+      { left: 0, top: 0, w: 1, h: 1, indices: fill(1, 1, 0), transparent: 0 }
+    ] })
+  );
+  assert.deepEqual([...two.rgba.subarray(12, 16)], [...BLUE, 255]);
+  assert.deepEqual([...two.rgba.subarray(8, 12)], [0, 0, 0, 0], "see-through stays see-through");
+  assert.equal(gif.fullestGifFrame(Uint8Array.from([1, 2, 3])), null);
+  assert.equal(gif.fullestGifFrame(bytes.subarray(0, 13)), null, "no frames");
+});
+
+await test("a drawn sticker's GIF reads back as drawn, and the fuller frame is the one kept", () => {
+  const small = ["........", "........", "...XX...", "...XX...", "........", "........", "........", "........"];
+  const big = ["........", ".XXXXXX.", ".XXXXXX.", ".XXXXXX.", ".XXXXXX.", ".XXXXXX.", ".XXXXXX.", "........"];
+  const drawn = m.drawSticker({ palette: { X: "#e84868" }, frames: [small, big, small] });
+  const frame = gif.fullestGifFrame(drawn.web.bytes);
+  assert.deepEqual([frame.width, frame.height], [136, 136]);
+  const at = (x, y) => [...frame.rgba.subarray((y * 136 + x) * 4, (y * 136 + x) * 4 + 4)];
+  // A cell of the big frame (row 1, column 1 → 4 + 16 + 8), its white outline, and the empty corner.
+  assert.deepEqual(at(28, 28), [0xe8, 0x48, 0x68, 255]);
+  assert.deepEqual(at(19, 28), [255, 255, 255, 255]);
+  assert.deepEqual(at(0, 0), [0, 0, 0, 0]);
+});
+
+await test("the PNG writer: RGBA that node's zlib reads back pixel for pixel, every CRC right", async () => {
+  const rgba = Uint8Array.from({ length: 3 * 2 * 4 }, (_, i) => (i * 37) & 0xff);
+  const back = readPng(await png.encodePng(3, 2, rgba));
+  assert.deepEqual([back.width, back.height, back.depth, back.colour], [3, 2, 8, 6]);
+  assert.deepEqual([...back.rgba], [...rgba]);
+});
+
+await test("a sticker for WeCom: a GIF made a still PNG, enlarged, see-through kept; PNG and JPEG as they are; WebP and WebM not here", async () => {
+  const drawn = m.drawSticker({ palette: { X: "#3a7" }, frames: [Array(8).fill("..XXXX..")] });
+  const still = await m.stillSticker(drawn.web);
+  assert.equal(still.type, "image/png");
+  const back = readPng(still.bytes);
+  assert.deepEqual([back.width, back.height], [272, 272], "136 px doubled");
+  const at = (x, y) => [...back.rgba.subarray((y * 272 + x) * 4, (y * 272 + x) * 4 + 4)];
+  assert.deepEqual(at(0, 0), [0, 0, 0, 0], "the corner still see-through");
+  // Doubled pixel for pixel: (44, 28) in the GIF, inside column 2, is (88..89, 56..57) here.
+  for (const [x, y] of [[88, 56], [89, 56], [88, 57], [89, 57]]) assert.deepEqual(at(x, y), [0x33, 0xaa, 0x77, 255]);
+  const wide = readPng((await m.stillSticker({ bytes: rawGif({ width: 300, height: 10, palette: [[0, 0, 0], RED], frames: [{ w: 300, h: 10, indices: new Uint8Array(3000).fill(1) }] }), type: "image/gif" })).bytes);
+  assert.deepEqual([wide.width, wide.height], [300, 10], "big enough already: not enlarged");
+  const pngFile = { bytes: new Uint8Array(PNG), type: "image/png" };
+  assert.equal(await m.stillSticker(pngFile), pngFile);
+  const jpeg = { bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0]), type: "image/jpeg" };
+  assert.equal(await m.stillSticker(jpeg), jpeg);
+  assert.equal(await m.stillSticker({ bytes: new Uint8Array(WEBM), type: "video/webm" }), null);
+  assert.equal(await m.stillSticker({ bytes: new Uint8Array(12), type: "image/webp" }), null);
+  const broken = { bytes: Uint8Array.from([...Buffer.from("GIF89a"), 1, 0, 1, 0, 0, 0, 0]), type: "image/gif" };
+  assert.equal(await m.stillSticker(broken), broken, "a GIF it cannot read goes as it is");
+  const tiny = readPng((await m.stillSticker({ bytes: new Uint8Array(GIF), type: "image/gif" })).bytes);
+  assert.deepEqual([tiny.width, tiny.height], [4, 4], "1 px enlarged at most 4 times");
+  assert.ok(tiny.rgba.every((v, i) => i % 4 !== 3 || v === 0), "the test GIF's one pixel is see-through");
 });
