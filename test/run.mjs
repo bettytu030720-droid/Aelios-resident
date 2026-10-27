@@ -2618,6 +2618,31 @@ if (phase === "web") {
     assert.equal(all.flatMap((line) => line.tasks ?? []).find((task) => task.id === id).waiting, false, "a pick deals with it");
   });
 
+  await step("a look with the version the page has gets 'the same' back, reading nothing, until something it shows changes", async () => {
+    const look = async (since) => (await json(`/web/messages${since ? `?since=${encodeURIComponent(since)}` : ""}`)).data;
+    const first = await look();
+    assert.ok(Array.isArray(first.data) && /^[0-9a-f]{8}\.\d+$/.test(first.rev), JSON.stringify(first.rev));
+    assert.deepEqual(await look(first.rev), { same: true, rev: first.rev });
+    assert.ok(Array.isArray((await look("0000000.0")).data), "another version (a page from before a restart) reads all of it");
+    let rev = first.rev;
+    const changed = async (what) => {
+      const now = await look(rev);
+      assert.ok(Array.isArray(now.data) && now.rev !== rev, `${what} changes the version`);
+      assert.deepEqual(await look(now.rev), { same: true, rev: now.rev }, `and then it is the same again (${what})`);
+      rev = now.rev;
+    };
+    await say({ text: "又来一句" });
+    await changed("her words and the reply");
+    assert.equal((await json("/web/model", { text: "" })).status, 200);
+    await changed("a notice in the chat");
+    await say({ text: "派活" });
+    await changed("a thread sent");
+    const fire = (await log()).filter((e) => e.kind === "routine.fire").at(-1);
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    assert.equal((await fetch(`${WORKER}/tasks/${id}/progress`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code }, body: JSON.stringify({ line: "改到一半" }) })).status, 200);
+    await changed("a thread's progress on its card");
+  });
+
   await step("one that waits for her with nothing to pick is put aside with 不用了, and stops asking everywhere", async () => {
     const fire = (await log()).filter((e) => e.kind === "routine.fire").at(-1);
     const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
@@ -2633,10 +2658,14 @@ if (phase === "web") {
     const start = Date.now();
     while (!(await waiting()).card && Date.now() - start < 15000) await sleep(300);
     assert.deepEqual(await waiting(), { card: true, recent: true, thread: true, page: true });
+    assert.equal((await json("/web/tasks")).data.open, 1, "the count on the threads button");
+    assert.equal((await json("/web/tasks/test", {})).status, 200);
+    assert.equal((await json("/web/tasks")).data.open, 1, "a test from the settings page is not counted: it is not a thread");
     assert.equal((await json("/web/task/settle", { id: "t_0000000000" })).status, 400);
     const before = (await lines()).length;
     assert.deepEqual((await json("/web/task/settle", { id })).data, { ok: true });
     assert.deepEqual(await waiting(), { card: false, recent: false, thread: false, page: false });
+    assert.equal((await json("/web/tasks")).data.open, 0, "nothing left on the threads button");
     assert.equal((await lines()).length, before, "the resident is not told");
     assert.match((await json("/web/task/settle", { id })).data.error, /不等你了/, "once");
     assert.equal((await web("/web/task/settle", "wrong", { id })).status, 401);
