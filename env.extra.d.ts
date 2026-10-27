@@ -53,13 +53,15 @@ interface Env {
   VOICE_REPLY?: string;
   // Sends voice requests straight there instead of through AI Gateway (a proxy; the local tests).
   VOICE_BASE_URL?: string;
-  // Cloud Claude Code as the resident's hands (cloud-tasks.ts): a scheduled task's API trigger, its address and token.
+  // Background help (cloud-tasks.ts): on or off; a claude.ai scheduled task's API trigger, its address and token;
+  // a GitHub token for GitHub Actions (hands-repo.ts).
   CLOUD_TASKS?: string;
   CLOUD_TASK_URL?: string;
   CLOUD_TASK_TOKEN?: string;
-  // Exact endpoint model ID; empty uses the chat model locally or repository MODEL_NAME on GitHub Actions.
+  CLOUD_TASK_GITHUB_TOKEN?: string;
+  // The threads' model, here and on GitHub Actions; empty uses Workers AI's glm-4.7-flash.
   CLOUD_TASK_MODEL?: string;
-  // Local tests only: where the trigger is fired instead of api.anthropic.com, and how many minutes before a task is quiet.
+  // Local tests only: where api.anthropic.com and api.github.com are reached instead, and how many minutes before a task is quiet.
   CLOUD_TASK_API_BASE?: string;
   CLOUD_TASK_QUIET_MINUTES?: string;
   // WeCom (wecom.ts): the self-built app's CorpID, AgentId and Secret, its message URL's Token and EncodingAESKey,

@@ -319,52 +319,15 @@ await test("built-in background worker: automatic tool progress lines, https lin
   assert.ok(!t.quietNote(localDone, "3 hours").includes("session link:"), "no session link when run locally");
 });
 
-await test("GitHub Actions trigger: URL validation, dispatch payload with run details, and error messages", async () => {
+await test("a GitHub Actions address is not a trigger any more: it says to fill in the GitHub token instead", async () => {
   const ghUrl = "https://api.github.com/repos/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml/dispatches";
-  assert.equal(t.triggerKind(URL_OK), "claude");
-  assert.equal(t.triggerKind(ghUrl), "github");
-  assert.equal(t.triggerKind(`${ghUrl}#dev`), "github");
-  assert.equal(t.triggerKind("https://api.cursor.com/v0/agents"), null, "Cursor is not taken");
-  assert.equal(t.fireUrlProblem(ghUrl), null);
-  assert.equal(t.fireUrlProblem(`${ghUrl}#dev`), null);
-  assert.match(t.fireUrlProblem("https://api.github.com/repos/a/b/issues") ?? "", /API 触发网址/);
-
-  const realFetch = globalThis.fetch;
-  try {
-    let seen;
-    // With return_run_details GitHub answers 200 and names the run, so the card links to it.
-    globalThis.fetch = async (url, init) => {
-      seen = { url, init };
-      return Response.json({ workflow_run_id: 42, run_url: "https://api.github.com/repos/wusaki0723/aelios-resident/actions/runs/42", html_url: "https://github.com/wusaki0723/aelios-resident/actions/runs/42" });
-    };
-    const ghOut = await t.fire(`${ghUrl}#dev`, "ghp_123", "task: t_1\ncode: c\ntitle: 修错字\n\n改一下");
-    assert.deepEqual(ghOut, { sessionId: "42", sessionUrl: "https://github.com/wusaki0723/aelios-resident/actions/runs/42" });
-    assert.equal(seen.url, ghUrl);
-    assert.equal(seen.init.headers.authorization, "Bearer ghp_123");
-    assert.equal(seen.init.headers.accept, "application/vnd.github+json");
-    assert.deepEqual(JSON.parse(seen.init.body), {
-      ref: "dev",
-      inputs: { job: "task: t_1\ncode: c\ntitle: 修错字\n\n改一下" },
-      return_run_details: true
-    });
-
-    // An older GitHub that answers 204: the card links to the workflow's runs.
-    globalThis.fetch = async () => new Response(null, { status: 204 });
-    assert.deepEqual(await t.fire(ghUrl, "ghp_123", "x"), {
-      sessionId: "gh_wusaki0723/aelios-resident_resident-hands.yml",
-      sessionUrl: "https://github.com/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml"
-    });
-    // A run link that is not GitHub's is not shown.
-    globalThis.fetch = async () => Response.json({ workflow_run_id: 7, html_url: "https://evil.example/run" });
-    assert.equal((await t.fire(ghUrl, "ghp_123", "x")).sessionUrl, "https://github.com/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml");
-
-    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-    assert.match((await t.fire(ghUrl, "ghp_123", "x")).error ?? "", /找不到这个仓库、workflow 或分支/);
-    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Unprocessable" }), { status: 422 });
-    assert.match((await t.fire(ghUrl, "ghp_123", "x")).error ?? "", /workflow_dispatch/);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+  assert.equal(t.isFireUrl(URL_OK), true);
+  assert.equal(t.isFireUrl(ghUrl), false);
+  assert.equal(t.isFireUrl("https://api.cursor.com/v0/agents"), false, "Cursor is not taken");
+  assert.match(t.fireUrlProblem(ghUrl) ?? "", /GitHub token/);
+  const calls = fakeFetch(() => Response.json({}));
+  assert.match((await t.fire(ghUrl, "ghp_123", "x")).error, /没填对/);
+  assert.equal(calls.length, 0);
 });
 
 await test("cloud_task's description offers only the places that are set up, and says which is usual", () => {
@@ -458,11 +421,11 @@ await test("pruning says which threads here have no task left, so they go with t
   assert.equal(tasks.thread(kept.id).length, 1);
 });
 
-await test("scripts/hands.mjs: parses job payload, edits files via tools, sends auxiliary header and reports back", async () => {
+await test("public/hands.mjs: parses job payload, edits files via tools, sends auxiliary header and reports back", async () => {
   const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { parseJobPayload, runHands } = await import("../scripts/hands.mjs");
+  const { parseJobPayload, runHands } = await import("../public/hands.mjs");
 
   const sample = "task: t_0123456789\ncode: 0123456789abcdef0123456789abcdef\ntitle: 修错字\nrepository: wusaki0723/aelios-resident\n\n把 hello.txt 里的 old 改成 new";
   const parsed = parseJobPayload(sample);
@@ -558,7 +521,7 @@ await test("scripts/hands.mjs: parses job payload, edits files via tools, sends 
 await test("the task payload carries arbitrary model IDs without choosing a subscription harness", async () => {
   const task = { id: "t_0123456789", title: "修错字", job: "改一下", repo: "octo/hello" };
   assert.equal(t.payload(task, "c", null), "task: t_0123456789\ncode: c\ntitle: 修错字\nrepository: octo/hello\n\n改一下");
-  const { parseJobPayload } = await import("../scripts/hands.mjs");
+  const { parseJobPayload } = await import("../public/hands.mjs");
   const picked = parseJobPayload(t.payload(task, "c", null, "my-provider/my-model"));
   assert.equal(picked.model, "my-provider/my-model");
   assert.equal(picked.repository, "octo/hello");

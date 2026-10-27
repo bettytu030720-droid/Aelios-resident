@@ -111,6 +111,7 @@ import {
 } from "./wecom";
 import {
   LOCAL_QUIET_MAX_MINUTES,
+  LOCAL_TASK_OUTPUT,
   LOCAL_QUIET_MINUTES,
   QUIET_MINUTES,
   TASKS_PER_DAY,
@@ -127,16 +128,17 @@ import {
   taskDescription,
   taskOfNote,
   threadName,
-  triggerKind,
+  isFireUrl,
   type NewTask,
   type Task,
   type TaskCard,
   type TaskExecution,
   type TaskRoutes,
   type TaskStatus,
-  type ThreadCard,
-  type TriggerKind
+  type ThreadCard
 } from "./cloud-tasks";
+import { TOKEN_PAGE, dispatchHands, fingerprint, setUpHands, WORKFLOW, type HandsRepo } from "./hands-repo";
+import { fromOpenAI, toOpenAI } from "./openai-chat";
 import {
   DEFAULT_WECOM_STICKER_BACKGROUND,
   MAKE_STICKER_DESCRIPTION,
@@ -212,6 +214,10 @@ import {
 
 // Used until a model is picked on the web page. Free on the Workers Free plan.
 const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
+// What threads work with until a model is picked for them: Workers AI's, even when the chat runs on a dear one.
+const DEFAULT_THREAD_MODEL = "@cf/zai-org/glm-4.7-flash";
+// Model calls one GitHub Actions run may make through the resident (hands.mjs stops at 30 steps).
+const HANDS_MODEL_CALLS = 40;
 const PERSONA_MAX_CHARS = 30000;
 // How many earlier personas the web page can bring back.
 const PERSONA_VERSIONS = 10;
@@ -1203,27 +1209,33 @@ export class Resident extends Think<Env> {
     return this.cfg.CLOUD_TASKS?.trim().toLowerCase() === "on";
   }
 
-  /** The trigger they filled in, when it is filled in right. */
-  private taskTrigger(): { url: string; token: string; kind: TriggerKind } | null {
+  /** The claude.ai trigger they filled in, when it is filled in right. */
+  private taskTrigger(): { url: string; token: string } | null {
     if (!this.cloudTasksOn()) return null;
     const url = this.cfg.CLOUD_TASK_URL?.trim() ?? "";
     const token = this.cfg.CLOUD_TASK_TOKEN?.trim() ?? "";
-    const kind = triggerKind(url);
-    return kind && token ? { url, token, kind } : null;
+    return isFireUrl(url) && token ? { url, token } : null;
+  }
+
+  /** Their GitHub token, for the hands on GitHub Actions (hands-repo.ts); "" without one. */
+  private githubToken(): string {
+    return this.cloudTasksOn() ? (this.cfg.CLOUD_TASK_GITHUB_TOKEN?.trim() ?? "") : "";
   }
 
   /** Where jobs can run besides the resident's own threads. */
   private taskRoutes(): TaskRoutes {
-    const kind = this.taskTrigger()?.kind;
-    return { linux: kind === "github", external: kind === "claude" };
+    return { linux: Boolean(this.githubToken()), external: Boolean(this.taskTrigger()) };
   }
 
-  /** How it stands, for the settings page and /status. A trigger filled in wrong still leaves the threads here. */
-  private taskMode(): "off" | "local" | "linux" | "external" | "incomplete" {
+  /**
+   * How it stands, for the settings page and /status. A claude.ai trigger filled in wrong is "incomplete": jobs
+   * still go to the threads here, and to GitHub Actions if that is set up.
+   */
+  private taskMode(): "off" | "local" | "linux" | "external" | "all" | "incomplete" {
     if (!this.cloudTasksOn()) return "off";
-    const kind = this.taskTrigger()?.kind;
-    if (kind) return kind === "github" ? "linux" : "external";
-    return this.cfg.CLOUD_TASK_URL?.trim() ? "incomplete" : "local";
+    const { linux, external } = this.taskRoutes();
+    if (!external && this.cfg.CLOUD_TASK_URL?.trim()) return "incomplete";
+    return linux && external ? "all" : linux ? "linux" : external ? "external" : "local";
   }
 
   private quietMinutes(): number {
@@ -1231,9 +1243,22 @@ export class Resident extends Think<Env> {
     return Number.isFinite(minutes) && minutes > 0 ? minutes : QUIET_MINUTES;
   }
 
-  /** The model the threads work with. Empty: the chat's own here, and the workflow's own on GitHub Actions. */
-  private taskModel(): string {
-    return this.cfg.CLOUD_TASK_MODEL?.trim() ?? "";
+  /** The model threads work with, here and on GitHub Actions: the one picked for them, else Workers AI's. */
+  private threadModel(): string {
+    const picked = this.cfg.CLOUD_TASK_MODEL?.trim();
+    if (picked) return picked;
+    return this.env.FAKE_MODEL === "true" ? "fake" : DEFAULT_THREAD_MODEL;
+  }
+
+  /**
+   * The threads' model as something to call. A Workers AI id runs on Cloudflare here; any other goes through
+   * Aelios when it is connected (marked auxiliary, so nothing is recorded), else as the id says.
+   */
+  private threadModelToCall() {
+    const name = this.threadModel();
+    if (name === "fake" && this.env.FAKE_MODEL === "true") return { name, model: fakeModel() };
+    const viaAelios = Boolean(aeliosConfig(this.cfg)) && !name.startsWith("@cf/");
+    return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true, thinking: false }) : this.modelFor(name)) };
   }
 
   /** cloud_task, once CLOUD_TASKS is on. It offers only the places that are set up. */
@@ -1291,7 +1316,7 @@ export class Resident extends Think<Env> {
     // A follow-up stays where its thread ran, while that is still set up.
     const stays = follows && (follows.runs === "local" || routes[follows.runs]) ? follows.runs : null;
     const execution: TaskExecution = input.execution ?? stays ?? (routes.external ? "external" : "local");
-    if (execution === "linux" && !routes.linux) return { error: "还没接 GitHub Actions：设置页里填它的触发网址和 token" };
+    if (execution === "linux" && !routes.linux) return { error: "还没接 GitHub Actions：设置页里填一个 GitHub token" };
     if (execution === "external" && !routes.external) return { error: "还没接 claude.ai 定时任务：设置页里填它的触发网址和 token" };
     const store = this.cloudTasks();
     const added = store.add({ ...input, execution });
@@ -1308,7 +1333,8 @@ export class Resident extends Think<Env> {
       await this.pruneTasks();
       return store.get(added.task.id) ?? added.task;
     }
-    const fired = await fire(trigger!.url, trigger!.token, payload(added.task, added.code, follows, this.taskModel()), this.env.CLOUD_TASK_API_BASE);
+    const job = payload(added.task, added.code, follows);
+    const fired = execution === "linux" ? await this.fireHands(job) : await fire(trigger!.url, trigger!.token, job, this.env.CLOUD_TASK_API_BASE);
     if ("error" in fired) {
       store.drop(added.task.id);
       return fired;
@@ -1317,6 +1343,102 @@ export class Resident extends Think<Env> {
     await this.schedule(this.quietMinutes() * 60, "taskQuiet", { id: added.task.id });
     await this.pruneTasks();
     return store.get(added.task.id) ?? added.task;
+  }
+
+  /**
+   * The repository the hands run in: set up once per token and per version of the workflow, and again when GitHub
+   * no longer knows it (`again`). The last problem is kept for the settings page.
+   */
+  private async handsRepo(token: string, again = false): Promise<HandsRepo | { error: string }> {
+    const key = `${await fingerprint(token)}:${await fingerprint(WORKFLOW)}`;
+    const kept = await this.ctx.storage.get<HandsRepo & { key: string }>("hands_repo");
+    if (!again && kept?.key === key) return kept;
+    const repo = await setUpHands(token, this.env.CLOUD_TASK_API_BASE);
+    if ("error" in repo) {
+      await this.ctx.storage.delete("hands_repo");
+      await this.ctx.storage.put("hands_problem", repo.error);
+      return repo;
+    }
+    await this.ctx.storage.put("hands_repo", { ...repo, key });
+    await this.ctx.storage.delete("hands_problem");
+    return repo;
+  }
+
+  /**
+   * Starts a GitHub Actions run for a job. A workflow written a moment ago can take GitHub a few seconds to pick
+   * up, and one that is gone is set up again: either way it is tried a few times.
+   */
+  private async fireHands(job: string): Promise<{ sessionId: string; sessionUrl: string } | { error: string }> {
+    const token = this.githubToken();
+    const origin = (await this.ctx.storage.get<string>("origin")) ?? "";
+    if (!origin) return { error: "住户还不知道自己的网址：先在网页上发一句话" };
+    let repo = await this.handsRepo(token);
+    for (let attempt = 0; ; attempt++) {
+      if ("error" in repo) return repo;
+      const fired = await dispatchHands(repo, token, job, origin, this.env.CLOUD_TASK_API_BASE);
+      if (!("error" in fired) || !fired.missing || attempt >= 3) return "error" in fired ? { error: fired.error } : fired;
+      await new Promise((resolve) => setTimeout(resolve, this.env.CLOUD_TASK_API_BASE ? 50 : 2000 * (attempt + 1)));
+      if (attempt === 0) repo = await this.handsRepo(token, true);
+    }
+  }
+
+  /** The settings page, after the GitHub token is saved: sets the repository up now, so a problem shows there. */
+  async webGitHubSetup(origin: string): Promise<Awaited<ReturnType<Resident["webTasks"]>> | { error: string }> {
+    await this.noteOrigin(origin);
+    const token = this.githubToken();
+    if (!token) return { error: "先打开后台帮忙，再填 GitHub token" };
+    const repo = await this.handsRepo(token, true);
+    return "error" in repo ? repo : this.webTasks();
+  }
+
+  /** A GitHub Actions run's task, when it may still use the resident: its code is right and it is not finished. */
+  private handsTask(id: string, code: string): Task | { status: number; error: string } {
+    const task = this.cloudTasks().reporting(id, code);
+    if (!task) return { status: 403, error: "unknown task, or the wrong code" };
+    if (task === "expired") return { status: 410, error: "this task is too old" };
+    if (task.runs !== "linux") return { status: 403, error: "this task does not run on GitHub Actions" };
+    if (!["sent", "working"].includes(task.status)) return { status: 409, error: "this task is finished" };
+    return task;
+  }
+
+  /** The GitHub token, for a run of the hands to clone, push and open pull requests with. */
+  async handsToken(id: string, code: string): Promise<{ status: number; body: { github_token?: string; error?: string } }> {
+    const task = this.handsTask(id, code);
+    if ("error" in task) return { status: task.status, body: { error: task.error } };
+    const token = this.githubToken();
+    return token ? { status: 200, body: { github_token: token } } : { status: 409, body: { error: "no GitHub token is set" } };
+  }
+
+  /**
+   * One model step for a run of the hands, in the OpenAI chat format they speak: on the threads' model, with the
+   * resident's own keys, so none is stored on GitHub. Counted in the usage timeline like a thread's work.
+   */
+  async handsModel(id: string, code: string, body: unknown): Promise<{ status: number; json: string }> {
+    const failed = (status: number, message: string) => ({ status, json: JSON.stringify({ error: { message } }) });
+    const task = this.handsTask(id, code);
+    if ("error" in task) return failed(task.status, task.error);
+    const calls = ((await this.ctx.storage.get<number>(`hands_calls:${id}`)) ?? 0) + 1;
+    if (calls > HANDS_MODEL_CALLS) return failed(429, `at most ${HANDS_MODEL_CALLS} model calls per task`);
+    await this.ctx.storage.put(`hands_calls:${id}`, calls);
+    const request = fromOpenAI(body);
+    if ("error" in request) return failed(400, request.error);
+    const { name, model } = this.threadModelToCall();
+    try {
+      const result = await generateText({
+        model,
+        instructions: request.instructions || undefined,
+        messages: request.messages,
+        tools: request.tools,
+        maxOutputTokens: LOCAL_TASK_OUTPUT,
+        providerOptions: promptCache(this.cfg),
+        abortSignal: AbortSignal.timeout(170_000),
+        onStepEnd: (step) => this.recordUsage(step, { kind: "worker", via: "" })
+      });
+      return { status: 200, json: JSON.stringify(toOpenAI(result, name)) };
+    } catch (error) {
+      console.error("hands: model call failed", { error: String(error) });
+      return failed(502, `the model call failed: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`);
+    }
   }
 
   /** Keeps the newest tasks; a thread here with no task left goes too, with its files. */
@@ -1375,9 +1497,10 @@ export class Resident extends Think<Env> {
     const descriptors = await Promise.all(Object.entries(tools).map(async ([name, item]) => ({
       name, description: typeof item.description === "string" ? item.description : "", schema: await asSchema(item.inputSchema).jsonSchema as JSONSchema7
     })));
+    const model = this.threadModel();
     return {
-      model: this.taskModel() || this.savedModel() || this.defaultModel,
-      memory: aeliosConfig(this.cfg), gatewayId: this.cfg.AI_GATEWAY_ID?.trim() ?? "",
+      // A Workers AI model runs on Cloudflare, not through Aelios.
+      model, memory: model.startsWith("@cf/") ? null : aeliosConfig(this.cfg), gatewayId: this.cfg.AI_GATEWAY_ID?.trim() ?? "",
       custom: { CUSTOM_BASE_URL: this.cfg.CUSTOM_BASE_URL, CUSTOM_API_KEY: this.cfg.CUSTOM_API_KEY, CUSTOM_FORMAT: this.cfg.CUSTOM_FORMAT },
       tools: descriptors
     };
@@ -1501,9 +1624,10 @@ export class Resident extends Think<Env> {
   async webTasks(origin?: string): Promise<{
     on: boolean;
     configured: boolean;
-    mode: "off" | "local" | "linux" | "external" | "incomplete";
+    mode: "off" | "local" | "linux" | "external" | "all" | "incomplete";
     origin: string;
     prompt: string;
+    github: { on: boolean; repo: string; url: string; problem: string; tokenPage: string };
     today: number;
     limit: number;
     tasks: TaskCard[];
@@ -1512,10 +1636,16 @@ export class Resident extends Think<Env> {
     if (origin) await this.noteOrigin(origin);
     const own = (await this.ctx.storage.get<string>("origin")) ?? "";
     const mode = this.taskMode();
+    // The repository the hands run in, as set up for this token; or what went wrong the last time.
+    const token = this.githubToken();
+    const kept = token ? await this.ctx.storage.get<HandsRepo & { key: string }>("hands_repo") : undefined;
+    const current = kept && kept.key.startsWith(`${await fingerprint(token)}:`) ? kept : null;
+    const problem = token && !current ? ((await this.ctx.storage.get<string>("hands_problem")) ?? "") : "";
     return {
       on: this.cloudTasksOn(),
       configured: mode !== "off" && mode !== "incomplete",
       mode,
+      github: { on: Boolean(token), repo: current ? `${current.owner}/${current.repo}` : "", url: current?.url ?? "", problem, tokenPage: TOKEN_PAGE },
       origin: own,
       prompt: own ? routinePrompt(own) : "",
       today: this.cloudTasks().sentToday(),
@@ -1529,13 +1659,13 @@ export class Resident extends Think<Env> {
   }
 
   /** The settings page's 试一下: a small task that only reports back, on the trigger if there is one. */
-  async webTestTask(origin: string): Promise<Awaited<ReturnType<Resident["webTasks"]>> | { error: string }> {
+  async webTestTask(origin: string, place?: TaskExecution): Promise<Awaited<ReturnType<Resident["webTasks"]>> | { error: string }> {
     await this.noteOrigin(origin);
     if (this.cloudTasks().sentToday() >= TASKS_PER_DAY) return { error: `24 小时内已经派了 ${TASKS_PER_DAY} 单，明天再试` };
     const job =
       'This is a test from the resident\'s settings page, to see that this scheduled task starts and can report back. Do nothing else: send the progress line "收到了", then report the result with status done and the summary "接通了".';
     const routes = this.taskRoutes();
-    const execution: TaskExecution = routes.external ? "external" : routes.linux ? "linux" : "local";
+    const execution: TaskExecution = place ?? (routes.external ? "external" : routes.linux ? "linux" : "local");
     const task = await this.startTask({ title: "接通测试", job, test: true, execution }, null);
     return "error" in task ? task : this.webTasks();
   }
@@ -3027,10 +3157,11 @@ export class Resident extends Think<Env> {
       `后台帮忙：${
         {
           off: "关",
-          incomplete: "开了，自己的线程能干；触发网址或 token 没填对，GitHub Actions / claude.ai 还没接上",
+          incomplete: `开了，自己的线程能干${this.taskRoutes().linux ? "，要跑命令的交给 GitHub Actions" : ""}；claude.ai 的触发网址或 token 没填对`,
           local: "开，交给自己的线程",
           linux: "开，交给自己的线程，要跑命令的交给 GitHub Actions",
-          external: "开，默认交给 claude.ai 的云端 Claude Code，轻活交给自己的线程"
+          external: "开，默认交给 claude.ai 的云端 Claude Code，轻活交给自己的线程",
+          all: "开，默认交给 claude.ai 的云端 Claude Code，轻活交给自己的线程，也能交给 GitHub Actions"
         }[this.taskMode()]
       }${this.cloudTasksOn() ? `；24 小时内派了 ${this.cloudTasks().sentToday()} 单，在干的 ${this.cloudTasks().open()} 单` : ""}`,
       `别的 MCP：${

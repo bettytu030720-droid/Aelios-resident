@@ -15,6 +15,8 @@
 //   GET  /manifest.webmanifest          the web page as an app for the home screen, with the resident's name and avatar
 //   POST /tasks/<id>/progress|result    a GitHub Actions run or a cloud Claude Code session reporting on its task
 //                                       (cloud-tasks.ts), with the task's one-time code in x-task-code
+//   POST /tasks/<id>/hands              a GitHub Actions run asking for the GitHub token (code in x-task-code)
+//   POST /tasks/<id>/model/chat/completions   its model calls, OpenAI format, the code as Bearer (hands-repo.ts)
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
@@ -38,6 +40,8 @@ const AGENT_NAME = "default";
 // A message from the web page with four pictures and a voice message, in base64; any other call is small.
 const SAY_MAX_BYTES = 24 * 1024 * 1024;
 const JSON_MAX_BYTES = 1024 * 1024;
+// A model call from the hands carries the whole run so far: 30 steps of bounded tool output fit well under this.
+const HANDS_MODEL_MAX_BYTES = 4 * 1024 * 1024;
 const AVATAR_UPLOAD_MAX = 512 * 1024;
 
 /** A file of hers the web page reads and shows itself: never run as a page of this origin, never kept by caches. */
@@ -207,6 +211,7 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
           quote?: string;
           subscription?: unknown;
           endpoint?: string;
+          execution?: string;
         })
       : {};
   switch (`${request.method} ${url.pathname}`) {
@@ -353,8 +358,13 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "GET /web/tasks":
       return Response.json(await agent.webTasks(url.origin));
     case "POST /web/tasks/test": {
-      const tried = await agent.webTestTask(url.origin);
+      const place = body.execution === "linux" || body.execution === "external" || body.execution === "local" ? body.execution : undefined;
+      const tried = await agent.webTestTask(url.origin, place);
       return Response.json(tried, { status: "error" in tried ? 400 : 200 });
+    }
+    case "POST /web/tasks/github": {
+      const set = await agent.webGitHubSetup(url.origin);
+      return Response.json(set, { status: "error" in set ? 400 : 200 });
     }
     case "GET /web/threads":
       return Response.json(await agent.webThreads());
@@ -416,6 +426,27 @@ export default {
         return new Response(file.bytes, {
           headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" }
         });
+      }
+      // A GitHub Actions run of the hands: the GitHub token to work with, and the model through the resident.
+      const hands = url.pathname.match(/^\/tasks\/(t_[0-9a-f]{10})\/(hands|model\/chat\/completions)$/);
+      if (hands && request.method === "POST") {
+        const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+        if (hands[2] === "hands") {
+          const answer = await agent.handsToken(hands[1], request.headers.get("x-task-code") ?? "");
+          return Response.json(answer.body, { status: answer.status, headers: { "cache-control": "no-store" } });
+        }
+        if (Number(request.headers.get("content-length") ?? 0) > HANDS_MODEL_MAX_BYTES) return Response.json({ error: { message: "too large" } }, { status: 413 });
+        const text = await request.text();
+        if (text.length > HANDS_MODEL_MAX_BYTES) return Response.json({ error: { message: "too large" } }, { status: 413 });
+        let body: unknown;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          return Response.json({ error: { message: "the body must be JSON" } }, { status: 400 });
+        }
+        const code = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+        const answer = await agent.handsModel(hands[1], code, body);
+        return new Response(answer.json, { status: answer.status, headers: { "content-type": "application/json" } });
       }
       const report = url.pathname.match(/^\/tasks\/(t_[0-9a-f]{10})\/(progress|result)$/);
       if (report && request.method === "POST") {

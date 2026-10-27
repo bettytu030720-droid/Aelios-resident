@@ -419,9 +419,11 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 线程可以在三个地方干：
 
-- **住户自己这里**（不用别的设置，没有 Claude 订阅也能用）：每条线程有自己的对话和文件，用聊天的模型（`CLOUD_TASK_MODEL` 可以另选），能搜网、读网页、查记忆、写小本本、用接好的 MCP 工具、读写自己的文件。它没有命令行，装不了软件、跑不了代码。
-- **GitHub Actions**（要跑命令、跑测试、开 PR 时）：在你自己的一个仓库里跑，有完整的 Linux。
+- **住户自己这里**（不用别的设置，没有 Claude 订阅也能用）：每条线程有自己的对话和文件，能搜网、读网页、查记忆、写小本本、用接好的 MCP 工具、读写自己的文件。它没有命令行，装不了软件、跑不了代码。
+- **GitHub Actions**（要跑命令、跑测试、开 PR 时）：有完整的 Linux，在住户替你在 GitHub 上建的一个私有仓库里跑。只要填一个 token。
 - **claude.ai 定时任务**（有 Claude 订阅时）：每单开一个云端 Claude Code 会话，用你的订阅额度。接了它以后，活默认交给它，轻活住户也可以留给自己的线程。
+
+住户自己这里和 GitHub Actions 上的线程用**线程的模型**：默认是 Workers AI 的 `@cf/zai-org/glm-4.7-flash`（每天有免费额度），想换就在「线程用哪个模型」里填（`CLOUD_TASK_MODEL`）。线程不会自己去用聊天的模型，贵的聊天模型不会花在跑腿上。
 
 网页聊天页右上角的「线程」按钮（它的页面里也有）列出所有线程。点开一条能看到：
 
@@ -432,15 +434,13 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 接 GitHub Actions：
 
-1. 新建一个**私有**仓库当执行仓库。别用 fork：fork 公开仓库只能是公开的，运行日志和做出来的文件谁都看得见。
-2. 把本仓库的 `.github/workflows/resident-hands.yml` 和 `scripts/hands.mjs` 原样放进去。
-3. 在执行仓库的 Settings → Secrets and variables → Actions 里加 Secret：`RESIDENT_URL`（住户的网址）、`MODEL_BASE_URL`（写到 `/v1`，比如 Aelios 的）、`MODEL_API_KEY`；加变量 `MODEL_NAME`（接口认的模型名，设置页的 `CLOUD_TASK_MODEL` 填了就用那个）。
-4. 要它开 PR：Settings → Actions → General 里勾上「Allow GitHub Actions to create and approve pull requests」。要它改别的仓库：再加 Secret `HANDS_GH_TOKEN`，给那些仓库的 Contents 和 Pull requests 写权限。
-5. 设置页的触发网址填 `https://api.github.com/repos/你/执行仓库/actions/workflows/resident-hands.yml/dispatches`（末尾可加 `#分支名`，默认 `main`），token 填对执行仓库 Actions 有写权限的 GitHub token。点「试一下」。
+1. 设置页「后台帮忙」里点「去 GitHub 生成 token」，会打开 GitHub 生成经典 token 的页面，`repo` 和 `workflow` 已经勾好；拉到底点 **Generate token**，复制下来粘到设置页的「GitHub token」（别发在聊天里）。
+2. 住户会在你的账号下建一个私有仓库 `resident-hands`，把工作流放进去。接好了设置页会显示这个仓库；token 权限不够时，那里会写缺什么。
+3. 点它旁边的「试一下」。
 
-Actions 那边每单开一个新的机器，单子从运行的事件文件里读，不打进日志；回报暗号在日志里显示成 `***`。做出来的文件放在那次运行的 artifact 里，保留 30 天。真要公开一个页面：执行仓库加变量 `HANDS_PUBLISH_REPO`（`owner/repo`），在那个仓库开 GitHub Pages（Deploy from a branch → gh-pages → / (root)），`HANDS_GH_TOKEN` 要有它的写权限；只有单子明说要公开时它才发到 Pages。超时或出错停下的运行，最后一步会告诉住户「停下了」，不用干等 3 小时。
+GitHub 上什么都不用存：每次运行都从住户这里下载 `hands.mjs`，模型经住户调用（用线程的模型和住户自己的 key，时间流里记成线程干活），GitHub token 也是那次运行向住户借的，用来 clone、push、给你别的仓库开 PR。`resident-hands` 要一直是私有的：能看到这个仓库的人就能看运行日志和做出来的文件，它变成公开的住户就不往里派活了。每单开一个新机器，单子从运行的事件文件里读，不打进日志，暗号在日志里显示成 `***`。做出来的文件放在那次运行的 artifact 里，保留 30 天。真要公开页面：在 `resident-hands` 里加 Actions 变量 `HANDS_PUBLISH_REPO`（`owner/repo`），在那个仓库开 GitHub Pages（Deploy from a branch → gh-pages → / (root)）；只有单子明说要公开时它才发到 Pages。超时或出错停下的运行，最后一步会告诉住户「停下了」，不用干等 3 小时。
 
-第一次接 claude.ai 定时任务（设置页「想再接 GitHub Actions 或 claude.ai」里有同样的步骤和要复制的提示词）：
+第一次接 claude.ai 定时任务（设置页「怎么接」里有同样的步骤和要复制的提示词）：
 
 1. 打开 [claude.ai/code/routines](https://claude.ai/code/routines) 新建一个定时任务，把设置页上那段提示词贴进去，选好模型、仓库和云端环境。
 2. 「触发」里加一个 API，复制网址，点「生成 token」。网址填在设置页；token 填在设置页，或者存成 Cloudflare 的 Secret `CLOUD_TASK_TOKEN`。token 只显示一次，别发在聊天里。
@@ -510,9 +510,10 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 | `VOICE_API_KEY` | 空 | 那一家的 key；存在 AI Gateway 的 Provider Keys 里就不用填 |
 | `VOICE_BASE_URL` | 空 | 一般不填；填了就不走 AI Gateway，直接发到这个地址 |
 | `CLOUD_TASKS` | `off` | `on` 打开后台帮忙：活交给线程 |
-| `CLOUD_TASK_URL` | 空 | 选填：GitHub Actions 或 claude.ai 定时任务的触发网址；留空只用住户自己的线程 |
+| `CLOUD_TASK_GITHUB_TOKEN` | 空 | 选填：GitHub token（勾 `repo` 和 `workflow`），住户用它建私有仓库、在 GitHub Actions 上干活；可以存成 Cloudflare 的 Secret |
+| `CLOUD_TASK_URL` | 空 | 选填：claude.ai 定时任务的触发网址 |
 | `CLOUD_TASK_TOKEN` | 空 | 那个触发器的 token（填了触发网址时要填）；可以存成 Cloudflare 的 Secret |
-| `CLOUD_TASK_MODEL` | 空 | 线程用的模型，填接口认的模型名；留空时住户自己的线程用聊天的模型，Actions 用执行仓库的 `MODEL_NAME` |
+| `CLOUD_TASK_MODEL` | 空 | 线程用的模型（住户这里和 GitHub Actions 上都是），填模型选择器里认的名字；留空用 Workers AI 的 `@cf/zai-org/glm-4.7-flash` |
 | `AI_GATEWAY_ID` | 空（用 `default`） | 搜网、语音、没接 Aelios 时的模型走哪个 AI Gateway |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | 空 | 中转的地址（写到 `/v1`）和 key；模型填 `custom/…` 时用 |
 | `CUSTOM_FORMAT` | `openai` | 中转用哪种格式：`openai` 或 `anthropic`（带缓存） |

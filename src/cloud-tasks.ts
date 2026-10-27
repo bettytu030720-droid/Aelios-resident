@@ -2,9 +2,10 @@
 // job; something else does it and reports back here. Three places a job can run:
 //
 // - local: a thread of the resident's own (task-worker.ts), a Think child with its own conversation and files,
-//   on the model the resident already uses. No subscription or repository needed.
-// - linux: a GitHub Actions workflow in a private repository of theirs (scripts/hands.mjs), for jobs that need
-//   a shell: installing things, running tests, opening pull requests.
+//   on the threads' model (Workers AI by default). No subscription or repository needed.
+// - linux: a GitHub Actions run in a private repository the resident sets up with their GitHub token
+//   (hands-repo.ts, public/hands.mjs), for jobs that need a shell: installing things, running tests, opening pull
+//   requests.
 // - external: a scheduled task on their claude.ai account, started through its API trigger, which opens a fresh
 //   cloud Claude Code session on their subscription. Docs: https://code.claude.com/docs/en/routines
 //
@@ -15,18 +16,12 @@ import { NOTE_PREFIX } from "./prompts";
 import type { Sql } from "./sticker-store";
 
 export const FIRE_URL = /^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/trig_[A-Za-z0-9]{6,64}\/fire$/;
-export const GITHUB_DISPATCH_URL = /^https:\/\/api\.github\.com\/repos\/([\w.-]+\/[\w.-]+)\/actions\/workflows\/([\w.-]+\.ya?ml|\d+)\/dispatches(?:#([\w./-]+))?$/;
 const FIRE_ORIGIN = "https://api.anthropic.com";
-const GITHUB_ORIGIN = "https://api.github.com";
 export const FIRE_BETA = "experimental-cc-routine-2026-04-01";
 
-export type TriggerKind = "claude" | "github";
-
-export function triggerKind(value: string): TriggerKind | null {
-  const trimmed = value.trim();
-  if (FIRE_URL.test(trimmed)) return "claude";
-  if (GITHUB_DISPATCH_URL.test(trimmed)) return "github";
-  return null;
+/** Whether this is a claude.ai scheduled task's API trigger. */
+export function isFireUrl(value: string): boolean {
+  return FIRE_URL.test(value.trim());
 }
 // What the resident sends out by itself in a day. A claude.ai run is a whole session on their subscription and an
 // Actions run takes minutes of theirs: a few a day is plenty. What they write to a thread themselves is not counted.
@@ -109,24 +104,23 @@ export type TaskCard = Pick<
 };
 
 export function fireUrlProblem(value: string): string | null {
-  return triggerKind(value)
-    ? null
-    : "要填 GitHub Actions 的触发网址（https://api.github.com/repos/你/执行仓库/actions/workflows/resident-hands.yml/dispatches），或者 claude.ai 定时任务的 API 触发网址（https://api.anthropic.com/v1/claude_code/routines/trig_…/fire）";
+  if (isFireUrl(value)) return null;
+  return /^https:\/\/api\.github\.com\//.test(value.trim())
+    ? "GitHub Actions 不用填网址了：清掉这格，在下面填 GitHub token 就行"
+    : "要填 claude.ai 定时任务的 API 触发网址（https://api.anthropic.com/v1/claude_code/routines/trig_…/fire）";
 }
 
 const clip = (value: unknown, max: number) => (typeof value === "string" ? value.replace(/\r/g, "").trim().slice(0, max) : "");
 const oneLine = (value: unknown, max: number) => clip(value, max * 2).replace(/\s+/g, " ").slice(0, max);
 
-/** Starts a run for one job: a claude.ai scheduled task, or a GitHub Actions workflow. */
+/** Starts a run for one job on a claude.ai scheduled task. */
 export async function fire(
   url: string,
   token: string,
   text: string,
   apiBase?: string
 ): Promise<{ sessionId: string; sessionUrl: string } | { error: string }> {
-  const kind = triggerKind(url);
-  if (!kind || !token) return { error: "触发网址或 token 没填对" };
-  if (kind === "github") return fireGitHub(url.trim(), token, text, apiBase);
+  if (!isFireUrl(url) || !token) return { error: "触发网址或 token 没填对" };
   const target = apiBase?.trim() ? apiBase.trim().replace(/\/+$/, "") + url.slice(FIRE_ORIGIN.length) : url;
   let response: Response;
   try {
@@ -160,51 +154,6 @@ export async function fire(
   const sessionId = typeof body?.claude_code_session_id === "string" ? body.claude_code_session_id : "";
   if (!/^https:\/\/claude\.ai\//.test(sessionUrl)) return { error: "云端回的不是一个会话链接" };
   return { sessionId, sessionUrl };
-}
-
-async function fireGitHub(
-  url: string,
-  token: string,
-  text: string,
-  apiBase?: string
-): Promise<{ sessionId: string; sessionUrl: string } | { error: string }> {
-  const match = url.match(GITHUB_DISPATCH_URL)!;
-  const [, repo, workflow, ref] = match;
-  const cleanUrl = url.replace(/#.*$/, "");
-  const target = apiBase?.trim() ? apiBase.trim().replace(/\/+$/, "") + cleanUrl.slice(GITHUB_ORIGIN.length) : cleanUrl;
-  let response: Response;
-  try {
-    response = await fetch(target, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28",
-        "user-agent": "aelios-resident",
-        "content-type": "application/json"
-      },
-      // return_run_details: the reply names this run, so the card links to it rather than to every run.
-      body: JSON.stringify({ ref: ref || "main", inputs: { job: text }, return_run_details: true }),
-      signal: AbortSignal.timeout(30_000)
-    });
-  } catch (error) {
-    return { error: `连不上 GitHub：${String(error).slice(0, 120)}` };
-  }
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: unknown } | null;
-    const said = typeof body?.message === "string" ? `：${body.message.slice(0, 160)}` : "";
-    if (response.status === 401 || response.status === 403) return { error: `GitHub token 不对，或者没有这个仓库 Actions 的写权限，去设置页重填${said}` };
-    if (response.status === 404) return { error: `找不到这个仓库、workflow 或分支：确认 ${repo} 里有 .github/workflows/${workflow}${said}` };
-    if (response.status === 422) return { error: `GitHub 不接这次触发：确认 workflow 里有 workflow_dispatch 和 job 这个输入${said}` };
-    if (response.status === 429) return { error: `这一个小时派得太多了，过一会儿再派${said}` };
-    return { error: `GitHub 没接（HTTP ${response.status}）${said}` };
-  }
-  const run = (await response.json().catch(() => null)) as { workflow_run_id?: unknown; html_url?: unknown } | null;
-  const runUrl = typeof run?.html_url === "string" && /^https:\/\/github\.com\//.test(run.html_url) ? run.html_url : "";
-  return {
-    sessionId: run?.workflow_run_id !== undefined ? String(run.workflow_run_id) : `gh_${repo}_${workflow}`,
-    sessionUrl: runUrl || `https://github.com/${repo}/actions/workflows/${workflow}`
-  };
 }
 
 /** The scheduled task's own prompt: what it does with a job, and how it reports to the resident at `origin`. */
@@ -407,7 +356,7 @@ export function taskOfNote(text: string): string | null {
   return text.startsWith(TASK_NOTE_PREFIX) ? (text.slice(TASK_NOTE_PREFIX.length).match(/^ (t_[0-9a-f]{10})\b/)?.[1] ?? null) : null;
 }
 
-/** Where jobs can run with these settings: local always; linux with an Actions trigger; external with claude.ai's. */
+/** Where jobs can run with these settings: local always; linux with a GitHub token; external with claude.ai's trigger. */
 export type TaskRoutes = { linux: boolean; external: boolean };
 
 /**
@@ -423,10 +372,10 @@ export function taskDescription(routes: TaskRoutes): string {
     "you tell them. To carry on with an earlier task, pass its id as follow_up_of: its result goes along, and a local " +
     "thread carries on with its own files and what it did before.";
   const local =
-    "local: a thread of yours here, on your own model, with web search, web pages, memory, the notebook and files " +
+    "local: a thread of yours here, with web search, web pages, memory, the notebook and files " +
     "they can open on the web page; no shell, so it cannot install, run or test anything.";
   const linux =
-    "linux: a GitHub Actions run in their own repository, with a shell: installing, building, running tests, opening " +
+    "linux: a GitHub Actions run on their GitHub account, with a shell: installing, building, running tests, opening " +
     "pull requests; name the repository to change in repo.";
   const external =
     "external: a cloud Claude Code session on their claude.ai plan, with a shell and their repositories; they can open " +

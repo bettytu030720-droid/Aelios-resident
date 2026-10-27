@@ -30,9 +30,8 @@ async function say(text) {
   assert.ok(task, 'message created a task');
   return task;
 }
-const github = 'https://api.github.com/repos/example/executor/actions/workflows/resident-hands.yml/dispatches';
 if (process.argv[2] !== 'restart') {
-  await set({ CLOUD_TASKS: 'on', CLOUD_TASK_URL: github, CLOUD_TASK_TOKEN: 'good-token' });
+  await set({ CLOUD_TASKS: 'on', CLOUD_TASK_GITHUB_TOKEN: 'good-token' });
   const state = await api('/web/tasks');
   assert.equal(state.mode, 'linux');
   const before = (await (await fetch(mock + '/__log')).json()).filter(e => e.kind === 'github.dispatch').length;
@@ -48,10 +47,10 @@ if (process.argv[2] !== 'restart') {
   assert.equal(await file.text(), 'native-workspace-persisted');
   console.log('PASS native child writes a workspace file without dispatching Actions or leaking tool history; the web page lists and serves it');
   const linux = await say('Linux派活');
-  assert.ok(linux.sessionUrl.includes('github.com/example/executor/actions/'));
+  assert.ok(linux.sessionUrl.includes('github.com/octo/resident-hands/actions/'));
   const dispatched = (await (await fetch(mock + '/__log')).json()).filter(e => e.kind === 'github.dispatch');
   assert.equal(dispatched.length, before + 1);
-  console.log('PASS explicit Linux work uses the fixed Actions executor');
+  console.log('PASS explicit Linux work goes to the repository the resident set up');
 } else {
   const tasks = (await api('/web/tasks')).tasks;
   const first = tasks.find(t => t.title === '工作区写入测试' && t.status === 'done');

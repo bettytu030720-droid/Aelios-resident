@@ -421,9 +421,11 @@ Off by default. Once turned on under **Background help** (「后台帮忙」), w
 
 A thread can run in three places:
 
-- **On the resident itself** (nothing else to set up, no Claude subscription needed): each thread has its own conversation and files and uses the chat's model (or `CLOUD_TASK_MODEL`). It can search the web, read pages, use long-term memory, the notebook, connected MCP tools, and read and write its own files. It has no shell, so it cannot install or run anything.
-- **GitHub Actions** (for running commands, tests and opening pull requests): a full Linux machine in a repository of yours.
+- **On the resident itself** (nothing else to set up, no Claude subscription needed): each thread has its own conversation and files. It can search the web, read pages, use long-term memory, the notebook, connected MCP tools, and read and write its own files. It has no shell, so it cannot install or run anything.
+- **GitHub Actions** (for running commands, tests and opening pull requests): a full Linux machine, in a private repository the resident makes on your GitHub account. All it takes is one token.
 - **A claude.ai routine** (with a Claude subscription): each job opens a cloud Claude Code session on your plan. Once connected, jobs go there by default; light reading and writing can still stay on the resident's own threads.
+
+Threads on the resident and on GitHub Actions work on **the threads' model**: Workers AI's `@cf/zai-org/glm-4.7-flash` (within its daily free allowance) unless you pick another under 「线程用哪个模型」 (`CLOUD_TASK_MODEL`). They never use the chat's model on their own, so a costly chat model is not spent on legwork.
 
 The **Threads** (「线程」) button at the top of the chat (also on its page) lists every thread. Open one to see:
 
@@ -434,15 +436,13 @@ The **Threads** (「线程」) button at the top of the chat (also on its page) 
 
 Connecting GitHub Actions:
 
-1. Create a **private** repository to run in. Do not use a fork: a fork of a public repository is public, and so are its run logs and the files it makes.
-2. Copy this repository's `.github/workflows/resident-hands.yml` and `scripts/hands.mjs` into it as they are.
-3. In its Settings → Secrets and variables → Actions, add the secrets `RESIDENT_URL` (the resident's address), `MODEL_BASE_URL` (ending in `/v1`, such as Aelios') and `MODEL_API_KEY`, and the variable `MODEL_NAME` (a model name the endpoint accepts; `CLOUD_TASK_MODEL` on the settings page wins when set).
-4. For pull requests, turn on "Allow GitHub Actions to create and approve pull requests" under Settings → Actions → General. To change other repositories, add the secret `HANDS_GH_TOKEN` with Contents and Pull requests write access to them.
-5. On the settings page, set the trigger URL to `https://api.github.com/repos/<you>/<repo>/actions/workflows/resident-hands.yml/dispatches` (optionally `#branch`, `main` by default) and the token to a GitHub token with Actions write access to that repository. Click **Try it** (「试一下」).
+1. On the settings page, under Background help, tap **Make a GitHub token** (「去 GitHub 生成 token」). It opens GitHub's page for a classic token with `repo` and `workflow` already ticked: scroll down, click **Generate token**, and paste it into **GitHub token** on the settings page (never in the chat).
+2. The resident makes a private repository `resident-hands` on your account and puts its workflow in it. The settings page then shows the repository; if the token cannot do that, it says what is missing.
+3. Tap **Try it** (「试一下」) next to it.
 
-Each Actions job gets a fresh machine. The job is read from the run's event file, not printed in the log, and the report code shows as `***`. Files it makes go into that run's artifact for 30 days. To publish a page publicly: set the variable `HANDS_PUBLISH_REPO` (`owner/repo`), enable GitHub Pages there (Deploy from a branch → gh-pages → / (root)), and give `HANDS_GH_TOKEN` write access to it; it publishes only when the job asks for a public page. A run that times out or crashes tells the resident it stopped, so you do not wait 3 hours for nothing.
+Nothing is stored on GitHub: each run fetches `hands.mjs` from the resident, calls the model through the resident (the threads' model, with the resident's own keys; the calls show in the usage timeline as the threads' work), and borrows the token for that run to clone, push and open pull requests in your other repositories. Keep `resident-hands` private: a run's log and files can be seen by whoever can see the repository, and the resident will not use it once it is public. Each job gets a fresh machine; the job is read from the run's event file, not printed in the log, and the codes show as `***`. Files it makes go into that run's artifact for 30 days. To publish pages publicly, add the Actions variable `HANDS_PUBLISH_REPO` (`owner/repo`) in `resident-hands` and turn on GitHub Pages in that repository (Deploy from a branch → gh-pages → / (root)); it publishes only when the job asks for a public page. A run that times out or crashes tells the resident it stopped, so you do not wait 3 hours for nothing.
 
-The first time you connect a claude.ai routine (the settings page shows the same steps and the prompt to copy under 「想再接 GitHub Actions 或 claude.ai」):
+The first time you connect a claude.ai routine (the settings page shows the same steps and the prompt to copy under 「怎么接」):
 
 1. Open [claude.ai/code/routines](https://claude.ai/code/routines), create a routine, paste in the prompt from the settings page, and choose the model, repository and cloud environment.
 2. Under the trigger, add an API trigger, copy its URL and click "Generate token". Enter the URL on the settings page; enter the token there too, or store it as the Cloudflare secret `CLOUD_TASK_TOKEN`. The token is shown only once; don't send it in the chat.
@@ -512,9 +512,10 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `VOICE_API_KEY` | empty | That provider's key; not needed if stored in AI Gateway's Provider Keys |
 | `VOICE_BASE_URL` | empty | Usually left empty; when set, voice requests go straight to this address instead of through AI Gateway |
 | `CLOUD_TASKS` | `off` | `on` turns on background help: jobs go to threads |
-| `CLOUD_TASK_URL` | empty | Optional GitHub Actions or claude.ai routine trigger URL; empty uses only the resident's own threads |
+| `CLOUD_TASK_GITHUB_TOKEN` | empty | Optional GitHub token (`repo` and `workflow`): the resident sets up a private repository and runs jobs there on GitHub Actions; can be stored as a Cloudflare secret |
+| `CLOUD_TASK_URL` | empty | Optional claude.ai routine trigger URL |
 | `CLOUD_TASK_TOKEN` | empty | That trigger's token (when `CLOUD_TASK_URL` is set); can be stored as a Cloudflare secret |
-| `CLOUD_TASK_MODEL` | empty | The threads' model, as the endpoint names it; empty uses the chat's model on the resident and the repository's `MODEL_NAME` on Actions |
+| `CLOUD_TASK_MODEL` | empty | The threads' model, on the resident and on GitHub Actions, as the model picker names it; empty uses Workers AI's `@cf/zai-org/glm-4.7-flash` |
 | `AI_GATEWAY_ID` | empty (`default`) | Which AI Gateway search, voice and, without Aelios, the models go through |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | empty | The relay's address (up to `/v1`) and key; used for `custom/…` models |
 | `CUSTOM_FORMAT` | `openai` | The relay's format: `openai` or `anthropic` (with caching) |

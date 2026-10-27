@@ -129,6 +129,7 @@ svg { flex: none; }
 .btn:disabled { opacity: .45; cursor: default; }
 .pill { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--text-2); white-space: nowrap; }
 button.pill { background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pill.ok { color: var(--ok-text); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: var(--ok-soft); }
 .pill.warn { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .pill.hot { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }

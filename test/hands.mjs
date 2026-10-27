@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareWorkspace, validateFiles, publishFiles, saveArtifacts, runTool, runHands, jobFromEvent, reportStopped } from '../scripts/hands.mjs';
+import { prepareWorkspace, validateFiles, publishFiles, saveArtifacts, runTool, runHands, jobFromEvent, reportStopped } from '../public/hands.mjs';
 const root = mkdtempSync(join(tmpdir(), 'resident-hands-test-'));
 const workdir = join(root, 'work');
 mkdirSync(workdir);
@@ -71,7 +71,7 @@ try {
   assert.equal((await runHands(base)).status, 'done');
   const missing = await runHands({ ...base, model: '', jobText: jobText.replace('model: selected/model\n', '') });
   assert.equal(missing.status, 'failed');
-  assert.match(missing.summary, /没有默认模型/);
+  assert.match(missing.summary, /MODEL_NAME 要一起给/);
   globalThis.fetch = async (url, init) => { if (String(url).includes('/tasks/')) { reports.push(JSON.parse(init.body)); return new Response('{}'); } throw new Error('do not leak test-key'); };
   assert.equal((await runHands(base)).status, 'failed');
   assert.ok(!JSON.stringify(reports).includes('test-key'));
@@ -82,6 +82,45 @@ try {
   globalThis.fetch = async (url) => { assert.ok(String(url).includes('/tasks/')); return new Response('{}'); };
   assert.equal((await runHands({ residentUrl: base.residentUrl, jobText: 'task: t_test\ncode: test-code\ntitle: 接通测试\n\nThis is a test from the resident\'s settings page' })).status, 'done');
   console.log('PASS selected model wins, no implicit model, network/HTTP failures are safe, rejected reports fail and connectivity test needs no model');
+
+  // With no model endpoint of its own, the model is called through the resident with the task's code, and on
+  // Actions the GitHub token comes from the resident too: it goes to gh and git, and never into a report.
+  const seen = [];
+  const savedGh = process.env.GH_TOKEN;
+  const savedGithub = process.env.GITHUB_TOKEN;
+  globalThis.fetch = async (url, init) => {
+    const where = String(url);
+    seen.push({ where, headers: init.headers, body: init.body ? JSON.parse(init.body) : null });
+    if (where.endsWith('/tasks/t_demo/hands')) return Response.json({ github_token: 'ghp_from_resident' });
+    if (where.endsWith('/tasks/t_demo/model/chat/completions')) return Response.json({ choices: [{ message: { role: 'assistant', content: 'Ready, used ghp_from_resident' } }] });
+    if (where.includes('/tasks/')) return new Response('{}');
+    throw new Error(`unexpected ${where}`);
+  };
+  try {
+    const through = await runHands({ residentUrl: 'https://resident.example/', jobText: jobText.replace('model: selected/model\n', ''), workdir, askToken: true });
+    assert.equal(through.status, 'done');
+    const model = seen.find((call) => call.where.endsWith('/chat/completions'));
+    assert.equal(model.where, 'https://resident.example/tasks/t_demo/model/chat/completions');
+    assert.equal(model.headers.authorization, 'Bearer sensitive-code');
+    assert.equal(model.body.model, 'resident', 'the resident picks the model');
+    assert.ok(!model.body.tools.some((item) => item.function.name === 'publish_files'), 'no public pages without a repository for them');
+    assert.ok(!model.body.messages[0].content.includes('publish_files'));
+    assert.equal(seen[0].where, 'https://resident.example/tasks/t_demo/hands');
+    assert.equal(seen[0].headers['x-task-code'], 'sensitive-code');
+    assert.equal(process.env.GH_TOKEN, 'ghp_from_resident');
+    assert.equal(process.env.GITHUB_TOKEN, 'ghp_from_resident');
+    const result = seen.find((call) => call.where.endsWith('/result'));
+    assert.ok(!JSON.stringify(result.body).includes('ghp_from_resident'), 'the token is redacted from the report');
+    // A resident that gives no token: the run fails with that said, and reports it.
+    globalThis.fetch = async (url) => String(url).endsWith('/hands') ? Response.json({ error: 'no GitHub token is set' }, { status: 409 }) : (seen.push({ where: String(url) }), new Response('{}'));
+    const refused = await runHands({ residentUrl: 'https://resident.example', jobText, workdir, askToken: true });
+    assert.equal(refused.status, 'failed');
+    assert.match(refused.summary, /住户没给 GitHub token（HTTP 409）/);
+  } finally {
+    if (savedGh === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = savedGh;
+    if (savedGithub === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = savedGithub;
+  }
+  console.log('PASS through the resident: the model with the task code, the GitHub token for gh and git, redacted from reports');
 
   // On Actions the job comes from the event file; a run that reported leaves a mark, and only one that did not is
   // reported as stopped by the workflow's last step.

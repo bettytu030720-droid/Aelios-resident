@@ -750,20 +750,28 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
         <template x-if="configSection === 'tasks' && shown(metaOf('CLOUD_TASK_URL'))">
           <div class="section">
-            <p class="error" x-show="cloud.mode === 'incomplete'">触发网址或 token 没填对，现在只用住户自己的线程。</p>
-            <details>
-              <summary>想再接 GitHub Actions 或 claude.ai</summary>
-              <ol class="help" style="padding-left: 28px">
-                <li><strong>GitHub Actions</strong>，要跑命令、开 PR 时用：新建一个<strong>私有</strong>仓库（别用 fork，fork 是公开的，日志谁都看得见），放进住户仓库的 <code>.github/workflows/resident-hands.yml</code> 和 <code>scripts/hands.mjs</code>。</li>
-                <li>在那个仓库的 Actions Secrets 加 <code>RESIDENT_URL</code>、<code>MODEL_BASE_URL</code>、<code>MODEL_API_KEY</code>，变量加 <code>MODEL_NAME</code>。要开 PR，在 Actions 设置里勾上 Allow GitHub Actions to create and approve pull requests。</li>
-                <li>上面的网址填 <code>https://api.github.com/repos/你/仓库/actions/workflows/resident-hands.yml/dispatches</code>，token 填能动这个仓库 Actions 的 GitHub token。</li>
+            <p class="error" x-show="cloud.mode === 'incomplete'">claude.ai 的触发网址或 token 没填对。</p>
+            <template x-if="cloud.on && cloud.github.on">
+              <div class="inline">
+                <span style="white-space: nowrap">GitHub Actions</span><span class="spacer"></span>
+                <a class="pill ok" x-show="cloud.github.repo" :href="cloud.github.url" target="_blank" rel="noopener noreferrer" x-text="cloud.github.repo"></a>
+                <button class="btn small" type="button" x-show="cloud.github.repo" :disabled="Boolean(cloudBusy)" @click="testTask('linux')" x-text="cloudBusy === 'linux' ? '派出去…' : '试一下'"></button>
+                <button class="btn small" type="button" x-show="!cloud.github.repo" :disabled="Boolean(cloudBusy)" @click="setUpGitHub()" x-text="cloudBusy === 'github' ? '接…' : '接上'"></button>
+              </div>
+            </template>
+            <p class="error" x-show="cloud.on && cloud.github.problem" x-text="cloud.github.problem"></p>
+            <div class="choices" x-show="cloud.on && !cloud.github.on"><a class="btn small" :href="cloud.github.tokenPage" target="_blank" rel="noopener noreferrer">去 GitHub 生成 token</a></div>
+            <details x-show="cloud.on">
+              <summary>怎么接</summary>
+              <ol class="help" style="padding-left: 28px; white-space: normal">
+                <li><strong>GitHub Actions</strong>：点「去 GitHub 生成 token」，repo 和 workflow 已经勾好，拉到底点 Generate token，复制粘到上面。住户会建一个私有仓库 <code>resident-hands</code> 在里面干活。</li>
                 <li><strong>claude.ai</strong>，有订阅时用：在 claude.ai/code/routines 新建定时任务，贴下面的提示词，触发选 API，把网址和 token 填上面。云端环境的网络里允许 <code x-text="cloudHost() || '住户的域名'"></code>。</li>
               </ol>
               <textarea class="copy-box" readonly x-show="cloud.prompt" :value="cloud.prompt" aria-label="定时任务的提示词" @focus="$event.target.select()"></textarea>
               <p class="hint" x-show="!cloud.prompt">先在网页上发一句话，这里才有提示词。</p>
               <button class="btn small" type="button" x-show="cloud.prompt" @click="copyPrompt()">复制提示词</button>
             </details>
-            <div class="inline"><span class="spacer"></span><button class="btn primary small" type="button" :disabled="!cloud.on || cloudBusy" @click="testTask()" x-text="cloudBusy ? '派出去…' : '试一下'"></button></div>
+            <div class="inline"><span class="spacer"></span><button class="btn primary small" type="button" :disabled="!cloud.on || Boolean(cloudBusy)" @click="testTask()" x-text="cloudBusy === true ? '派出去…' : '试一下'"></button></div>
             <p class="error" x-show="cloudError" x-text="cloudError"></p>
             <template x-if="cloud.tasks.length">
               <div class="section">
