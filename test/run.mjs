@@ -12,7 +12,8 @@
 //   mcp-2    run after mcp and restart.sh: the connections come back
 //   stickers sticker packs: imported from a zip and from Telegram, sent, drawn, shown on the web page
 //   voice    voice messages: heard, answered in a voice, send_voice, each provider's request, falling back to text
-//   tasks    cloud Claude Code: a job sent through a scheduled task's trigger, its reports, the cards, the limits
+//   tasks    后台帮忙: a job sent through a scheduled task's trigger, its reports, the cards, the limits; threads here,
+//            what the web page shows of them, their files, and writing to one directly
 //   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
 //   sites    keys for sites web_fetch reads, set on the settings page
 //   heartbeat  going quiet while the chat is short (start wrangler with --var LETTER_IDLE_MINUTES:0.05
@@ -1370,11 +1371,11 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(await ask("云端工具有哪些"), /没有 cloud_task/);
       const bad = await web("/web/config", KEY, { key: "CLOUD_TASK_URL", text: "https://example.com/fire" });
       assert.equal(bad.status, 400);
-      assert.match((await bad.json()).error, /API 触发器的网址/);
+      assert.match((await bad.json()).error, /API 触发网址/);
       await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
       assert.ok(!JSON.stringify(await (await web("/web/config", KEY)).json()).includes("good-token"), "the token is not sent back");
       assert.match(await ask("云端工具有哪些"), /没有 cloud_task/);
-      assert.match(await ask("/status"), /云端 Claude Code：关/);
+      assert.match(await ask("/status"), /后台帮忙：关/);
       assert.deepEqual([(await tasks()).on, (await tasks()).configured], [false, false]);
       await set({ CLOUD_TASKS: "on" });
       assert.match(await ask("云端工具有哪些"), /有 cloud_task/);
@@ -1393,6 +1394,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
     });
 
     let first;
+    let localThread;
     await step("asked on Telegram, the job goes out through the trigger with its task and code, and nothing of the chat", async () => {
       const out = await ask("派活");
       const [fire] = await fires();
@@ -1502,16 +1504,120 @@ if (phase === "tasks" || phase === "tasks-quiet") {
     });
 
     await step("/status says it is set up and how many went out", async () => {
-      assert.match(await ask("/status"), /云端 Claude Code：接好了，24 小时内派了 5 单，在干的 3 单/);
+      assert.match(await ask("/status"), /后台帮忙：开，默认交给 claude\.ai 的云端 Claude Code，轻活交给自己的线程；24 小时内派了 5 单，在干的 3 单/);
+    });
+
+    await step("an external thread opens on the web page with what was asked and what came back; it is not written to here", async () => {
+      const thread = await (await web(`/web/thread?id=${first.id}`, KEY)).json();
+      assert.deepEqual([thread.id, thread.title, thread.runs, thread.canSay, thread.files.length], [first.id, "修 README 的错字", "external", false, 0]);
+      assert.deepEqual(thread.lines.slice(0, 2).map((line) => line.role), ["user", "result"]);
+      assert.match(thread.lines[0].text, /^把 README 里/);
+      assert.deepEqual([thread.lines[1].status, thread.lines[1].text, thread.lines[1].sessionUrl], ["done", "改好了，开了 PR。", "https://claude.ai/code/session_test_1"]);
+      assert.ok(!JSON.stringify(thread).includes(first.code), "no code on the page");
+      const said = await web("/web/thread/say", KEY, { id: first.id, text: "再改改" });
+      assert.equal(said.status, 400);
+      assert.match((await said.json()).error, /不在住户这里/);
+      assert.equal((await web("/web/thread?id=t_0000000000", KEY)).status, 404);
+      assert.equal((await web("/web/thread?id=nope", KEY)).status, 404);
+      assert.equal((await fetch(`${WORKER}/web/thread?id=${first.id}`)).status, 401, "not without the web key");
+      const listed = (await (await web("/web/threads", KEY)).json()).threads;
+      assert.ok(listed.some((item) => item.id === first.id && item.tasks === 2), JSON.stringify(listed));
+      assert.ok(!listed.some((item) => item.title === "接通测试"), "tests are not threads");
+    });
+
+    await step("without a trigger, jobs go to the resident's own threads and report back", async () => {
+      await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "" });
+      const partial = await tasks();
+      assert.deepEqual([partial.on, partial.configured, partial.mode], [true, false, "incomplete"]);
+      assert.match(await ask("/status"), /后台帮忙：开了，自己的线程能干；触发网址或 token 没填对/);
+
+      await set({ CLOUD_TASK_URL: "", CLOUD_TASK_TOKEN: "" });
+      const localState = await tasks();
+      assert.deepEqual([localState.on, localState.configured, localState.mode], [true, true, "local"]);
+      assert.match(await ask("/status"), /后台帮忙：开，交给自己的线程；24 小时内派了 5 单，在干的 3 单/);
+
+      const firesBefore = (await fires()).length;
+      const out = await ask("派活");
+      const afterAsk = (await sent()).length;
+      assert.equal((await fires()).length, firesBefore, "not sent to the external routine trigger");
+      const id = out.match(/\bt_[0-9a-f]{10}\b/)?.[0];
+      assert.ok(id, out);
+      localThread = id;
+      const reportOut = (await waitForSends(afterAsk, 1)).join("\n");
+      assert.ok(reportOut.startsWith(`云端回来了：(Not from them: your cloud task ${id} "修 README 的错字" reported back: it is done.`), reportOut);
+      assert.match(reportOut, /后台做好了：.*第 28 章/);
+      assert.ok(!reportOut.includes("Session:"), "no external session link in a note about a thread here");
+      const card = (await tasks()).tasks.find((t) => t.id === id);
+      assert.deepEqual([card.status, card.sessionUrl, card.links, card.runs, card.thread], ["done", "", ["https://example.com/note"], "local", id]);
+      assert.equal(card.progress, "正在看小本本：经济师进度");
+      const worker = (await (await web("/web/usage", KEY)).json()).rows.filter((row) => row.kind === "worker");
+      assert.ok(worker.length >= 2, "the thread's calls are in the usage timeline as its own kind");
+    });
+
+    await step("a thread here opens with its conversation; what she writes to it goes to it alone and makes a file she can download", async () => {
+      const opened = await (await web(`/web/thread?id=${localThread}`, KEY)).json();
+      assert.deepEqual([opened.runs, opened.canSay, opened.status], ["local", true, "done"]);
+      assert.deepEqual(opened.lines.map((line) => line.role), ["user", "assistant", "result"]);
+      assert.match(opened.lines[0].text, /^把 README 里/, "the brief shows as the job, without its header");
+      assert.ok(opened.lines[1].steps.includes("正在看小本本：经济师进度"), JSON.stringify(opened.lines[1]));
+      const today = (await tasks()).today;
+      const before = (await sent()).length;
+      const said = await web("/web/thread/say", KEY, { id: localThread, text: "标题再短一点" });
+      assert.equal(said.status, 200, await said.clone().text());
+      const until = Date.now() + 30000;
+      let thread;
+      while (Date.now() < until) {
+        thread = await (await web(`/web/thread?id=${localThread}`, KEY)).json();
+        if (thread.status === "done" && thread.files.length) break;
+        await sleep(300);
+      }
+      assert.equal(thread.status, "done", JSON.stringify(thread));
+      const mine = thread.lines.find((line) => line.role === "user" && line.direct);
+      assert.equal(mine?.text, "标题再短一点");
+      const [answer, result] = thread.lines.slice(-2);
+      assert.equal(answer.role, "assistant");
+      assert.match(answer.text, /改好了，在 \/page\.html：标题再短一点/);
+      assert.ok(answer.steps.includes("正在写文件：/page.html"), JSON.stringify(answer));
+      assert.deepEqual([result.role, result.status, result.text], ["result", "done", ""], "its last words are not shown twice");
+      assert.deepEqual(thread.files.map((file) => file.path), ["/page.html"]);
+      assert.equal(thread.files[0].size, new TextEncoder().encode("<h1>短标题</h1>").length);
+      await sleep(1500);
+      assert.equal((await sent()).length, before, "the resident says nothing about it on Telegram");
+      assert.equal((await tasks()).today, today, "what she writes to a thread is not counted");
+      const file = await web(`/web/thread/file?id=${localThread}&path=${encodeURIComponent("/page.html")}`, KEY);
+      assert.equal(file.status, 200);
+      assert.equal(file.headers.get("content-type"), "application/octet-stream");
+      assert.equal(file.headers.get("content-disposition"), "attachment");
+      assert.equal(file.headers.get("content-security-policy"), "sandbox");
+      assert.equal(await file.text(), "<h1>短标题</h1>");
+      assert.equal((await web(`/web/thread/file?id=${localThread}&path=/nope.txt`, KEY)).status, 404);
+      assert.equal((await fetch(`${WORKER}/web/thread/file?id=${localThread}&path=/page.html`)).status, 401);
+    });
+
+    await step("GitHub Actions: the card links to the run it started", async () => {
+      await set({ CLOUD_TASK_URL: "https://api.github.com/repos/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml/dispatches#dev", CLOUD_TASK_TOKEN: "good-token" });
+      assert.equal((await tasks()).mode, "linux");
+      const ghRes = await web("/web/tasks/test", KEY, {});
+      assert.equal(ghRes.status, 200);
+      const ghCard = (await ghRes.json()).tasks[0];
+      const dispatches = (await log()).filter((e) => e.kind === "github.dispatch");
+      const ghDispatch = dispatches.at(-1);
+      assert.equal(ghCard.sessionUrl, `https://github.com/wusaki0723/aelios-resident/actions/runs/${dispatches.length}`);
+      assert.equal(ghDispatch?.body?.ref, "dev");
+      assert.equal(ghDispatch?.body?.return_run_details, true);
+      assert.match(ghDispatch?.body?.inputs?.job ?? "", /title: 接通测试/);
+      assert.match(await ask("/status"), /后台帮忙：开，交给自己的线程，要跑命令的交给 GitHub Actions/);
+
+      await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
     });
 
     await step("ten a day at most, on the settings page and in the chat", async () => {
-      for (let i = 0; i < 5; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
+      for (let i = 0; i < 3; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
       const over = await web("/web/tasks/test", KEY, {});
       assert.equal(over.status, 400);
       assert.match((await over.json()).error, /已经派了 10 单/);
       assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
-      assert.equal((await fires()).length, 12, "10 sent, the wrong token and the busy trigger tried");
+      assert.equal((await fires()).length, 10, "8 sent to the Claude trigger (1 ran locally, 1 via GitHub Actions), the wrong token and the busy trigger tried");
     });
   }
 

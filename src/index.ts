@@ -11,8 +11,8 @@
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
-//   POST /tasks/<id>/progress|result    a cloud Claude Code session reporting on its task (cloud-tasks.ts), with the
-//                                       task's one-time code in x-task-code
+//   POST /tasks/<id>/progress|result    a GitHub Actions run or a cloud Claude Code session reporting on its task
+//                                       (cloud-tasks.ts), with the task's one-time code in x-task-code
 //   everything else                     the web page itself (public/)
 
 import { getAgentByName } from "agents";
@@ -24,8 +24,11 @@ import { TELEGRAM_WEBHOOK_PATH, commandOf, isAllowed, timingSafeEqual, type Tele
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { Resident } from "./resident";
+export { TaskWorker } from "./task-worker";
 
 const WECOM_PATH = "/messengers/wecom/webhook";
+// A thread goes by its first task's id (cloud-tasks.ts).
+const THREAD_ID = /^t_[0-9a-f]{10}$/;
 // A WeCom push is a few kilobytes of XML.
 const WECOM_MAX_BYTES = 64 * 1024;
 // Telegram and the web page both talk to this one agent.
@@ -248,6 +251,37 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "POST /web/tasks/test": {
       const tried = await agent.webTestTask(url.origin);
       return Response.json(tried, { status: "error" in tried ? 400 : 200 });
+    }
+    case "GET /web/threads":
+      return Response.json(await agent.webThreads());
+    case "GET /web/thread": {
+      const id = url.searchParams.get("id") ?? "";
+      if (!THREAD_ID.test(id)) return Response.json({ error: "没有这条线程" }, { status: 404 });
+      const thread = await agent.webThread(id);
+      return Response.json(thread, { status: "error" in thread ? 404 : 200 });
+    }
+    case "GET /web/thread/file": {
+      // A thread's file goes out as bytes to save, never as a page of this origin: the web page decides how to show it.
+      const id = url.searchParams.get("id") ?? "";
+      const path = url.searchParams.get("path") ?? "";
+      const bytes = THREAD_ID.test(id) && path ? await agent.webThreadFile(id, path) : null;
+      if (!bytes) return new Response("not found", { status: 404 });
+      return new Response(bytes, {
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-disposition": "attachment",
+          "content-security-policy": "sandbox",
+          "x-content-type-options": "nosniff",
+          "cache-control": "no-store"
+        }
+      });
+    }
+    case "POST /web/thread/say": {
+      const id = String(body.id ?? "");
+      if (!THREAD_ID.test(id)) return Response.json({ error: "没有这条线程" }, { status: 404 });
+      await agent.noteOrigin(url.origin);
+      const said = await agent.webThreadSay(id, String(body.text ?? ""));
+      return Response.json(said, { status: "error" in said ? 400 : 200 });
     }
     default:
       return new Response("not found", { status: 404 });

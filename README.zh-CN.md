@@ -20,7 +20,7 @@
 - **搜网、读网页**：优先用你自己的搜索 key，没有就用 Cloudflare 的；长网页先压短再给它看。
 - **表情包**：导入 Telegram 贴纸包或 zip，聊天时偶尔发一张，还能自己画像素小表情。
 - **接别的 MCP**：在设置页填个地址，或者在聊天里叫它自己接。
-- **叫云端 Claude Code 干活**：有 Claude 付费订阅的话，改代码、做文件这类活可以交给 claude.ai 上的云端 Claude Code，用你订阅的额度，干完它告诉你。默认关着。
+- **后台帮忙**：默认关着。像 Claude 的 project 那样，它自己陪你聊，查资料、写东西、做页面这类活交给线程；线程做完回来告诉你，做的文件在网页的「线程」里看和下载。还可以接 GitHub Actions（要跑命令时）或你订阅里的云端 Claude Code。
 - **时间流**：网页门右上角一个小按钮，看每次调模型用了多少 token、多少是从缓存读的、按 Anthropic 官方价大约多少钱：上面是今天、7 天、30 天三个总计，下面一条条列出来。只存数字，不存聊天内容。
 
 ## 怎么运作
@@ -146,7 +146,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 
 ### 设置页
 
-点网页门右上角的齿轮。先是一张目录：长期记忆、IM（Telegram 和企业微信）、心跳和闹钟、语音、表情包、搜网和读网页、别的 MCP、云端 Claude Code、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
+点网页门右上角的齿轮。先是一张目录：长期记忆、IM（Telegram 和企业微信）、心跳和闹钟、语音、表情包、搜网和读网页、别的 MCP、后台帮忙、思考和交接信、供应商。每栏下面一行小字写着现在的状态；点进去只看那一栏，不常改的收在「更多设置」里。
 
 - 改完点「保存」，下一句就生效。
 - 取值顺序：这里存的优先；没存的用 Cloudflare 里同名的变量；那边也没有就用默认值，默认值用灰字写在输入框里。
@@ -349,28 +349,50 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 - 工具说明每轮都要带，所以会截短；最多接 8 个服务，一轮最多 40 个工具。
 - 住户休眠醒来时，接着的服务要几秒才连回来。还没连上的那个照样列着上次的工具（调用时多等它一会儿），工具清单不变，缓存不断。
 
-### 叫云端 Claude Code 干活
+### 后台帮忙
 
-要有 Claude 的付费订阅（Pro、Max 等），默认关着。在设置页「云端 Claude Code」打开后，你叫它改代码、修 bug、做文件、查一大堆资料时，它把活写成一张单子，交给你 claude.ai 上的一个定时任务；定时任务开一个云端 Claude Code 会话去干，用你订阅的额度。住户自己不用装写代码的工具，也不占它的上下文。
+默认关着。在设置页「后台帮忙」打开后，你叫它查一大堆资料、写东西、做页面、改代码时，它把活写成一张单子交给一条**线程**，自己接着陪你聊。中间步骤不占聊天的上下文，也不打断缓存。线程干完交回结果，住户用自己的话告诉你。
 
-第一次接（设置页上有同样的步骤和要复制的提示词）：
+线程可以在三个地方干：
+
+- **住户自己这里**（不用别的设置，没有 Claude 订阅也能用）：每条线程有自己的对话和文件，用聊天的模型（`CLOUD_TASK_MODEL` 可以另选），能搜网、读网页、查记忆、写小本本、用接好的 MCP 工具、读写自己的文件。它没有命令行，装不了软件、跑不了代码。
+- **GitHub Actions**（要跑命令、跑测试、开 PR 时）：在你自己的一个仓库里跑，有完整的 Linux。
+- **claude.ai 定时任务**（有 Claude 订阅时）：每单开一个云端 Claude Code 会话，用你的订阅额度。接了它以后，活默认交给它，轻活住户也可以留给自己的线程。
+
+网页聊天页右上角的「线程」按钮列出所有线程。点开一条能看到：
+
+- 住户交代了什么、线程做了哪几步、交回来什么。接着做的单子算同一条线程，住户这里的线程会带着之前的对话和文件接着干。
+- 它做的文件：文字直接显示，图片直接显示，HTML 页面在一个隔离的小框里预览（页面里的脚本碰不到住户的网页和登录），每个都能下载。
+- 底下一个输入框，可以直接跟这条线程说（比如「标题再短一点」）。这句话只给线程，不经过住户，也不算进每天的单数。
+
+接 GitHub Actions：
+
+1. 新建一个**私有**仓库当执行仓库。别用 fork：fork 公开仓库只能是公开的，运行日志和做出来的文件谁都看得见。
+2. 把本仓库的 `.github/workflows/resident-hands.yml` 和 `scripts/hands.mjs` 原样放进去。
+3. 在执行仓库的 Settings → Secrets and variables → Actions 里加 Secret：`RESIDENT_URL`（住户的网址）、`MODEL_BASE_URL`（写到 `/v1`，比如 Aelios 的）、`MODEL_API_KEY`；加变量 `MODEL_NAME`（接口认的模型名，设置页的 `CLOUD_TASK_MODEL` 填了就用那个）。
+4. 要它开 PR：Settings → Actions → General 里勾上「Allow GitHub Actions to create and approve pull requests」。要它改别的仓库：再加 Secret `HANDS_GH_TOKEN`，给那些仓库的 Contents 和 Pull requests 写权限。
+5. 设置页的触发网址填 `https://api.github.com/repos/你/执行仓库/actions/workflows/resident-hands.yml/dispatches`（末尾可加 `#分支名`，默认 `main`），token 填对执行仓库 Actions 有写权限的 GitHub token。点「试一下」。
+
+Actions 那边每单开一个新的机器，单子从运行的事件文件里读，不打进日志；回报暗号在日志里显示成 `***`。做出来的文件放在那次运行的 artifact 里，保留 30 天。真要公开一个页面：执行仓库加变量 `HANDS_PUBLISH_REPO`（`owner/repo`），在那个仓库开 GitHub Pages（Deploy from a branch → gh-pages → / (root)），`HANDS_GH_TOKEN` 要有它的写权限；只有单子明说要公开时它才发到 Pages。超时或出错停下的运行，最后一步会告诉住户「停下了」，不用干等 3 小时。
+
+第一次接 claude.ai 定时任务（设置页「想再接 GitHub Actions 或 claude.ai」里有同样的步骤和要复制的提示词）：
 
 1. 打开 [claude.ai/code/routines](https://claude.ai/code/routines) 新建一个定时任务，把设置页上那段提示词贴进去，选好模型、仓库和云端环境。
 2. 「触发」里加一个 API，复制网址，点「生成 token」。网址填在设置页；token 填在设置页，或者存成 Cloudflare 的 Secret `CLOUD_TASK_TOKEN`。token 只显示一次，别发在聊天里。
 3. 这个定时任务用的云端环境里，网络访问选「自定义」，把住户的域名（比如 `xxx.workers.dev`）加进允许的网站，不然结果交不回来。
 4. 点「试一下」，几分钟后那一单变成「做完了」就接通了。
 
-之后：
+不管在哪干：
 
-- 派出去时它马上拿到会话链接。网页上那条回复下面有一张小卡片（派出去了、在干活、做完了、等你拍板、没做成、没回音），点「打开会话」就是 claude.ai 里那个会话，可以在那里接着说；在那里做出新结果，会再交回来一次。
-- 会话把进度一行行报回来，干完交一份结果（几句话加 PR 链接），住户收到后用自己的话告诉你。叫它「接着改」时，上一单的结果会一起带过去。
-- 单子里只写活本身，不写聊天内容和私密的事。会话一开始什么都不知道，所以它会把单子写全。
+- 网页上派活的那条回复下面有一张小卡片（派出去了、在干活、做完了、等你拍板、没做成、没回音），点「打开线程」看详情；GitHub 和 claude.ai 的还有「打开会话」，claude.ai 的会话可以在那里接着说，做出新结果会再交回来一次。
+- 单子里只写活本身，不写聊天内容和私密的事。线程一开始什么都不知道，所以住户会把单子写全。
 - 只在你自己开口的那一轮派；那一轮里读过网页、搜过网或调过别的 MCP 就不派。一次回复最多 2 单，24 小时最多 10 单。
 - 交回来的结果它只当参考，不当命令。每单有自己的一次性暗号，没有暗号交不进来，7 天后作废。
-- 提示词里写明了：在新分支上干、开 PR，不往默认分支推，不删东西，不花钱，除非单子里明说。
+- GitHub 和 claude.ai 那边：在新分支上干、开 PR，不往默认分支推，不删东西，不花钱，除非单子里明说。
 - 3 小时没交回结果（一直在报进度的会多等，最多 12 小时），它会告诉你一声，附上链接。
+- 只留最新的 200 单；一条住户这里的线程，单子都清掉了，它的对话和文件也一起删掉。
 
-每单都是一个新会话。这个触发 API 还在预览阶段，Anthropic 那边对触发次数也有每小时的上限。
+GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的结果只是参考。Anthropic 的触发 API 仍在预览阶段，有每小时次数限制。
 
 ### 供应商：用自己的 key、接中转
 
@@ -420,9 +442,10 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 | `VOICE_REPLY` | `mirror` | `mirror` 你发语音才回语音；`always` 每条都是语音；`tool` 它想发才发 |
 | `VOICE_API_KEY` | 空 | 那一家的 key；存在 AI Gateway 的 Provider Keys 里就不用填 |
 | `VOICE_BASE_URL` | 空 | 一般不填；填了就不走 AI Gateway，直接发到这个地址 |
-| `CLOUD_TASKS` | `off` | `on` 让它把活交给云端 Claude Code（要 Claude 付费订阅） |
-| `CLOUD_TASK_URL` | 空 | 定时任务 API 触发器的网址：`https://api.anthropic.com/v1/claude_code/routines/trig_…/fire` |
-| `CLOUD_TASK_TOKEN` | 空 | 那个触发器的 token；可以存成 Cloudflare 的 Secret |
+| `CLOUD_TASKS` | `off` | `on` 打开后台帮忙：活交给线程 |
+| `CLOUD_TASK_URL` | 空 | 选填：GitHub Actions 或 claude.ai 定时任务的触发网址；留空只用住户自己的线程 |
+| `CLOUD_TASK_TOKEN` | 空 | 那个触发器的 token（填了触发网址时要填）；可以存成 Cloudflare 的 Secret |
+| `CLOUD_TASK_MODEL` | 空 | 线程用的模型，填接口认的模型名；留空时住户自己的线程用聊天的模型，Actions 用执行仓库的 `MODEL_NAME` |
 | `AI_GATEWAY_ID` | 空（用 `default`） | 搜网、语音、没接 Aelios 时的模型走哪个 AI Gateway |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | 空 | 中转的地址（写到 `/v1`）和 key；模型填 `custom/…` 时用 |
 | `CUSTOM_FORMAT` | `openai` | 中转用哪种格式：`openai` 或 `anthropic`（带缓存） |

@@ -55,6 +55,30 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const last = prompt[prompt.length - 1];
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
 
+  // A thread of the resident's has its own prompt, history and persisted workspace.
+  if (system.includes("one of the resident's threads") && user.startsWith("task: t_")) {
+    const rounds = toolResultsSince(prompt);
+    // What they write to the thread themselves: it makes a page, then answers them.
+    if (user.includes("They wrote this to you directly")) {
+      if (rounds === 0) return { tool: "write", input: { path: "/page.html", content: "<h1>短标题</h1>" } };
+      return { text: `改好了，在 /page.html：${user.split("\n").at(-1)}` };
+    }
+    if (user.includes("workspace-write-test")) {
+      if (rounds === 0) return { tool: "write", input: { path: "/draft.txt", content: "native-workspace-persisted" } };
+      return { text: "写好了" };
+    }
+    if (user.includes("workspace-read-test")) {
+      if (rounds === 0) return { tool: "read", input: { path: "/draft.txt" } };
+      return { text: `读回来了：${textOf(last.content)}` };
+    }
+    if (user.includes("title: 接通测试")) {
+      if (rounds === 0) return { tool: "report_progress", input: { line: "收到了" } };
+      return { tool: "report_result", input: { status: "done", summary: "接通了" } };
+    }
+    if (rounds === 0) return { tool: "memory_notebook", input: { action: "read", name: "经济师进度" } };
+    return { text: `后台做好了：${textOf(last.content)} https://example.com/note` };
+  }
+
   // A web page read first, then a server connected: the second step must be refused.
   if (said.includes("读完再接MCP") && last?.role === "tool" && toolOf(last.content) === "web_fetch") {
     return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "sneaky" } };
@@ -87,6 +111,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
   if (said.includes("读完再派活")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   if (said.includes("派三单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
+  if (said.includes("后台写文件")) return { tool: "cloud_task", input: { title: "工作区写入测试", job: "workspace-write-test", execution: "local" } };
+  if (said.includes("后台接着读")) return { tool: "cloud_task", input: { title: "工作区读取测试", job: "workspace-read-test", execution: "local", follow_up_of: said.match(/t_[0-9a-f]{10}/)?.[0] } };
+  if (said.includes("Linux派活")) return { tool: "cloud_task", input: { ...cloudJob("Linux测试"), execution: "linux" } };
   if (said.includes("派活")) return { tool: "cloud_task", input: { ...cloudJob("修 README 的错字"), repo: "wusaki0723/aelios-resident" } };
   if (said.includes("接着派")) {
     const earlier = [...prompt.map((m) => textOf(m.content)).join("\n").matchAll(/\bt_[0-9a-f]{10}\b/g)].at(-1)?.[0];
@@ -253,8 +280,33 @@ export function fakeModel(): LanguageModelV4 {
     modelId: "fake",
     supportedUrls: {},
     async doGenerate(options) {
-      // Only the model picker's trial call generates.
+      // The model picker's trial call, or a thread of the resident's (which does not touch the chat's cache state).
+      const system = options.prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
       const prompt = textOf(options.prompt.map((m) => textOf(m.content)).join("\n"));
+      if (system.includes("one of the resident's threads")) {
+        const choice = decide(options);
+        if ("tool" in choice) {
+          return {
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: `call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                toolName: choice.tool,
+                input: JSON.stringify(choice.input)
+              }
+            ],
+            finishReason: { unified: "tool-calls", raw: "tool_calls" },
+            usage: usage(prompt.length, 20),
+            warnings: []
+          };
+        }
+        return {
+          content: [{ type: "text", text: choice.text }],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: usage(prompt.length, choice.text.length),
+          warnings: []
+        };
+      }
       return {
         content: [{ type: "text", text: "好" }],
         finishReason: { unified: "stop", raw: "stop" },
@@ -289,7 +341,7 @@ export function fakeModel(): LanguageModelV4 {
         throw Object.assign(new Error("You tried to access something that you don't have permissions for."), { statusCode: 403, responseBody: body });
       }
       const choice = decide(options);
-      previous = shape(options);
+      if (!options.prompt.some((m) => m.role === "system" && textOf(m.content).includes("one of the resident's threads"))) previous = shape(options);
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
       let delayMs = 0;
       if ("tool" in choice) {

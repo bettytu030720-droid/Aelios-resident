@@ -57,7 +57,7 @@ await test("only a scheduled task's API trigger address is taken", () => {
     "https://api.anthropic.com/v1/claude_code/routines/trig_01AbCdEf/fire?x=1",
     "https://api.anthropic.com.evil.example/v1/claude_code/routines/trig_01AbCdEf/fire"
   ]) {
-    assert.match(t.fireUrlProblem(bad) ?? "", /API 触发器/, bad);
+    assert.match(t.fireUrlProblem(bad) ?? "", /API 触发网址/, bad);
   }
 });
 
@@ -233,4 +233,274 @@ await test("at most 60 progress lines a task, and the newest 200 tasks kept", ()
   assert.equal(tasks.get(added[4]), null);
   assert.ok(tasks.get(added[5]));
   assert.ok(tasks.get(task.id), "the newest is kept");
+});
+
+await test("built-in background worker: automatic tool progress lines, https link extraction, and sessionless notes", () => {
+  assert.equal(t.localStepProgress("report_progress", { line: "x" }), null);
+  assert.equal(t.localStepProgress("report_result", { status: "done", summary: "x" }), null);
+  assert.equal(t.localStepProgress("web_search", { query: "合成树脂价格" }), "正在搜：合成树脂价格");
+  assert.equal(t.localStepProgress("web_fetch", { url: "https://example.com/a" }), "正在读：https://example.com/a");
+  assert.equal(t.localStepProgress("memory_recall", { query: "生日" }), "正在查记忆：生日");
+  assert.equal(t.localStepProgress("memory_remember", { content: "x" }), "正在记下新内容");
+  assert.equal(t.localStepProgress("memory_notebook", { action: "list" }), "正在翻小本本目录");
+  assert.equal(t.localStepProgress("memory_notebook", { action: "read", name: "经济师进度" }), "正在看小本本：经济师进度");
+  assert.equal(t.localStepProgress("memory_notebook", { action: "append", name: "经济师进度" }), "正在写小本本：经济师进度");
+  assert.equal(t.localStepProgress("mcp_demo_echo", {}), "正在用工具：demo_echo");
+
+  assert.deepEqual(
+    t.extractHttpsLinks("详见 https://example.com/a，还有 (https://example.com/b)。忽略 http://insecure.example 和重复的 https://example.com/a！"),
+    ["https://example.com/a", "https://example.com/b"]
+  );
+
+  const { tasks } = store();
+  const { task } = tasks.add({ title: "查资料", job: "查一下" });
+  tasks.result(task.id, { status: "done", summary: "查完了", links: ["https://example.com/a"] });
+  const localDone = tasks.get(task.id);
+  assert.ok(!t.resultNote(localDone).includes("Session:"), "no Session line when run locally");
+  assert.ok(!t.quietNote(localDone, "3 hours").includes("session link:"), "no session link when run locally");
+});
+
+await test("GitHub Actions trigger: URL validation, dispatch payload with run details, and error messages", async () => {
+  const ghUrl = "https://api.github.com/repos/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml/dispatches";
+  assert.equal(t.triggerKind(URL_OK), "claude");
+  assert.equal(t.triggerKind(ghUrl), "github");
+  assert.equal(t.triggerKind(`${ghUrl}#dev`), "github");
+  assert.equal(t.triggerKind("https://api.cursor.com/v0/agents"), null, "Cursor is not taken");
+  assert.equal(t.fireUrlProblem(ghUrl), null);
+  assert.equal(t.fireUrlProblem(`${ghUrl}#dev`), null);
+  assert.match(t.fireUrlProblem("https://api.github.com/repos/a/b/issues") ?? "", /API 触发网址/);
+
+  const realFetch = globalThis.fetch;
+  try {
+    let seen;
+    // With return_run_details GitHub answers 200 and names the run, so the card links to it.
+    globalThis.fetch = async (url, init) => {
+      seen = { url, init };
+      return Response.json({ workflow_run_id: 42, run_url: "https://api.github.com/repos/wusaki0723/aelios-resident/actions/runs/42", html_url: "https://github.com/wusaki0723/aelios-resident/actions/runs/42" });
+    };
+    const ghOut = await t.fire(`${ghUrl}#dev`, "ghp_123", "task: t_1\ncode: c\ntitle: 修错字\n\n改一下");
+    assert.deepEqual(ghOut, { sessionId: "42", sessionUrl: "https://github.com/wusaki0723/aelios-resident/actions/runs/42" });
+    assert.equal(seen.url, ghUrl);
+    assert.equal(seen.init.headers.authorization, "Bearer ghp_123");
+    assert.equal(seen.init.headers.accept, "application/vnd.github+json");
+    assert.deepEqual(JSON.parse(seen.init.body), {
+      ref: "dev",
+      inputs: { job: "task: t_1\ncode: c\ntitle: 修错字\n\n改一下" },
+      return_run_details: true
+    });
+
+    // An older GitHub that answers 204: the card links to the workflow's runs.
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    assert.deepEqual(await t.fire(ghUrl, "ghp_123", "x"), {
+      sessionId: "gh_wusaki0723/aelios-resident_resident-hands.yml",
+      sessionUrl: "https://github.com/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml"
+    });
+    // A run link that is not GitHub's is not shown.
+    globalThis.fetch = async () => Response.json({ workflow_run_id: 7, html_url: "https://evil.example/run" });
+    assert.equal((await t.fire(ghUrl, "ghp_123", "x")).sessionUrl, "https://github.com/wusaki0723/aelios-resident/actions/workflows/resident-hands.yml");
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    assert.match((await t.fire(ghUrl, "ghp_123", "x")).error ?? "", /找不到这个仓库、workflow 或分支/);
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Unprocessable" }), { status: 422 });
+    assert.match((await t.fire(ghUrl, "ghp_123", "x")).error ?? "", /workflow_dispatch/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test("cloud_task's description offers only the places that are set up, and says which is usual", () => {
+  const plain = t.taskDescription({ linux: false, external: false });
+  assert.match(plain, /It runs in local:/);
+  assert.ok(!/execution|linux|external/.test(plain), "no choice when there is only one place");
+  const claude = t.taskDescription({ linux: false, external: true });
+  assert.match(claude, /- external:/);
+  assert.match(claude, /- local:/);
+  assert.ok(!/- linux:/.test(claude));
+  assert.match(claude, /Leave execution out for external/);
+  const actions = t.taskDescription({ linux: true, external: false });
+  assert.match(actions, /- linux:/);
+  assert.match(actions, /Leave execution out for local/);
+  assert.equal(t.taskDescription({ linux: true, external: false }), actions, "the same settings give the same words (prompt cache)");
+});
+
+await test("a thread here reads a brief without the code; their own words say so", () => {
+  const task = { id: "t_0123456789", title: "做个页面", job: "做一个介绍页", repo: "", direct: false };
+  const brief = t.localBrief(task, null);
+  assert.ok(!/code:/.test(brief), brief);
+  assert.equal(brief, "task: t_0123456789\ntitle: 做个页面\n\n做一个介绍页");
+  const direct = t.localBrief({ ...task, job: "标题再短一点", direct: true }, null);
+  assert.match(direct, /They wrote this to you directly in this thread/);
+  assert.ok(direct.endsWith("\n标题再短一点"));
+  const local = { ...task, runs: "local", sessionUrl: "", summary: "做好了，在 index.html", links: [], status: "done" };
+  assert.match(t.resultNote(local), /open the thread on the web page to see its files/);
+  assert.match(t.quietNote(local, "3 hours"), /has not finished after 3 hours/);
+  assert.ok(!/open the thread/.test(t.resultNote({ ...local, runs: "external" })));
+});
+
+await test("threads: follow-ups share a root, their own words do not count or start a turn, old tables get the new columns", () => {
+  const { db, tasks } = store();
+  const first = tasks.add({ title: "做个页面", job: "做", execution: "local" }).task;
+  assert.equal(first.root, first.id);
+  assert.equal(first.runs, "local");
+  const next = tasks.add({ title: "改标题", job: "改", follows: first.id, execution: "local" }).task;
+  assert.equal(next.root, first.id);
+  const said = tasks.add({ title: "做个页面", job: "再短一点", follows: next.id, execution: "local", direct: true }).task;
+  assert.equal(said.root, first.id);
+  assert.equal(said.direct, true);
+  assert.equal(tasks.sentToday(), 2, "what they write themselves is not counted");
+  assert.equal(tasks.result(said.id, { status: "done", summary: "改好了", links: [] }), false, "no resident turn for their own words");
+  assert.equal(tasks.result(next.id, { status: "done", summary: "改好了", links: [] }), true);
+  assert.equal(tasks.quiet(said.id), null);
+  assert.deepEqual(tasks.thread(first.id).map((task) => task.id), [first.id, next.id, said.id]);
+  assert.equal(tasks.latest(first.id).id, said.id);
+  const other = tasks.add({ title: "查资料", job: "查", execution: "external" }).task;
+  db.prepare("UPDATE res_tasks SET created_at = created_at + 1000 WHERE id = ?").run(other.id);
+  const threads = tasks.threads();
+  assert.equal(threads.length, 2);
+  assert.equal(threads[0].id, other.id);
+  assert.equal(threads[1].title, "做个页面", "a thread keeps its first task's title");
+  assert.equal(threads[1].tasks, 3);
+  assert.equal(tasks.codeOf(first.id).length, 32);
+
+  // A table from before threads: its tasks are threads of their own, run on claude.ai.
+  const old = new DatabaseSync(":memory:");
+  old.exec(`CREATE TABLE res_tasks (id TEXT PRIMARY KEY, code TEXT NOT NULL, title TEXT NOT NULL, job TEXT NOT NULL,
+    repo TEXT NOT NULL, follows TEXT NOT NULL, status TEXT NOT NULL, session_url TEXT NOT NULL, progress TEXT NOT NULL,
+    progress_at INTEGER, progress_count INTEGER NOT NULL, summary TEXT NOT NULL, links TEXT NOT NULL, notices INTEGER NOT NULL,
+    test INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+  old.prepare("INSERT INTO res_tasks VALUES ('t_aaaaaaaaaa', 'c', '旧的', 'j', '', '', 'done', '', '', NULL, 0, '好了', '[]', 1, 0, 1, 1)").run();
+  const sql = (strings, ...values) => {
+    const statement = old.prepare(strings.join("?"));
+    return /^\s*SELECT/i.test(strings[0]) ? statement.all(...values) : (statement.run(...values), []);
+  };
+  const migrated = new t.TaskStore(sql);
+  const legacy = migrated.get("t_aaaaaaaaaa");
+  assert.equal(legacy.root, "t_aaaaaaaaaa");
+  assert.equal(legacy.runs, "external");
+  assert.equal(legacy.direct, false);
+  new t.TaskStore(sql); // a second start leaves it as it is
+  assert.ok(migrated.add({ title: "新的", job: "x" }).task);
+});
+
+await test("pruning says which threads here have no task left, so they go with their files", () => {
+  const { db, tasks } = store();
+  const gone = tasks.add({ title: "旧线程", job: "x", execution: "local" }).task;
+  db.prepare("UPDATE res_tasks SET created_at = 1 WHERE id = ?").run(gone.id);
+  const kept = tasks.add({ title: "留着的", job: "x", execution: "local" }).task;
+  db.prepare("UPDATE res_tasks SET created_at = 2 WHERE id = ?").run(kept.id);
+  const elsewhere = tasks.add({ title: "云端的", job: "x", execution: "external" }).task;
+  db.prepare("UPDATE res_tasks SET created_at = 3 WHERE id = ?").run(elsewhere.id);
+  for (let i = 0; i < 199; i += 1) tasks.add({ title: `${i}`, job: "x" });
+  // A follow-up keeps the older thread alive.
+  tasks.add({ title: "接着", job: "x", follows: kept.id, execution: "local" });
+  assert.deepEqual(tasks.prune(), [gone.id]);
+  assert.equal(tasks.get(gone.id), null);
+  assert.equal(tasks.get(kept.id), null, "its first task went, the thread did not");
+  assert.equal(tasks.thread(kept.id).length, 1);
+});
+
+await test("scripts/hands.mjs: parses job payload, edits files via tools, sends auxiliary header and reports back", async () => {
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { parseJobPayload, runHands } = await import("../scripts/hands.mjs");
+
+  const sample = "task: t_0123456789\ncode: 0123456789abcdef0123456789abcdef\ntitle: 修错字\nrepository: wusaki0723/aelios-resident\n\n把 hello.txt 里的 old 改成 new";
+  const parsed = parseJobPayload(sample);
+  assert.deepEqual([parsed.task, parsed.title, parsed.repository], ["t_0123456789", "修错字", "wusaki0723/aelios-resident"]);
+  assert.equal(parsed.model, "", "no model header unless one was picked");
+
+  const dir = mkdtempSync(join(tmpdir(), "hands-test-"));
+  writeFileSync(join(dir, "hello.txt"), "hello old world\n", "utf8");
+  const realFetch = globalThis.fetch;
+  const reports = [];
+  const modelCalls = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes("/tasks/")) {
+        reports.push({ url: String(url), code: init.headers["x-task-code"], body: JSON.parse(init.body) });
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      if (String(url).endsWith("/chat/completions")) {
+        modelCalls.push({ headers: init.headers, body: JSON.parse(init.body) });
+        if (modelCalls.length === 1) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    tool_calls: [
+                      {
+                        id: "c1",
+                        type: "function",
+                        function: {
+                          name: "edit_file",
+                          arguments: JSON.stringify({ path: "hello.txt", old_string: "old", new_string: "new" })
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: "已经改好了并提了 PR：https://github.com/wusaki0723/aelios-resident/pull/42"
+                }
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const done = await runHands({
+      residentUrl: "https://resident.example",
+      modelBaseUrl: "https://aelios.example/v1",
+      modelApiKey: "k_test",
+      model: "chatgpt/gpt-5",
+      jobText: sample,
+      workdir: dir
+    });
+    assert.equal(done.status, "done");
+    assert.equal(readFileSync(join(dir, "hello.txt"), "utf8"), "hello new world\n");
+    assert.equal(modelCalls[0].headers["x-aelios-purpose"], "auxiliary");
+    assert.equal(modelCalls[0].body.model, "chatgpt/gpt-5");
+    assert.deepEqual(
+      reports.map((r) => [r.url.replace("https://resident.example", ""), r.body]),
+      [
+        ["/tasks/t_0123456789/progress", { line: "正在改文件：hello.txt" }],
+        [
+          "/tasks/t_0123456789/result",
+          {
+            status: "done",
+            summary: "已经改好了并提了 PR：https://github.com/wusaki0723/aelios-resident/pull/42",
+            links: ["https://github.com/wusaki0723/aelios-resident/pull/42"]
+          }
+        ]
+      ]
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test("the task payload carries arbitrary model IDs without choosing a subscription harness", async () => {
+  const task = { id: "t_0123456789", title: "修错字", job: "改一下", repo: "octo/hello" };
+  assert.equal(t.payload(task, "c", null), "task: t_0123456789\ncode: c\ntitle: 修错字\nrepository: octo/hello\n\n改一下");
+  const { parseJobPayload } = await import("../scripts/hands.mjs");
+  const picked = parseJobPayload(t.payload(task, "c", null, "my-provider/my-model"));
+  assert.equal(picked.model, "my-provider/my-model");
+  assert.equal(picked.repository, "octo/hello");
 });

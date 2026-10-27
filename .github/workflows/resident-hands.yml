@@ -1,0 +1,66 @@
+name: Resident Hands
+
+# Put this file and scripts/hands.mjs in a PRIVATE repository of yours (not a fork: a fork of a public repository is
+# public, and so are its run logs and artifacts). Secrets: RESIDENT_URL, MODEL_BASE_URL, MODEL_API_KEY, and
+# HANDS_GH_TOKEN to change other repositories. Variable: MODEL_NAME.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Job sent by Aelios-resident"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The job is read from the run's event file, not put in env: values in env are printed in the log.
+      - name: Run resident hands
+        timeout-minutes: 25
+        env:
+          RESIDENT_URL: ${{ secrets.RESIDENT_URL }}
+          MODEL_BASE_URL: ${{ secrets.MODEL_BASE_URL }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          MODEL_NAME: ${{ vars.MODEL_NAME }}
+          HANDS_PUBLISH_REPO: ${{ vars.HANDS_PUBLISH_REPO }}
+          HANDS_PUBLISH_TOKEN: ${{ secrets.HANDS_GH_TOKEN }}
+          HANDS_RETENTION_DAYS: "30"
+          HANDS_OUTPUT_DIR: ${{ runner.temp }}/resident-output
+          HANDS_REPORTED_FILE: ${{ runner.temp }}/resident-reported
+          GITHUB_TOKEN: ${{ secrets.HANDS_GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.HANDS_GH_TOKEN || github.token }}
+        run: node scripts/hands.mjs
+
+      - name: Tell the resident the run stopped
+        if: failure() || cancelled()
+        env:
+          RESIDENT_URL: ${{ secrets.RESIDENT_URL }}
+          HANDS_REPORTED_FILE: ${{ runner.temp }}/resident-reported
+        run: node scripts/hands.mjs --report-stopped
+
+      - name: Keep generated files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resident-files-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resident-output/
+          if-no-files-found: ignore
+          retention-days: 30
+          include-hidden-files: false

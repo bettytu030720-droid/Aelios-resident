@@ -91,7 +91,10 @@ export const FIELDS: readonly Field[] = [
   { key: "VOICE_BASE_URL", kind: "text", check: address },
   { key: "CLOUD_TASKS", kind: "choice", choices: ["on", "off"] },
   { key: "CLOUD_TASK_URL", kind: "text", check: fireUrlProblem },
-  { key: "CLOUD_TASK_TOKEN", kind: "secret" }
+  { key: "CLOUD_TASK_TOKEN", kind: "secret" },
+  // Which model the threads work with: the resident's own, and the GitHub Actions job's (scripts/hands.mjs). Empty:
+  // the chat's model here, and the repository's MODEL_NAME on Actions.
+  { key: "CLOUD_TASK_MODEL", kind: "text" }
 ];
 
 /** One setting as the web door shows it. Secrets only say whether they are set, never what they are. */
