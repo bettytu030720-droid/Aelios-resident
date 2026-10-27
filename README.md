@@ -2,47 +2,80 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-**An AI companion that lives in your own Cloudflare account.** Talk to it on the web, and if you like on Telegram or WeCom (WeChat) too; it is one conversation wherever you talk. Connect it to [Aelios](https://github.com/wusaki0723/Aelios) and it remembers what came before.
+<p align="center">
+  <img src="docs/images/hero.webp" width="880" alt="Three moments on the web door: late at night it remembers you are preparing for an interview and sets an alarm; in the morning it reaches out first, in its own voice; at noon it hands the research to a background thread and comes back to tell you what it found">
+</p>
 
-- **No server to rent**: the whole resident is one Cloudflare Worker with one Durable Object, and it runs on the free plan.
-- **No database to set up**: the conversation, handoff letters, persona and stickers live in the Durable Object's built-in SQLite.
-- **Everything is set on the web**: once it is deployed, you pick the model, write the persona and change every setting in the browser. A change applies from the next message.
+<h3 align="center">An AI that is yours alone.</h3>
 
-It is built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
+<p align="center">
+  It remembers you, reaches out first, speaks in its own voice,<br>
+  and gets things done while you are busy with something else.
+</p>
+
+<p align="center"><sub>The screens are the real interface; the conversation is an example.</sub></p>
+
+Most AI waits for you to speak: you ask, it answers, and when you close the window nothing is left.
+
+A resident is different. It has its own name, face and character, and it lives in **your own Cloudflare account**, around the clock. On the web, on Telegram or in WeChat, it is one conversation wherever you find it. It remembers what you told it last month; when you have been quiet for a while, it checks in; and when you hand it something to do, it comes back to tell you once it is done.
+
+No server to rent and no code to write: send one message to an AI that can run commands, and in ten minutes or so you are talking to it. Cloudflare's free plan is enough for it to live on. **[Move it in now →](#getting-started)**
 
 > **The interface is in Chinese.** The web page, the settings and the bot's command replies are in Chinese. This README gives each label's Chinese text in 「」 so you can find it on screen. The resident itself chats in whatever language its persona is written in.
 
-## What it does
+## A day with it
 
-- **One conversation, the doors you choose**: the web door is always there. Telegram (a private chat, with the web door as a Mini App) and WeCom (企业微信, which also reaches you in ordinary WeChat) are optional: set up either, both or neither. What is said at one door shows on the web page too.
-- **Remembers the past**: with Aelios connected, every turn goes through Aelios, which brings up related memories and records the turn. Aelios still does its nightly tidy-up.
-- **Handoff letters**: once enough chat has piled up and you have gone quiet for a while, it writes a letter to its later self and folds the older chat away, keeping only the most recent part word for word.
-- **Reaches out to you**: at times you choose it considers whether to message you; when you have been quiet for a while it is asked whether it wants to (the heartbeat); with alarms on it can also schedule its own return.
-- **Sees pictures, hears and sends voice**: it sees the pictures you send, from any door; your voice messages are transcribed, ones recorded on the web door too; once you pick a provider it can answer with voice messages, and read any reply aloud on the web door.
-- **Searches the web and reads pages**: your own search keys come first, Cloudflare's search otherwise; long pages are shortened before it reads them.
-- **Stickers**: import a Telegram sticker pack or a zip and it sends one now and then. It can also draw its own little pixel stickers.
-- **Other MCP servers**: add one by address on the settings page, or ask it to connect one in the chat.
-- **Background help**: off by default. Like a Claude project, it keeps chatting with you and hands research, writing and page-making to threads; a thread reports back when it is done, and its files can be viewed and downloaded under **Threads** on the web page. It can also use GitHub Actions (for work that needs a shell) or cloud Claude Code on your subscription.
-- **Usage timeline**: on its own page (tap its avatar on the web door), how many tokens each call to a model used, how much of it was read from the prompt cache, and roughly what it cost at Anthropic's list prices: today, 7 days and 30 days on top, every call below. Only numbers are kept, never the chat.
-- **An app on your phone**: the web door can go on the home screen and send notifications: when it reaches out, a thread finishes or an alarm rings, and when it answers after you have left the page.
+> **23:38**　You mention the interview is tomorrow and you can't sleep. It remembers that your practice run last week went well, and that you talk too fast when you are nervous. It tells you to pause for a second before you begin, and sets an alarm.
+>
+> **08:00**　The alarm rings. It reaches out first, in its own voice: "Morning. Eat something before you go."
+>
+> **11:42**　You tell it on WeChat: you passed! It answers with a little pixel heart it drew itself.
+>
+> **12:10**　You ask it to gather the company's recent news and the questions second rounds usually bring. It hands the legwork to a background thread and keeps talking with you; half an hour later it comes back with the report.
+>
+> **Late at night**　After a long day of talking, you are asleep. It writes a letter to its later self: where we left off, how you have been, what is still unfinished. It does not wake you at night.
 
-## How it fits together
+## What it is like
 
-```
-Web door / Mini App ──────────────────────────▶ Worker /web/* ──┐
-Telegram (optional) ──▶ Worker (secret, allowlist, commands) ───┤
-WeCom (optional) ──▶ Worker (signature, decrypt, allowlist) ────┤
-                                                                ▼
-                    Resident (one Durable Object, one conversation)
-       persona + chat rules + Aelios boot packet
-       tools: memory, web search, web pages, stickers, voice, alarms, other MCP, cloud Claude Code
-                                                                │
-              replies to WeCom ──▶ relay on a machine with a fixed IP ──▶ WeCom API
-```
+### It remembers you
 
-- With Aelios connected, every turn goes through Aelios' model endpoint, which adds related memories and records the turn.
-- WeCom only takes API calls from fixed IPs, so replies to WeCom go out through a small relay on a machine of yours (see [WeCom (WeChat)](#wecom-wechat)). Telegram and the web door need nothing else.
-- 55 minutes after you go quiet: if the chat is long enough, it writes a handoff letter; if not, the heartbeat asks whether it wants to reach out.
+- Connect [Aelios](https://github.com/wusaki0723/Aelios), a memory service you deploy yourself, and everything you say brings up what is related from before, and every turn is kept. The name of the cat you mentioned months ago, what you are working toward, what you can't stand eating: it knows.
+- After a long talk it writes a handoff letter to its later self and puts the older chat away, keeping only the most recent part word for word. Tomorrow picks up where today left off.
+- Switch models and it is still itself: the persona, the memories and everything you said stay.
+
+### It comes to you
+
+- At times you choose, it considers whether to say something; when you have been quiet for a while, it asks itself whether to reach out. Not at night, unless you want it to.
+- It can set its own alarms and come back when they ring.
+- Put the web door on your phone's home screen and it sends you notifications: when it reaches out, a thread finishes or an alarm rings.
+
+### It has a voice, and a face
+
+- It sees the pictures you send and hears your voice messages. It can answer out loud too: with ElevenLabs, Cartesia, or MiniMax, Gemini and more through OpenRouter, a voice you cloned included.
+- It sends stickers: import a Telegram sticker pack, and it also draws little pixel ones of its own.
+- You write its persona: its name, how it talks, who it is.
+
+### It gets things done
+
+- It searches the web and reads pages; store a key for a private site and it can read those pages too.
+- Bigger jobs, such as digging through material, writing a report, making a page or changing code, go to a background thread while it keeps talking with you. When the work is done it tells you in its own words, and the files it made can be viewed and downloaded on the web page. It can also hand work to GitHub Actions or cloud Claude Code.
+- Connect other MCP servers and it learns more.
+
+### It is yours alone
+
+- It lives in your own Cloudflare account: the conversation, the persona, the stickers and the files its threads make are stored there, not with the author or any platform.
+- It runs on Cloudflare's free plan, and so does its default model. For Claude and other paid models, you pay for the model calls you make, and **Usage** (「用量」) shows what each one cost.
+- Open source, AGPL-3.0.
+
+## Wherever you are
+
+| Door | What it is |
+| --- | --- |
+| **The web door** | Always there. On a phone it installs like an app and sends notifications |
+| **Telegram** | Optional. A private chat; the web door also opens inside Telegram as a Mini App |
+| **WeCom / WeChat** | Optional. With WeCom's WeChat plugin, you can talk to it in ordinary WeChat too |
+
+Whichever door you use, it is one conversation, and all of it shows on the web page.
 
 ## Getting started
 
@@ -69,6 +102,30 @@ You need a Cloudflare account (the free plan is enough). For long-term memory, a
 5. Say something on the web door, or send the bot a message.
 
 Set up before the bot token moved to the settings page, with `TG_BOT_TOKEN` and `TG_WEBHOOK_SECRET` in Cloudflare? That keeps working as it is, and `/tg/setup?secret=<TG_WEBHOOK_SECRET>` still connects it. A token saved on the settings page takes precedence over the one in Cloudflare.
+
+## How it fits together
+
+The whole resident is one Cloudflare Worker with one Durable Object, built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
+
+- **No server to rent**: it runs on the free plan.
+- **No database to set up**: the conversation, handoff letters, persona and stickers live in the Durable Object's built-in SQLite.
+- **Everything is set on the web**: once it is deployed, you pick the model, write the persona and change every setting in the browser. A change applies from the next message.
+
+```
+Web door / Mini App ──────────────────────────▶ Worker /web/* ──┐
+Telegram (optional) ──▶ Worker (secret, allowlist, commands) ───┤
+WeCom (optional) ──▶ Worker (signature, decrypt, allowlist) ────┤
+                                                                ▼
+                    Resident (one Durable Object, one conversation)
+       persona + chat rules + Aelios boot packet
+       tools: memory, web search, web pages, stickers, voice, alarms, other MCP, cloud Claude Code
+                                                                │
+              replies to WeCom ──▶ relay on a machine with a fixed IP ──▶ WeCom API
+```
+
+- With Aelios connected, every turn goes through Aelios' model endpoint, which adds related memories and records the turn.
+- WeCom only takes API calls from fixed IPs, so replies to WeCom go out through a small relay on a machine of yours (see [WeCom (WeChat)](#wecom-wechat)). Telegram and the web door need nothing else.
+- 55 minutes after you go quiet: if the chat is long enough, it writes a handoff letter; if not, the heartbeat asks whether it wants to reach out.
 
 ## Using it
 
