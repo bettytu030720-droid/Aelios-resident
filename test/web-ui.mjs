@@ -210,9 +210,11 @@ assert.equal(page.taskNote({ ...task, status: 'sent', progress: '', summary: '' 
 const taskCard = markup.slice(markup.indexOf('<template x-for="task in row.cards"'));
 assert.ok(markup.indexOf('<template x-for="task in row.cards"') > markup.indexOf("row.line.role === 'assistant'") && markup.indexOf('<template x-for="task in row.cards"') < markup.indexOf('<!-- her message -->'), "only under the resident's own lines");
 assert.ok(taskCard.includes('@click="openThread(task.thread)">打开线程</button>'), 'a card opens its thread');
-assert.ok(taskCard.includes('<template x-for="link in cardLinks(task)"') && taskCard.includes('rel="noopener noreferrer"'));
-assert.deepEqual(copy(page.cardLinks(task)), [{ url: 'https://claude.ai/code/session_1', text: '打开会话' }], 'the card opens the session; its links are in the thread');
-assert.deepEqual(copy(page.cardLinks({ ...task, sessionUrl: 'http://x.example' })), []);
+// Every card has the same way in, whether or not the thread ran in a session elsewhere: the thread, which has the
+// session and the links.
+const cardActs = taskCard.slice(taskCard.indexOf('<div class="acts">\n                    <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>'));
+assert.ok(cardActs.length > 0);
+assert.ok(!cardActs.slice(0, cardActs.indexOf('</div>')).includes('<a '), 'no link on the card itself');
 // A thread that needs her: its choices are buttons, and the one she picks is said back.
 assert.ok(taskCard.includes('@click="choose(task, choice)" x-text="choice"'));
 assert.ok(taskCard.includes("x-text=\"'你选了：' + task.chosen\""));

@@ -215,7 +215,6 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   <div class="sub" x-show="task.chosen" x-text="'你选了：' + task.chosen"></div>
                   <div class="acts">
                     <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>
-                    <template x-for="link in cardLinks(task)" :key="link.url"><a class="btn small" :href="link.url" target="_blank" rel="noopener noreferrer" x-text="link.text"></a></template>
                     <template x-if="task.waiting"><button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button></template>
                   </div>
                 </div>

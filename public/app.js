@@ -1106,10 +1106,6 @@ function resident() {
       var note = this.taskNote(task);
       return typeof markdownPlain === 'function' ? markdownPlain(note) : note;
     },
-    // The card in the chat opens the thread, and the session where it ran; its links are in the thread.
-    cardLinks(task) {
-      return /^https:\/\//.test(task.sessionUrl || '') ? [{ url: task.sessionUrl, text: '打开会话' }] : [];
-    },
     taskLinks(task) {
       var self = this;
       var https = function (url) { return /^https:\/\//.test(url || ''); };
