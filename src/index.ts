@@ -213,7 +213,8 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "GET /web/check":
       return Response.json({ ok: true, aelios: await agent.hasMemory(), via: who.via, ...(await agent.webIdentity()) });
     case "GET /web/messages":
-      return Response.json({ data: await agent.webHistory() });
+      // ?since=<version>: { same } while nothing has changed, without reading the conversation.
+      return Response.json(await agent.webLook(url.searchParams.get("since")));
     case "POST /web/say": {
       await agent.noteOrigin(url.origin);
       const said = await agent.webSay({

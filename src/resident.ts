@@ -97,7 +97,7 @@ import {
   type TelegramConfig,
   type VoiceOut
 } from "./telegram";
-import { StickerStore, type PackView, type RemoteSticker } from "./sticker-store";
+import { StickerStore, type PackView, type RemoteSticker, type Sql } from "./sticker-store";
 import {
   WecomAdapter,
   WecomApi,
@@ -1194,7 +1194,7 @@ export class Resident extends Think<Env> {
 
   // Not tasks(): Think's base class has its own `tasks`.
   private cloudTasks(): TaskStore {
-    this.#taskStore ??= new TaskStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    this.#taskStore ??= new TaskStore(this.sqlShownOnWeb());
     return this.#taskStore;
   }
 
@@ -3314,7 +3314,7 @@ export class Resident extends Think<Env> {
   #webTurns = new Map<string, { voice: boolean }>();
 
   private media(): MediaStore {
-    this.#mediaStore ??= new MediaStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    this.#mediaStore ??= new MediaStore(this.sqlShownOnWeb());
     return this.#mediaStore;
   }
 
@@ -3442,6 +3442,53 @@ export class Resident extends Think<Env> {
     this.notices();
     this.sql`INSERT INTO res_web_notices (at, text) VALUES (${Date.now()}, ${text})`;
     this.sql`DELETE FROM res_web_notices WHERE at < ${Date.now() - 30 * 86400_000} OR rowid NOT IN (SELECT rowid FROM res_web_notices ORDER BY at DESC LIMIT 50)`;
+    this.webChanged();
+  }
+
+  // ---- "nothing new": the web page's look every few seconds, answered without reading the conversation ----
+  // Each look at the whole conversation reads every row of it, and Durable Objects on the free plan read 5 million
+  // rows a day. So the page says which version it has, and gets "the same" back while nothing it shows has changed
+  // and no reply is being written. The version is counted in memory; a new instance starts a new one, so a page
+  // from before reads it all again.
+
+  #webBoot = crypto.randomUUID().slice(0, 8);
+  #webRev = 0;
+  #webWatching = false;
+
+  /** Something the web page shows has changed. */
+  private webChanged(): void {
+    this.#webRev += 1;
+  }
+
+  /** The version of what the web page shows. The conversation's own writes come through the session's change feed. */
+  private webRevision(): string {
+    if (!this.#webWatching) {
+      this.#webWatching = true;
+      this.sessions.subscribe(() => this.webChanged());
+    }
+    return `${this.#webBoot}.${this.#webRev}`;
+  }
+
+  /** The sql tag for a store the web page shows from (tasks, voices): every write it makes changes the version. */
+  private sqlShownOnWeb(): Sql {
+    return (strings, ...values) => {
+      const rows = this.sql(strings, ...(values as never[]));
+      if (/^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(strings[0])) this.webChanged();
+      return rows as never;
+    };
+  }
+
+  /**
+   * The web page's look at the conversation: all of it with its version, or `same` when it has that version and no
+   * reply is being written (a draft changes with every word, so then it is read in full).
+   */
+  async webLook(since: string | null): Promise<{ data: WebLine[]; rev: string } | { same: true; rev: string }> {
+    const rev = this.webRevision();
+    if (since && since === rev && !this.#drafts.size) {
+      this.#webSeenAt = Date.now();
+      return { same: true, rev };
+    }
+    return { data: await this.webHistory(), rev };
   }
 
   /** An answer picked on a thread's card that waits for their decision: to the thread, or else to the resident. */

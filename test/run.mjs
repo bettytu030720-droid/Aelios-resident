@@ -2618,6 +2618,31 @@ if (phase === "web") {
     assert.equal(all.flatMap((line) => line.tasks ?? []).find((task) => task.id === id).waiting, false, "a pick deals with it");
   });
 
+  await step("a look with the version the page has gets 'the same' back, reading nothing, until something it shows changes", async () => {
+    const look = async (since) => (await json(`/web/messages${since ? `?since=${encodeURIComponent(since)}` : ""}`)).data;
+    const first = await look();
+    assert.ok(Array.isArray(first.data) && /^[0-9a-f]{8}\.\d+$/.test(first.rev), JSON.stringify(first.rev));
+    assert.deepEqual(await look(first.rev), { same: true, rev: first.rev });
+    assert.ok(Array.isArray((await look("0000000.0")).data), "another version (a page from before a restart) reads all of it");
+    let rev = first.rev;
+    const changed = async (what) => {
+      const now = await look(rev);
+      assert.ok(Array.isArray(now.data) && now.rev !== rev, `${what} changes the version`);
+      assert.deepEqual(await look(now.rev), { same: true, rev: now.rev }, `and then it is the same again (${what})`);
+      rev = now.rev;
+    };
+    await say({ text: "又来一句" });
+    await changed("her words and the reply");
+    assert.equal((await json("/web/model", { text: "" })).status, 200);
+    await changed("a notice in the chat");
+    await say({ text: "派活" });
+    await changed("a thread sent");
+    const fire = (await log()).filter((e) => e.kind === "routine.fire").at(-1);
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    assert.equal((await fetch(`${WORKER}/tasks/${id}/progress`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code }, body: JSON.stringify({ line: "改到一半" }) })).status, 200);
+    await changed("a thread's progress on its card");
+  });
+
   await step("one that waits for her with nothing to pick is put aside with 不用了, and stops asking everywhere", async () => {
     const fire = (await log()).filter((e) => e.kind === "routine.fire").at(-1);
     const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];

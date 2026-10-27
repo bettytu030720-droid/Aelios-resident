@@ -87,6 +87,9 @@ function urlBase64ToBytes(text) {
 function resident() {
   var POLL_MS = 5000;
   var FAST_MS = 900;
+  // A look that asks "anything new since this version?" reads nothing when nothing is; the whole conversation is
+  // read again at least this often all the same.
+  var FULL_MS = 2 * 60 * 1000;
   var PERSONA_MAX = 30000;
   var RESULTS_MAX = 60;
   // A model list longer than this is not browsed, only searched: it is the upstream's whole catalog, not a chosen list.
@@ -269,6 +272,9 @@ function resident() {
   var recorder = null;
   var player = null;
   var mediaUrls = {};
+  // The version of the conversation the page has (GET /web/messages?since=), and when it last read all of it.
+  var seenRev = '';
+  var fullAt = 0;
   var picLoading = {};
   // Her lines from the server that already took the place of one sent from here.
   var settled = {};
@@ -392,7 +398,7 @@ function resident() {
       } catch (e) {}
       document.addEventListener('visibilitychange', function () {
         if (document.hidden || !self.authed) return;
-        self.refresh().catch(function () {});
+        self.refresh(true).catch(function () {});
         // Back from an MCP sign-in in another tab: show how it went.
         if (self.view === 'config') self.loadMcp().catch(function () {});
       });
@@ -483,7 +489,7 @@ function resident() {
         var data = await this.api('/web/check');
         this.aelios = Boolean(data.aelios);
         this.identity = { name: data.name || '住户', avatar: data.avatar || null };
-        this.lines = (await this.api('/web/messages')).data || [];
+        this.lines = this.took(await this.api('/web/messages')) || [];
         this.authed = true;
         this.loaded = true;
         if (!this.miniApp) writeKey(key);
@@ -505,6 +511,8 @@ function resident() {
     },
     logout() {
       writeKey('');
+      seenRev = '';
+      fullAt = 0;
       this.key = '';
       this.miniToken = '';
       this.miniExpires = 0;
@@ -697,9 +705,18 @@ function resident() {
         if (self.authed) self.poll(self.replying());
       }, fast ? FAST_MS : POLL_MS);
     },
-    async refresh() {
+    // What /web/messages gave: the lines, or null when nothing has changed since the version the page has.
+    took(data) {
+      if (data && data.rev) seenRev = data.rev;
+      if (data && data.same) return null;
+      fullAt = Date.now();
+      return (data && data.data) || [];
+    },
+    async refresh(full) {
       if (!this.authed) return;
-      var lines = (await this.api('/web/messages')).data || [];
+      var since = !full && seenRev && Date.now() - fullAt < FULL_MS ? seenRev : '';
+      var lines = this.took(await this.api('/web/messages' + (since ? '?since=' + encodeURIComponent(since) : '')));
+      if (!lines) return;
       var before = this.lines.length;
       var stick = this.isNearBottom();
       this.lines = lines;
