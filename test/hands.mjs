@@ -116,6 +116,17 @@ try {
     const refused = await runHands({ residentUrl: 'https://resident.example', jobText, workdir, askToken: true });
     assert.equal(refused.status, 'failed');
     assert.match(refused.summary, /住户没给 GitHub token（HTTP 409）：no GitHub token is set/);
+    // GitHub's "Re-run" of a task that has its result: said in the log, nothing reported, no "stopped" report after.
+    const rerun = [];
+    const said = [];
+    const rerunMark = join(root, 'rerun-reported');
+    globalThis.fetch = async (url) => String(url).endsWith('/hands') ? Response.json({ error: 'this task is finished', finished: true }, { status: 409 }) : (rerun.push(String(url)), new Response('{}'));
+    const again = await runHands({ residentUrl: 'https://resident.example', jobText, workdir, askToken: true, reportedFile: rerunMark, log: (line) => said.push(line) });
+    assert.deepEqual([again.status, again.finished], ['failed', true]);
+    assert.match(again.summary, /已经有结果了.*「重新运行」跑的还是这一单.*让它新派一单/);
+    assert.equal(said.at(-1), again.summary);
+    assert.deepEqual(rerun, [], 'the card keeps its result');
+    assert.ok(existsSync(rerunMark), 'and the last step does not report it stopped');
 
     // A failure says why, on the card and in the run log: the resident's own error for the model, and the command
     // that failed with what it printed, secrets taken out.

@@ -404,6 +404,8 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 
    一两分钟后最新那单「接通测试」的 `status` 变成 `done` 就接通了。没变的话请用户点那一单的 `sessionUrl` 看运行日志。
 
+   以后哪一单没做完，用户在 GitHub 那次运行的页面点「Re-run」就会接着重做这一单；已经做完、或在等用户拿主意的单子不会再做，要再做就让住户新派一单。
+
 ### 企业微信
 
 用户要在企业微信（或开了微信插件的微信）里聊才配。要准备：一个企业微信企业（自己建一个免费的就行），和一台有固定公网 IP、能跑 systemd 的 Linux 机器当转发机。转发机不开端口，经 Cloudflare Tunnel 出来。整套顺序照 README.zh-CN.md「企业微信」，转发机照 [relay/wecom/README.md](../relay/wecom/README.md)。

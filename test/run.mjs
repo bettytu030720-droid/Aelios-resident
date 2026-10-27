@@ -1692,10 +1692,23 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(JSON.parse(result.function.arguments).summary, /hands-at-work/, "the command's output reached the model");
       const rows = (await (await web("/web/usage", KEY)).json()).rows;
       assert.ok(rows.slice(0, 2).every((row) => row.kind === "worker"), "counted as a thread's work");
-      const reported = await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "x-task-code": code, "content-type": "application/json" }, body: JSON.stringify({ status: "done", summary: "接通了" }) });
-      assert.equal(reported.status, 200);
+      const report = (body) => fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "x-task-code": code, "content-type": "application/json" }, body: JSON.stringify(body) });
+      const card = async () => (await tasks()).tasks.find((task) => task.id === id);
+      assert.equal((await report({ status: "failed", summary: "克隆失败" })).status, 200);
+      assert.equal((await card()).status, "failed");
+      assert.equal((await think(brief)).status, 409, "a failed run cannot use the model any more");
+      // GitHub's "Re-run" brings the same task: one that failed takes up its work again, on a fresh card.
+      assert.deepEqual(await (await lend(code)).json(), { github_token: "good-token" });
+      assert.deepEqual([(await card()).status, (await card()).summary], ["working", ""]);
+      assert.equal((await think(brief)).status, 200);
+      assert.equal((await report({ status: "done", summary: "接通了" })).status, 200);
+      assert.equal((await card()).status, "done");
       assert.equal((await think(brief)).status, 409, "a finished task cannot use the model any more");
-      assert.equal((await lend(code)).status, 409);
+      // A re-run of one that is done is told so, and the card stays done.
+      const done = await lend(code);
+      assert.equal(done.status, 409);
+      assert.deepEqual(await done.json(), { error: "this task is finished", finished: true });
+      assert.equal((await card()).status, "done");
 
       await set({ CLOUD_TASK_URL: URL_OK, CLOUD_TASK_TOKEN: "good-token" });
       assert.equal((await tasks()).mode, "all", "claude.ai and GitHub Actions both set up");
