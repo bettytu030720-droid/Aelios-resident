@@ -1,6 +1,8 @@
 // Settings and secrets, all optional: the code has a default for each (see README).
 // Declared here because wrangler.jsonc carries no vars (they would overwrite the Dashboard on deploy).
 interface Env {
+  // Cloudflare Images (wrangler.jsonc), to shrink the photos she sends (pictures.ts). Left out, they go as they are.
+  IMAGES?: ImagesBinding;
   // The old model variable: read once and moved onto the web page (see Resident.savedModel).
   MODEL?: string;
   AI_GATEWAY_ID?: string;

@@ -86,7 +86,7 @@ Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Te
 - Several messages in a row are combined: it waits 3 seconds and answers them as one turn (`DEBOUNCE_SECONDS`).
 - Replies are split at blank lines and sent piece by piece as they are written, with "typing…" shown in between.
 - Each message carries your local time, so it knows what time it is.
-- It sees the pictures you send (photos, or images sent as files, up to 5 MB).
+- It sees the pictures you send (photos, or images sent as files, up to 20 MB). With Cloudflare Images (the `IMAGES` binding in `wrangler.jsonc`; free for 5,000 pictures a month) a picture longer than 1568 px on a side is scaled down to that before it goes to the model, which reads it at about that size anyway. Without Images, pictures go as they are, up to 3.75 MB (5 MB once encoded, the most Claude takes for one picture).
 
 **Mini App**: tap the bot's bottom-left menu button and the web door opens right inside Telegram, without `WEB_KEY`. It lets you in by your Telegram-signed identity and checks it against **Who can talk to it on Telegram** every time, so removing someone from the list locks them out. If you move to a custom domain, open the settings page from the new domain and click **Connect again** (「重新接一次」) under IM → bot token (Telegram only opens https Mini Apps). Details are in `src/mini-app.ts`.
 
@@ -436,6 +436,9 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 
 **It does not answer on Telegram**
 Look at **IM** on the settings page: it says whether the bot is connected here and the last error Telegram reported, and **Connect again** (「重新接一次」) points the bot here again. Check that you are listed under **Who can talk to it on Telegram**; it does not answer group chats. With the token in Cloudflare, opening `/tg/setup?secret=…` again does the same; every item should be `"ok":true`.
+
+**It stops answering after a picture**
+The model's provider refused the picture (a content check, or a size or format it does not take), and every turn that still carries it would be refused the same way. The resident takes the pictures nobody has answered yet out of the chat, puts 「[图片被退回]」 in their place on the web page, and tells you on Telegram or WeCom with the provider's error, such as `403 permission_error`. Then just carry on. Deleting the picture on Telegram does not help: Telegram does not tell bots about deleted messages.
 
 **WeCom will not save the receiving URL** (「回调地址请求不通过」 or similar)
 Save the Token and EncodingAESKey on the resident's settings page first, then click Save in WeCom; the Corp ID must be filled in too. Check that the URL is exactly the one the settings page shows.
