@@ -199,16 +199,17 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                 </div>
               </template>
               <template x-for="task in row.line.tasks || []" :key="task.id">
-                <div class="ccard" :class="{ dashed: task.status === 'sent' || task.status === 'working', ask: task.status === 'needs_you' && !task.chosen }">
-                  <div class="head"><span>线程</span><span class="spacer"></span><span class="pill" :class="taskPill(task.status)" x-text="taskStatusText(task.status)"></span></div>
+                <div class="ccard" :class="{ dashed: task.status === 'sent' || task.status === 'working', ask: task.waiting }">
+                  <div class="head"><span>线程</span><span class="spacer"></span><span class="pill" :class="taskPill(stateOf(task))" x-text="taskStatusText(stateOf(task))"></span></div>
                   <div class="t" x-text="task.title"></div>
                   <template x-if="task.status === 'sent' || task.status === 'working'"><div class="track" aria-hidden="true"><span></span></div></template>
                   <div class="note" x-show="taskNote(task)" x-text="taskNote(task)"></div>
-                  <template x-if="task.status === 'needs_you' && (task.choices || []).length && !task.chosen">
+                  <template x-if="task.waiting">
                     <div class="acts">
-                      <template x-for="(choice, i) in task.choices" :key="i">
+                      <template x-for="(choice, i) in task.choices || []" :key="i">
                         <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(task, choice)" x-text="choice"></button>
                       </template>
+                      <button class="btn small text" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>
                     </div>
                   </template>
                   <div class="sub" x-show="task.chosen" x-text="'你选了：' + task.chosen"></div>
@@ -320,13 +321,13 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </div>
     </template>
     <div class="bar">
-      <button class="round" :class="panel && 'on'" type="button" @click="togglePanel()" :aria-expanded="Boolean(panel)" :aria-label="panel ? '收起' : '更多：图片、表情包、交接信'">
+      <button class="round" :class="panel && panelTab === 'tools' && 'on'" type="button" @click="togglePanel('tools')" :aria-expanded="Boolean(panel && panelTab === 'tools')" :aria-label="panel && panelTab === 'tools' ? '收起' : '更多：图片、交接信、换模型'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
       <template x-if="!recording">
         <div class="field">
           <textarea x-ref="input" rows="1" x-model="draft" @input="fit()" @keydown="keydown($event)" @focus="panel = ''" placeholder="说点什么…" aria-label="消息" maxlength="4000"></textarea>
-          <button class="icon-btn" type="button" @click="togglePanel('stickers')" aria-label="表情包">
+          <button class="icon-btn" :class="panel && panelTab === 'stickers' && 'on'" type="button" @click="togglePanel('stickers')" :aria-expanded="Boolean(panel && panelTab === 'stickers')" aria-label="表情包">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1.8 2 5.2 2 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>
           </button>
         </div>
@@ -343,11 +344,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </button>
     </div>
     <template x-if="panel">
-      <section class="panel" aria-label="更多">
-        <div class="tabs">
-          <button type="button" :aria-pressed="panelTab === 'tools'" @click="panelTab = 'tools'">功能</button>
-          <button type="button" :aria-pressed="panelTab === 'stickers'" @click="panelTab = 'stickers'; loadStickerList()">表情包</button>
-        </div>
+      <section class="panel" :aria-label="panelTab === 'stickers' ? '表情包' : '更多'">
         <template x-if="panelTab === 'tools'">
           <div class="tiles">
             <label class="tile"><span class="sq"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="M20 16l-5-5-8.5 8.5"/></svg></span>相册
@@ -402,18 +399,13 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </template>
       <div class="pills">
         <span class="pill" :class="memoryPill().cls"><span class="dot" x-show="memoryPill().cls === 'ok'"></span><span x-text="memoryPill().text"></span></span>
-        <span class="pill" x-text="shortName(currentModel())"></span>
+        <button class="pill" type="button" @click="openPicker()" :aria-label="'换模型，现在是 ' + shortName(currentModel())" x-text="shortName(currentModel())"></button>
         <span class="pill" x-show="voicePill()" x-text="voicePill()"></span>
       </div>
       <button class="btn small text" type="button" x-show="identity.avatar" @click="removeAvatar()">不用头像</button>
     </div>
-    <div class="quick">
-      <button type="button" @click="openPicker()"><span class="ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h12l-3-3"/><path d="M20 16H8l3 3"/></svg></span>换模型</button>
-      <button type="button" @click="handoff()"><span class="ring" style="color: var(--moon)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/></svg></span>写交接信</button>
-      <button type="button" @click="openSettings()"><span class="ring"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>改人设</button>
-    </div>
     <section class="card persona-card">
-      <div class="head"><h2>人设</h2><span class="spacer"></span><button class="btn small" type="button" @click="openSettings()">改</button></div>
+      <div class="head"><h2>人设</h2><span class="spacer"></span><button class="icon-btn" type="button" @click="openSettings()" aria-label="改人设"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
       <p x-text="persona.text || ('还没写，用的是默认的一句：' + persona.fallback)"></p>
       <span class="hint" x-text="persona.text ? persona.text.length + ' 字' + (persona.at ? ' · ' + fmt(persona.at) + ' 改过' : '') + ' · 下一句就生效' : '它是谁、怎么叫你、说话什么样，都写在这里'"></span>
     </section>
@@ -457,8 +449,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   <section class="page" x-show="authed && view === 'threads'">
     <p class="status-line" x-show="threads.loaded && !threads.on">后台帮忙关着。去 设置 → 后台帮忙 打开，它才会把活交给线程。</p>
     <template x-for="item in threadsIn('open')" :key="item.id">
-      <button class="trow" :class="{ working: item.status === 'sent' || item.status === 'working', ask: item.status === 'needs_you' }" type="button" @click="openThread(item.id)">
-        <span class="top-line"><span class="t" x-text="item.title"></span><span class="pill" :class="taskPill(item.status)" x-text="taskStatusText(item.status)"></span></span>
+      <button class="trow" :class="{ working: item.status === 'sent' || item.status === 'working', ask: item.waiting }" type="button" @click="openThread(item.id)">
+        <span class="top-line"><span class="t" x-text="item.title"></span><span class="pill" :class="taskPill(stateOf(item))" x-text="taskStatusText(stateOf(item))"></span></span>
         <template x-if="item.status === 'sent' || item.status === 'working'"><span class="track" aria-hidden="true"><span></span></span></template>
         <span class="sub"><span x-text="runsText(item.runs) + ' · ' + item.tasks + ' 单'"></span><span x-text="fmt(item.updatedAt)"></span></span>
       </button>
@@ -467,9 +459,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     <div class="list" x-show="threadsIn('done').length">
       <template x-for="item in threadsIn('done')" :key="item.id">
         <button class="li" type="button" @click="openThread(item.id)">
-          <span class="pill" :class="taskPill(item.status)" style="height: 8px; width: 8px; padding: 0; background: currentColor" aria-hidden="true"></span>
+          <span class="pill" :class="taskPill(stateOf(item))" style="height: 8px; width: 8px; padding: 0; background: currentColor" aria-hidden="true"></span>
           <span class="name" x-text="item.title"></span>
-          <span class="val" x-text="taskStatusText(item.status) + ' · ' + fmt(item.updatedAt)"></span>
+          <span class="val" x-text="taskStatusText(stateOf(item)) + ' · ' + fmt(item.updatedAt)"></span>
         </button>
       </template>
     </div>
@@ -480,7 +472,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <div class="tline" :class="'r-' + line.role">
         <div class="who-l">
           <span x-text="line.role === 'user' ? (line.direct ? '你说的' : '住户交代的') : line.role === 'result' ? '交回来的' : '线程'"></span>
-          <span class="pill" x-show="line.role === 'result'" :class="taskPill(line.status)" x-text="taskStatusText(line.status)"></span>
+          <span class="pill" x-show="line.role === 'result'" :class="taskPill(lineState(line))" x-text="taskStatusText(lineState(line))"></span>
         </div>
         <template x-for="(step, i) in line.steps" :key="i"><div class="step-l" x-text="step"></div></template>
         <div class="text" x-show="line.text" x-text="line.text"></div>
@@ -514,6 +506,18 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
       </template>
     </div>
+    <template x-if="threadWaiting()">
+      <div class="card ask-bar">
+        <p class="status-line">这一单在等你拍板。</p>
+        <div class="choices">
+          <template x-for="(choice, i) in threadWaiting().choices || []" :key="i">
+            <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(threadWaiting(), choice)" x-text="choice"></button>
+          </template>
+          <button class="btn small text" type="button" :disabled="Boolean(choosing)" @click="settle(threadWaiting())">不用了</button>
+        </div>
+        <p class="hint" x-text="thread.canSay ? '也可以直接在下面跟它说，说了就算答过了。' : '点「不用了」，它就不再挂着等你。'"></p>
+      </div>
+    </template>
     <div class="thread-say" x-show="thread.canSay">
       <textarea x-model="threadDraft" rows="2" placeholder="直接跟它说，不经过住户" aria-label="跟线程说"></textarea>
       <button class="round go" type="button" :disabled="threadBusy || !threadDraft.trim()" @click="sayToThread()" aria-label="发给它">
@@ -768,7 +772,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                 <div class="label"><span>最近的活</span><span class="spacer"></span><span class="pill" x-text="'24 小时内 ' + cloud.today + ' / ' + cloud.limit + ' 单'"></span></div>
                 <template x-for="task in cloud.tasks" :key="task.id">
                   <div class="mini-row">
-                    <div class="top-line"><span class="t" x-text="task.title"></span><span class="pill" :class="taskPill(task.status)" x-text="taskStatusText(task.status)"></span></div>
+                    <div class="top-line"><span class="t" x-text="task.title"></span><span class="pill" :class="taskPill(stateOf(task))" x-text="taskStatusText(stateOf(task))"></span></div>
                     <p class="hint" x-show="task.summary || task.progress" x-text="task.summary || task.progress"></p>
                     <div class="choices">
                       <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>

@@ -65,7 +65,7 @@ You need a Cloudflare account (the free plan is enough). For long-term memory, a
 4. **Fill in the settings on the web**: open `https://aelios-resident.<your-subdomain>.workers.dev/`, enter `WEB_KEY`, and tap **···** (settings) at the top right:
    - With Telegram: **Chat channels** (「聊天渠道」) → **Connect Telegram** (「接 Telegram」) → **bot token**: paste the token from step 1 and save. The resident checks it with Telegram and connects the bot to itself: the webhook, three commands, and the bot's bottom-left menu button that opens the web door. Then fill in the next step, **Who can talk to it on Telegram** (「谁能在 Telegram 上跟它说话」): your Telegram username, such as `@your_name`. Until this is filled in, it answers no one there. With both done, the Telegram card shows the bot's name and 「已连」 ("connected").
    - **Long-term memory** (「长期记忆」): your Aelios address and key. The key can be any one of `CHATBOX_API_KEY`, `IM_API_KEY` or `MEMORY_MCP_API_KEY` from your Aelios. Then, in the Aelios admin, create an identity for the resident and add the models you will use to that identity's main models. Put the identity's name under **More settings** (「更多设置」) → **Identity** (「身份」); left empty, the key's first identity is used.
-   - Back in the chat, tap the line under its name at the top to pick a model. Tap its avatar at the top left, then **Persona** (「改人设」), to paste in a persona and save it.
+   - Back in the chat, tap the line under its name at the top to pick a model. Tap its avatar at the top left, then the pen on the **Persona** (「人设」) card, to paste in a persona and save it.
 5. Say something on the web door, or send the bot a message.
 
 Set up before the bot token moved to the settings page, with `TG_BOT_TOKEN` and `TG_WEBHOOK_SECRET` in Cloudflare? That keeps working as it is, and `/tg/setup?secret=<TG_WEBHOOK_SECRET>` still connects it. A token saved on the settings page takes precedence over the one in Cloudflare.
@@ -76,7 +76,7 @@ Set up before the bot token moved to the settings page, with `TG_BOT_TOKEN` and 
 
 Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors.
 
-- **Saying something**: type, or tap **+** for pictures (up to 4 at a time, from the album or the camera), the sticker tab, a handoff letter or another model. Hold the microphone to record a voice message (up to a minute); it is heard like one on Telegram.
+- **Saying something**: type, or tap **+** for pictures (up to 4 at a time, from the album or the camera), a handoff letter or another model; the smiley in the box opens your stickers. Hold the microphone to record a voice message (up to a minute); it is heard like one on Telegram.
 - **Long-press** a message (right-click with a mouse) to quote it in your reply, copy it, save it to Aelios' **Precious** (「珍贵」), or have it read aloud (「念给我听」) once a voice provider is set.
 - **What it did**: its thinking and the tools it used are one dashed line under its reply, such as 「想了一下 · 忙活了 2 回」. Tap it for each step, and a step for its full arguments and result.
 - **Cards**: pages it read, alarms it set (which you can move or delete there) and threads it started show under its reply. A thread that needs you to decide offers its answers as buttons.
@@ -144,7 +144,7 @@ Tap the line under its name at the top of the web door (it shows the model in us
 
 ### Persona
 
-Tap its avatar at the top left of the web door, then **Persona** (「改人设」). After you save, the next reply follows the new persona.
+Tap its avatar at the top left of the web door, then the pen on the **Persona** (「人设」) card. After you save, the next reply follows the new persona.
 
 - The persona is stored in the Durable Object, not in the code, so a public repository never carries it.
 - The last 10 versions are kept and can be restored with one click.

@@ -253,6 +253,10 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       const chosen = await agent.webChoose(String(body.id ?? ""), String(body.text ?? ""));
       return Response.json(chosen, { status: "error" in chosen ? 400 : 200 });
     }
+    case "POST /web/task/settle": {
+      const settled = await agent.webSettle(String(body.id ?? ""));
+      return Response.json(settled, { status: "error" in settled ? 400 : 200 });
+    }
     case "GET /web/push":
       return Response.json(await agent.webPush());
     case "POST /web/push/subscribe": {

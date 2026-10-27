@@ -116,7 +116,6 @@ import {
   TASKS_PER_DAY,
   TASKS_PER_TURN,
   TaskStore,
-  cardOf,
   fire,
   localBrief,
   parseProgress,
@@ -1474,7 +1473,8 @@ export class Resident extends Think<Env> {
       if (name === "cloud_task" && typeof id === "string") ids.add(id);
     }
     if (!ids.size) return undefined;
-    const cards = [...ids].map((id) => this.cloudTasks().get(id)).filter((task): task is Task => Boolean(task)).map(cardOf);
+    const store = this.cloudTasks();
+    const cards = [...ids].map((id) => store.get(id)).filter((task): task is Task => Boolean(task)).map((task) => store.card(task));
     return cards.length ? cards : undefined;
   }
 
@@ -1500,7 +1500,7 @@ export class Resident extends Think<Env> {
       prompt: own ? routinePrompt(own) : "",
       today: this.cloudTasks().sentToday(),
       limit: TASKS_PER_DAY,
-      tasks: this.cloudTasks().recent(10).map(cardOf)
+      tasks: this.cloudTasks().recent(10).map((task) => this.cloudTasks().card(task))
     };
   }
 
@@ -1575,7 +1575,7 @@ export class Resident extends Think<Env> {
       title: tasks[0].title,
       runs: latest.runs,
       status: latest.status,
-      tasks: tasks.map(cardOf),
+      tasks: tasks.map((task) => this.cloudTasks().card(task)),
       lines,
       files,
       canSay: this.cloudTasksOn() && latest.runs === "local"
@@ -3416,6 +3416,11 @@ export class Resident extends Think<Env> {
     const sent = await this.webSay({ text: `关于「${task.title}」：${choice}` });
     return "error" in sent ? sent : { ok: true };
   }
+  /** She says a task that waits for her needs nothing more: its card stops asking. The resident is not told. */
+  webSettle(taskId: string): { ok: true } | { error: string } {
+    return this.cloudTasks().settle(taskId) ? { ok: true } : { error: "这张卡已经不等你了" };
+  }
+
 
   // ---- web push to the devices that turned it on (web-push.ts) ----
 

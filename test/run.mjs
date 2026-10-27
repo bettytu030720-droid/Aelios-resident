@@ -2588,5 +2588,30 @@ if (phase === "web") {
     assert.equal(all.findLast((line) => line.role === "user").text, "关于「修 README 的错字」：长的");
     assert.equal(all.flatMap((line) => line.tasks ?? []).find((task) => task.id === id).chosen, "长的");
     assert.equal((await json("/web/task/choose", { id, text: "短的" })).status, 400, "once");
+    assert.equal(all.flatMap((line) => line.tasks ?? []).find((task) => task.id === id).waiting, false, "a pick deals with it");
+  });
+
+  await step("one that waits for her with nothing to pick is put aside with 不用了, and stops asking everywhere", async () => {
+    const fire = (await log()).filter((e) => e.kind === "routine.fire").at(-1);
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    const asked = await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code },
+      body: JSON.stringify({ status: "needs_you", summary: "要你看一下 PR。" }) });
+    assert.equal(asked.status, 200);
+    const waiting = async () => ({
+      card: (await lines()).flatMap((line) => line.tasks ?? []).find((task) => task.id === id)?.waiting,
+      recent: (await json("/web/tasks")).data.tasks.find((task) => task.id === id)?.waiting,
+      thread: (await json("/web/threads")).data.threads.find((thread) => thread.id === id)?.waiting,
+      page: (await json(`/web/thread?id=${id}`)).data.tasks.find((task) => task.id === id)?.waiting
+    });
+    const start = Date.now();
+    while (!(await waiting()).card && Date.now() - start < 15000) await sleep(300);
+    assert.deepEqual(await waiting(), { card: true, recent: true, thread: true, page: true });
+    assert.equal((await json("/web/task/settle", { id: "t_0000000000" })).status, 400);
+    const before = (await lines()).length;
+    assert.deepEqual((await json("/web/task/settle", { id })).data, { ok: true });
+    assert.deepEqual(await waiting(), { card: false, recent: false, thread: false, page: false });
+    assert.equal((await lines()).length, before, "the resident is not told");
+    assert.match((await json("/web/task/settle", { id })).data.error, /不等你了/, "once");
+    assert.equal((await web("/web/task/settle", "wrong", { id })).status, 401);
   });
 }
