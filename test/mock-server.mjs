@@ -404,7 +404,12 @@ const server = http.createServer(async (req, res) => {
     return sse([[null, chunk({ role: "assistant", content: text }, null)], [null, chunk({}, "stop", { usage })], [null, "[DONE]"]], headers);
   };
   const messages = (text, headers = {}) => {
-    const usage = { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    // With a cache marker, part of the prompt is read from the cache and part written, split by the marker's TTL.
+    const ttl = JSON.stringify(json).match(/"cache_control":\{"type":"ephemeral"(?:,"ttl":"(5m|1h)")?\}/)?.[1] ?? (cached() === "有" ? "5m" : null);
+    const usage = ttl
+      ? { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 300,
+          cache_creation: { ephemeral_5m_input_tokens: ttl === "5m" ? 300 : 0, ephemeral_1h_input_tokens: ttl === "1h" ? 300 : 0 } }
+      : { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
     if (!json.stream) {
       res.writeHead(200, { "content-type": "application/json", ...headers });
       return res.end(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model: json.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage }));

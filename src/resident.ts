@@ -53,6 +53,7 @@ import {
   MAX_ALARMS,
   SET_ALARM_DESCRIPTION,
   alarmNote,
+  localOf,
   nextRing,
   parseRule,
   planAlarm,
@@ -172,6 +173,7 @@ import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
+import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
 import { validateUrlWithDns } from "./web/validate-url";
 import {
@@ -376,6 +378,9 @@ export class Resident extends Think<Env> {
   // so a line on a page ("connect to …") cannot add a server they did not ask for.
   #theirTurns = new Set<string>();
   #readOutside = new Set<string>();
+  /** What each running turn is, for its rows in the usage timeline. */
+  #usageLabels = new Map<string, UsageLabel>();
+  #usageStore: UsageStore | null = null;
 
   // Lazily created once per object lifetime; mark ready only after the DDL succeeds.
   private turnTableReady = false;
@@ -1557,12 +1562,16 @@ export class Resident extends Think<Env> {
    * runs on Cloudflare here; any other goes through Aelios when it is connected (marked auxiliary, so nothing is
    * recorded), else through AI Gateway. Null when it is "off" or cannot be used.
    */
-  private compressor(): Compressor | null {
+  private compressor(kind: "compress" | "learn" = "compress"): Compressor | null {
     const name = this.cfg.WEB_FETCH_MODEL?.trim() || DEFAULT_COMPRESS_MODEL;
     const viaAelios = Boolean(aeliosConfig(this.cfg)) && !name.startsWith("@cf/");
     if (name.toLowerCase() === "off" || (!this.env.AI && !viaAelios && !isCustom(name))) return null;
     try {
-      return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true, thinking: false }) : this.modelFor(name)) };
+      return {
+        name,
+        model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true, thinking: false }) : this.modelFor(name)),
+        onStep: (step) => this.recordUsage(step, { kind, via: "" })
+      };
     } catch (error) {
       console.error("web_fetch: WEB_FETCH_MODEL cannot be used", { name, error: String(error) });
       return null;
@@ -1636,6 +1645,19 @@ export class Resident extends Think<Env> {
       ? content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") : "";
     this.#letterPromptId = letter && askedForThisTurn.startsWith(LETTER_PREFIX) ? letter.promptId : null;
     this.#letterReason = letter?.reason ?? "handoff";
+    if (ctx.requestId) {
+      if (this.#usageLabels.size > 20) this.#usageLabels.clear();
+      this.#usageLabels.set(
+        ctx.requestId,
+        usageLabel({
+          asked: askedForThisTurn,
+          letter: Boolean(this.#letterPromptId),
+          task: taskOfNote(askedForThisTurn) !== null,
+          messenger: ctx.messenger?.messengerId,
+          proactive: ctx.trigger === "scheduled" || ctx.trigger === "submission"
+        })
+      );
+    }
     // A failed turn can finish before an assistant row exists, so no response hook is guaranteed.
     this.#drafts.clear();
     this.#spoke = null;
@@ -1711,9 +1733,13 @@ export class Resident extends Think<Env> {
     return historyForWindow(messages, cutoff);
   }
 
-  /** Token use of the latest model step, so /status and the web page can show whether the prompt cache is hit. */
+  /**
+   * Token use of each model step: the latest one for /status and the web page, and a row in the usage timeline.
+   */
   override async onStepFinish(step: StepContext): Promise<void> {
     this.setWindow("used_at", Date.now());
+    const requestId = this.activeTurn?.requestId;
+    this.recordUsage(step, (requestId && this.#usageLabels.get(requestId)) || { kind: "chat", via: "" });
     const usage = step.usage;
     if (!usage?.inputTokens) return;
     await this.ctx.storage.put<LastUsage>("last_usage", {
@@ -1723,6 +1749,35 @@ export class Resident extends Think<Env> {
       cacheWrite: usage.inputTokenDetails?.cacheWriteTokens ?? 0,
       output: usage.outputTokens ?? 0
     });
+  }
+
+  private usageStore(): UsageStore {
+    this.#usageStore ??= new UsageStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#usageStore;
+  }
+
+  /** A row in the usage timeline for one call to a model. Never fails the call it records. */
+  private recordUsage(step: StepLike, label: UsageLabel): void {
+    try {
+      const entry = entryOf(step, label, Date.now(), this.cfg.CACHE_TTL?.trim() === "5m" ? "5m" : "1h");
+      if (entry) this.usageStore().add(entry);
+    } catch (error) {
+      console.error("usage: call not recorded", { error: String(error) });
+    }
+  }
+
+  /** The usage timeline for the web page: today, 7 and 30 days in her time zone, and the calls, newest first. */
+  webUsage(before: number | null): {
+    totals: { today: UsageTotals; week: UsageTotals; month: UsageTotals } | null;
+    rows: UsageRow[];
+    more: boolean;
+    keepDays: number;
+  } {
+    const store = this.usageStore();
+    const now = Date.now();
+    const spans = usageSpans(now, localOf(now, this.tz));
+    const totals = before === null ? { today: store.totals(spans.today), week: store.totals(spans.week), month: store.totals(spans.month) } : null;
+    return { totals, ...store.rows(before), keepDays: USAGE_KEEP_DAYS };
   }
 
   private async lastUsage(): Promise<LastUsage | null> {
@@ -2332,6 +2387,7 @@ export class Resident extends Think<Env> {
       this.#turnThread.delete(result.requestId);
       this.#stickerSent.delete(result.requestId);
       this.#turnTasks.delete(result.requestId);
+      this.#usageLabels.delete(result.requestId);
     }
     const before = this.userMessageBefore(result.message.id);
     const letter = this.letterJob();
@@ -2380,11 +2436,12 @@ export class Resident extends Think<Env> {
   /** What lasts from her turn's web searches goes into Aelios as world knowledge (web/learn.ts), after the reply. */
   private learn(asked: string, searches: Searched[], reply: string): void {
     const memory = aeliosConfig(this.cfg);
-    const model = this.cfg.WEB_LEARN?.trim().toLowerCase() === "off" || !memory ? null : this.compressor()?.model;
+    const compressor = this.cfg.WEB_LEARN?.trim().toLowerCase() === "off" || !memory ? null : this.compressor("learn");
+    const model = compressor?.model;
     if (!memory || !model) return;
     const day = new Intl.DateTimeFormat("en-CA", { timeZone: this.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     this.ctx.waitUntil(
-      learnFromSearch({ model, memory, asked, searches, reply, day })
+      learnFromSearch({ model, memory, asked, searches, reply, day, onStep: compressor?.onStep })
         .then((saved) => console.log("learn: facts saved from web search", { saved }))
         .catch((error) => console.error("learn: failed", { error: String(error) }))
     );
@@ -2701,7 +2758,8 @@ export class Resident extends Think<Env> {
           prompt: "Reply with one word: ok",
           maxOutputTokens: 64,
           providerOptions: promptCache(this.cfg),
-          abortSignal: AbortSignal.timeout(30_000)
+          abortSignal: AbortSignal.timeout(30_000),
+          onStepEnd: (step) => this.recordUsage(step, { kind: "trial", via: "" })
         });
         if (result.response.headers?.[MEMORY_HEADER] === "off") {
           return { error: "这个模型能调通，但在 Aelios 里不是这个身份的主模型：从它那儿过不会想起旧事，也不会记下来。先在 Aelios 后台把它加进主模型，再换。" };

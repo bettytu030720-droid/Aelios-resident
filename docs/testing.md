@@ -17,7 +17,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 
 | 阶段 | 测什么 |
 | --- | --- |
-| `main` | 主流程（默认），含服务商拒收一张图后把它拿掉、告诉她、下一轮照常回 |
+| `main` | 主流程（默认），含服务商拒收一张图后把它拿掉、告诉她、下一轮照常回，和时间流（`/web/usage`）每次调用一行、缓存读写分开、有价目的算钱、不带聊天原话 |
 | `checkin` | 主动找你（起 Worker 时带 `--var CHECKIN_SCHEDULE:"every 1 minute"`） |
 | `idle` | token 门槛和闲置时间同时满足才自动写信（带 `--var LETTER_IDLE_MINUTES:0.05`） |
 | `crash-1`、`crash-2` | 回到一半进程被杀 |
@@ -60,6 +60,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `wecom-relay.mjs` | 转发机 `relay/wecom/wecom-relay.py`（要 python3）：没钥匙一律 403、原样转发和不转的、日志不带 token；本机 ffmpeg 能做的转码（AMR、MP3、GIF、PNG）也试一遍 |
 | `cloud-tasks.mjs` | 云端 Claude Code 的单子、回报和记录 |
 | `site-keys.mjs` | 带钥匙的网站：网站和钥匙怎么认、哪个地址带哪把 |
+| `usage.mjs` | 时间流：模型名怎么对上价目表（点和横杠、前缀、日期、旧写法）、一次调用多少钱（1 小时缓存写、Haiku 5.5 长提示另价）、每一轮记成什么、服务商报的用量怎么拆、Node SQLite 上的总计、分页和 90 天清理 |
 | `web-ui.mjs` | 网页门和设置页，含新门槛字段、旧字段移除、双条件和固定保留量的说明，以及独立写信/送达状态、缺省容错、文本绑定、读取和重试接口 |
 | `cache-window.mjs` | 缓存窗口什么时候换、写信那一轮的缓存标记、开机包的文字 |
 | `cache-history.mjs` | 真实 SDK 年龄裁剪问题复现、固定历史视图、工具/媒体只读缩减、SQLite 窗口恢复与校验 |

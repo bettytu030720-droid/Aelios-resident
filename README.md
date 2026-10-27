@@ -23,6 +23,7 @@ It is built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
 - **Stickers**: import a Telegram sticker pack or a zip and it sends one now and then. It can also draw its own little pixel stickers.
 - **Other MCP servers**: add one by address on the settings page, or ask it to connect one in the chat.
 - **Hands work to cloud Claude Code**: with a paid Claude plan it can pass coding and file work to cloud Claude Code on claude.ai, using your plan's allowance, and tell you when it is done. Off by default.
+- **Usage timeline**: a button at the top right of the web door shows how many tokens each call to a model used, how much of it was read from the prompt cache, and roughly what it cost at Anthropic's list prices: today, 7 days and 30 days on top, every call below. Only numbers are kept, never the chat.
 
 ## How it fits together
 
@@ -154,6 +155,16 @@ Click the gear at the top right of the web door. It opens on a list of sections:
 - The tag beside each item: 「已存」 means saved here, 「Cloudflare：<name>」 means it comes from Cloudflare, 「要填」 means it still needs a value.
 - Keys can be entered but never read back.
 - The button that locks the web door is at the bottom of the page.
+
+### The usage timeline
+
+Click the pulse button at the top right of the web door, beside the pencil (「时间流」).
+
+- On top, three totals: today, the last 7 days and the last 30 days, counted in your time zone (`TIME_ZONE`). Each shows the cost, the number of calls, the cache hit rate (the share of input read from the cache) and the tokens in and out.
+- Below them, every call to a model, newest first: when; what it was for (a chat turn and the door it came in on, the handoff letter, a check-in, a heartbeat, an alarm, a cloud task's report, shrinking a web page, saving what a search found, the trial call when you pick a model); the model; the tokens (new input, cache read, cache write and whether it went to the 1-hour cache, output and how much of it was thinking); the tools it called; and the cost. A turn that calls tools makes one row for each call to the model.
+- Only numbers and tool names are kept, never a word of the chat. Rows older than 90 days are deleted.
+- The cost comes from Anthropic's published prices, built into the code and matched on the model's name, whatever prefix Aelios or a relay puts on it. It is what the call would cost on Anthropic's own API: a plan's included credit, a relay's own rates, a cloud platform's prices or a discount can differ. A model that is not Claude has no price: its tokens are shown, and the totals say how many calls were left out of the cost. A price added in a later version also prices older rows.
+- The tokens are what the provider reported. A provider or relay that does not report cache writes shows none; one on the OpenAI format reports cache reads only.
 
 ## Features in detail
 
@@ -423,12 +434,12 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 - **It runs on the Workers free plan.** Going over the free allowance gives errors, not charges. Durable Objects get 100,000 requests a day and Workers AI 10,000 neurons a day, reset at 00:00 UTC. An idle Durable Object sleeps and is not billed for duration. An open web door refreshes every 5 seconds, about 720 requests an hour, and stops when you close the page.
 - **Workers Paid** ($5/month): usage is billed only beyond the included amount, which this rarely reaches.
 - **The default model** `glm-4.7-flash` works on the free plan. 10,000 neurons are roughly 80 to 200 turns a day (an estimate, depending on how long the conversation is). Each check-in counts as a turn.
-- **Claude**: with Aelios, it uses the key configured in Aelios. Without Aelios it goes through AI Gateway and uses the Gateway's prepaid credit, or your own Anthropic key if you stored one. Cached input is charged at the cache price (reads are 1/10 of the input price); writing a 1-hour cache costs twice the input price, which is what lets a pause, or a letter, still read from the cache. The whole cache is rewritten only after a silence longer than the cache lifetime, on the first message after a letter, and on the first message after a deploy or a change on the settings page (persona, model, tools turned on or off and so on).
+- **Claude**: with Aelios, it uses the key configured in Aelios. Without Aelios it goes through AI Gateway and uses the Gateway's prepaid credit, or your own Anthropic key if you stored one. Cached input is charged at the cache price (reads are a tenth of the input price or less, a twentieth on Opus 5.5 and Sonnet 5.5); writing a 1-hour cache costs twice the input price, which is what lets a pause, or a letter, still read from the cache. The whole cache is rewritten only after a silence longer than the cache lifetime, on the first message after a letter, and on the first message after a deploy or a change on the settings page (persona, model, tools turned on or off and so on). The usage timeline on the web door shows what each call read from the cache, wrote to it and cost.
 - **Search**: your own keys are charged at those services' prices. Without them, Cloudflare's Web Search is used; its default, Ceramic.ai, costs $0.25 per 1000 searches (official price checked on Oct 14).
 - **Reading pages**: ordinary fetching is free. Pages that need the browser: Workers Paid includes 10 hours a month, then $0.09 an hour (the free plan gets 10 minutes a day). Condensing a long page with the default Qwen3 30B costs about a tenth of a cent.
 - **Voice messages**: hearing uses Whisper at about 46.63 neurons a minute, so the free plan covers a little over 200 minutes a day (official price checked on Oct 22). Speaking is charged at the provider's own price, to your key.
 - **Stickers and other MCP servers**: each adds some description to every turn; the settings page shows roughly how many tokens each pack and each server costs.
-- **Heartbeats and alarms**: each is one turn of its own. A heartbeat asks while the cache is still warm, so it costs about as much as one of your messages. An alarm that rings after you have been quiet for over an hour finds the cache cold and rewrites the whole conversation (a 1-hour cache write costs twice the input price, a read 1/10), which is about as much input as 20-odd ordinary messages. That is why alarms are off by default and capped when on.
+- **Heartbeats and alarms**: each is one turn of its own. A heartbeat asks while the cache is still warm, so it costs about as much as one of your messages. An alarm that rings after you have been quiet for over an hour finds the cache cold and rewrites the whole conversation (a 1-hour cache write costs twice the input price, a read a tenth or less), which is about as much input as 20-odd ordinary messages. That is why alarms are off by default and capped when on.
 - **Cloud Claude Code**: each job is a full cloud session that uses your plan's allowance, like one you open yourself; on the resident's side it is only one more request and one reply.
 
 **Note the order in which AI Gateway picks a key**: a key in the request (entered on the settings page) is used first; otherwise the Gateway's key with the alias `default`; with neither, the request goes to Cloudflare's unified billing and is paid from the Gateway's prepaid credit (if the account has credit and that provider is supported). To prevent that, turn on Require provider credentials in the Gateway's settings.
