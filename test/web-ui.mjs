@@ -4,9 +4,11 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = readFileSync('public/app.js', 'utf8');
+const markdown = readFileSync('public/markdown.js', 'utf8');
 assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
 const resized = [];
 const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {}, ResizeObserver: class { constructor(fn) { resized.push(fn); } observe() {} } });
+vm.runInContext(markdown, context);
 vm.runInContext(code, context);
 // What Alpine would add to the page's state.
 vm.runInContext('function testPage() { var p = resident(); p.$nextTick = function (fn) { fn(); }; p.$refs = {}; return p; }', context);
@@ -14,7 +16,8 @@ const page = vm.runInContext('testPage()', context);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 // Nothing the model or anyone else wrote is put into the page as HTML: every message, card and tool call is bound with x-text.
 assert.ok(!html.includes('x-html'), 'the page never binds HTML');
-assert.ok(!code.includes('innerHTML'), 'the script never writes HTML');
+assert.ok(!code.includes('innerHTML') && !markdown.includes('innerHTML') && !markdown.includes('insertAdjacentHTML') && !markdown.includes('outerHTML'), 'the scripts never write HTML');
+assert.ok(html.indexOf('<script src="/markdown.js"></script>') < html.indexOf('<script src="/app.js"></script>') && html.indexOf('<script src="/app.js"></script>') < html.indexOf('alpine-3.14.9.min.js'), 'x-markdown is there before Alpine starts');
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
   { type: 'reasoning', text: '<img src=x onerror=unsafe()>' },
   { type: 'tool', id: 'one', name: 'web_fetch', input: '{"url":"https://example.com"}', output: '# Example Domain\n</pre><script>unsafe()</script>', state: 'output-available' },
@@ -33,7 +36,7 @@ assert.equal(page.openBusy[line.id], false);
 assert.deepEqual(copy(page.bubblesOf(line)), [{ text: '答复<script>unsafe</script>', first: true, last: true }]);
 assert.equal(page.bubblesOf({ ...line, text: '一\n\n二' }).length, 2, 'a blank line starts a new bubble, as on Telegram');
 const markup = html.slice(html.indexOf('<template x-for="row in rows()"'), html.indexOf('<footer class="compose"'));
-for (const binding of ['x-text="b.text"', 'x-text="busyOf(row.line).label"', 'x-text="item.what"', 'x-text="item.detail"', 'x-text="part.text"', 'x-text="p.title"', 'x-text="task.title"', 'x-text="taskNote(task)"', 'x-text="row.line.text"']) {
+for (const binding of ['x-markdown="b.text"', 'x-text="busyOf(row.line).label"', 'x-text="item.what"', 'x-text="item.detail"', 'x-text="part.text"', 'x-text="p.title"', 'x-text="task.title"', 'x-text="taskPreview(task)"', 'x-text="row.line.text"']) {
   assert.ok(markup.includes(binding), binding + ' is bound as text');
 }
 console.log('PASS thoughts and tools fold into one line under the reply, counted per call, kept whole and bound as text');
@@ -204,10 +207,14 @@ assert.equal(page.taskStatusText('done'), '做完了');
 assert.equal(page.taskNote(task), task.summary, 'the title and summary are bound as text, never as HTML');
 assert.equal(page.taskNote({ ...task, status: 'working', progress: '改到一半', summary: '' }), '改到一半');
 assert.equal(page.taskNote({ ...task, status: 'sent', progress: '', summary: '' }), '派出去了，等它开工');
-const taskCard = markup.slice(markup.indexOf('<template x-for="task in row.line.tasks || []"'));
-assert.ok(markup.indexOf('<template x-for="task in row.line.tasks || []"') > markup.indexOf("row.line.role === 'assistant'") && markup.indexOf('<template x-for="task in row.line.tasks || []"') < markup.indexOf('<!-- her message -->'), "only under the resident's own lines");
+const taskCard = markup.slice(markup.indexOf('<template x-for="task in row.cards"'));
+assert.ok(markup.indexOf('<template x-for="task in row.cards"') > markup.indexOf("row.line.role === 'assistant'") && markup.indexOf('<template x-for="task in row.cards"') < markup.indexOf('<!-- her message -->'), "only under the resident's own lines");
 assert.ok(taskCard.includes('@click="openThread(task.thread)">打开线程</button>'), 'a card opens its thread');
-assert.ok(taskCard.includes('<template x-for="link in taskLinks(task)"') && taskCard.includes('rel="noopener noreferrer"'));
+// Every card has the same way in, whether or not the thread ran in a session elsewhere: the thread, which has the
+// session and the links.
+const cardActs = taskCard.slice(taskCard.indexOf('<div class="acts">\n                    <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>'));
+assert.ok(cardActs.length > 0);
+assert.ok(!cardActs.slice(0, cardActs.indexOf('</div>')).includes('<a '), 'no link on the card itself');
 // A thread that needs her: its choices are buttons, and the one she picks is said back.
 assert.ok(taskCard.includes('@click="choose(task, choice)" x-text="choice"'));
 assert.ok(taskCard.includes("x-text=\"'你选了：' + task.chosen\""));
@@ -302,7 +309,7 @@ assert.equal(page.fileView.kind, 'html');
 assert.equal(page.fileView.text, files['index.html']);
 assert.equal(fetched[0], '/web/thread/file?id=t_0123456789&path=index.html');
 await page.viewFile({ path: 'notes.md', size: 6 });
-assert.equal(page.fileView.kind, 'text');
+assert.equal(page.fileView.kind, 'markdown');
 await page.viewFile({ path: 'logo.png', size: 4 });
 assert.equal(page.fileView.kind, 'image');
 assert.match(page.fileView.url, /^blob:/);
@@ -965,14 +972,22 @@ assert.equal(aside.lines[0].tasks[0].waiting, true, 'a put-aside that did not ge
 aside.threads = { loaded: true, on: true, threads: [{ id: 'a', status: 'needs_you', waiting: false }, { id: 'b', status: 'needs_you', waiting: true }, { id: 'c', status: 'working', waiting: false }] };
 assert.deepEqual(copy(aside.threadsIn('open').map((thread) => thread.id)), ['b', 'c'], 'a thread put aside is listed with the finished ones');
 aside.thread = { ...aside.thread, loaded: true, runs: 'external', status: 'needs_you', tasks: [{ ...waitingCard(), waiting: false }] };
-assert.equal(aside.threadWaiting(), null);
+const report = { id: 'result_t_0123456789', role: 'result', task: 't_0123456789', status: 'needs_you' };
+assert.equal(aside.waitingFor(report), null);
 assert.match(aside.threadSub(), /处理过了$/);
 aside.thread.tasks = [waitingCard()];
-assert.equal(aside.threadWaiting().id, 't_0123456789');
-assert.equal(aside.lineState({ task: 't_0123456789', status: 'needs_you' }), 'needs_you');
-const threadPage = html.slice(html.indexOf('<template x-if="threadWaiting()">'), html.indexOf('<div class="thread-say"'));
-assert.ok(threadPage.includes('@click="settle(threadWaiting())">不用了</button>') && threadPage.includes('choose(threadWaiting(), choice)'));
-assert.ok(markup.includes('@click="settle(task)">不用了</button>'), 'and on the card in the chat');
+assert.equal(aside.waitingFor(report).id, 't_0123456789', 'the report of the task that waits');
+assert.equal(aside.waitingFor({ ...report, role: 'user', id: 'task_t_0123456789' }), null, 'not what was asked');
+assert.equal(aside.lineState(report), 'needs_you');
+// 不用了 sits at the end of the row of buttons it already has (打开会话 on the thread page, 打开线程 in the chat),
+// with nothing written to explain it.
+const reportRow = html.slice(html.indexOf('<div class="links" x-show='), html.indexOf('<div class="card" x-ref="fileView"'));
+assert.ok(reportRow.indexOf('>打开会话</a>') < reportRow.indexOf('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>'));
+assert.ok(reportRow.includes('choose(waitingFor(line), choice)'));
+assert.ok(!html.includes('ask-bar') && !html.includes('这一单在等你拍板') && !html.includes('它就不再挂着等你'));
+const cardRow = markup.slice(markup.indexOf('>打开线程</button>'));
+assert.ok(cardRow.includes('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>'), 'and at the end of the card in the chat');
+assert.match(readFileSync('public/app.css', 'utf8'), /\.btn\.end \{ margin-left: auto; \}/, 'at the right end, also on a wrapped line');
 console.log('PASS 不用了 puts aside a card that waits for her, on every card of it, in the thread list and on its page');
 
 // Its page: no row of shortcuts (they are in the chat), a pen for the persona, the model's pill opens the picker,
@@ -983,3 +998,89 @@ assert.ok(profile.includes('aria-label="改人设"') && !profile.includes('>改<
 assert.ok(profile.includes('<button class="pill" type="button" @click="openPicker()"'));
 assert.match(readFileSync('public/app.css', 'utf8'), /\.page > \* \{ flex-shrink: 0; \}/);
 console.log('PASS its page: no shortcut row, a pen for the persona, the model pill opens the picker, and it scrolls');
+
+
+// Markdown: parsed into plain nodes, drawn with createElement and textContent only; nothing is read as HTML, and a
+// link opens only an http(s) address.
+const md = vm.runInContext('parseMarkdown', context);
+const mdReport = '报告已写好。\n\n1. **Web Push 通道**：走 FCM。\n2. **替代方案**：\n   - **ntfy**：要自己有服务器。\n   - *Gotify*：同样要自建。';
+assert.deepEqual(copy(md(mdReport)), [
+  { t: 'p', c: [{ t: 'text', v: '报告已写好。' }] },
+  { t: 'ol', start: 1, items: [
+    [{ t: 'p', c: [{ t: 'strong', c: [{ t: 'text', v: 'Web Push 通道' }] }, { t: 'text', v: '：走 FCM。' }] }],
+    [{ t: 'p', c: [{ t: 'strong', c: [{ t: 'text', v: '替代方案' }] }, { t: 'text', v: '：' }] },
+      { t: 'ul', items: [
+        [{ t: 'p', c: [{ t: 'strong', c: [{ t: 'text', v: 'ntfy' }] }, { t: 'text', v: '：要自己有服务器。' }] }],
+        [{ t: 'p', c: [{ t: 'em', c: [{ t: 'text', v: 'Gotify' }] }, { t: 'text', v: '：同样要自建。' }] }]
+      ] }]
+  ] }
+]);
+const table = md('| 浏览器 | 推送 |\n|---|:-:|\n| Chrome | 走 **FCM** |\n| 小米 | 不支持 |')[0];
+assert.equal(table.t, 'table');
+assert.deepEqual(copy(table.head.map((cell) => cell[0].v)), ['浏览器', '推送']);
+assert.equal(table.rows.length, 2);
+assert.equal(table.rows[0][1][1].t, 'strong');
+assert.deepEqual(copy(md('```js\nconst a = 1;\n\n<b>x</b>\n```')), [{ t: 'pre', v: 'const a = 1;\n\n<b>x</b>' }], 'code keeps its blank lines and its brackets, as text');
+assert.deepEqual(copy(md('# 大标题\n### 小标题\n---\n> 引一句\n~~划掉~~ `code`').map((block) => block.t)), ['h3', 'h4', 'hr', 'blockquote', 'p']);
+assert.deepEqual(copy(md('第一行\n第二行')[0].c), [{ t: 'text', v: '第一行' }, { t: 'br' }, { t: 'text', v: '第二行' }], 'a line break stays one');
+const unsafe = md('<script>alert(1)</script> <img src=x onerror=alert(1)> [点我](javascript:alert(1)) [好的](https://a.example/p?q=1) 看 https://b.example/x）。 snake_case_name')[0].c;
+assert.equal(unsafe[0].t, 'text');
+assert.ok(unsafe[0].v.startsWith('<script>alert(1)</script> <img src=x onerror=alert(1)> [点我](javascript:alert(1))'), 'HTML and a javascript: link stay words');
+assert.deepEqual(copy(unsafe.filter((node) => node.t === 'a').map((node) => node.href)), ['https://a.example/p?q=1', 'https://b.example/x'], 'an address ends before the punctuation after it');
+assert.ok(!unsafe.some((node) => node.t === 'em'), 'snake_case is not italics');
+assert.equal(vm.runInContext('markdownPlain', context)('1. **Web Push**：走 [FCM](https://x.example)。\n2. 第二'), 'Web Push：走 FCM。 第二');
+// Drawn into a stand-in document: only the elements it knows, words as text nodes, links only to http(s).
+const made = [];
+const fakeDoc = {
+  createElement(tag) {
+    const el = { tag, attrs: {}, children: [], className: '', ownerDocument: fakeDoc,
+      appendChild(child) { this.children.push(child); return child; },
+      removeChild(child) { this.children.splice(this.children.indexOf(child), 1); },
+      get firstChild() { return this.children[0] || null; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      set textContent(value) { this.children = [{ text: String(value) }]; } };
+    made.push(tag);
+    return el;
+  },
+  createTextNode(text) { return { text }; }
+};
+const target = fakeDoc.createElement('div');
+target.appendChild({ text: 'old' });
+made.length = 0;
+vm.runInContext('renderMarkdown', context)(target, mdReport + '\n\n[坏的](javascript:alert(1)) [好的](https://a.example) <script>x</script>\n\n| a | b |\n|---|---|\n| 1 | 2 |');
+assert.ok(made.every((tag) => ['p', 'strong', 'em', 'ol', 'ul', 'li', 'a', 'div', 'table', 'thead', 'tbody', 'tr', 'th', 'td'].includes(tag)), made.join(','));
+const links = [];
+const walk = (el) => { if (el.tag === 'a') links.push(el.attrs); (el.children || []).forEach(walk); };
+walk(target);
+assert.deepEqual(links, [{ href: 'https://a.example', target: '_blank', rel: 'noopener noreferrer' }]);
+assert.ok(!JSON.stringify(target).includes('"old"'), 'what was there before is replaced');
+assert.ok(JSON.stringify(target).includes('<script>x</script>'), 'kept as words in a text node');
+assert.ok(html.includes('x-markdown="b.text"') && html.includes('x-markdown="line.text"') && html.includes('x-markdown="fileView.text"'), 'its replies, a thread, and a Markdown file');
+assert.ok(!html.includes('x-markdown="row.line.text"'), 'her own words are left as she wrote them');
+console.log('PASS Markdown is drawn from a tree of nodes with createElement and textContent: HTML stays words, links only to http(s)');
+
+// A reply with a code block is not split into bubbles at the code's blank lines.
+assert.deepEqual(copy(page.bubblesOf({ role: 'assistant', text: '看这个：\n\n```\na\n\nb\n```\n\n好了' }).map((b) => b.text)), ['看这个：', '```\na\n\nb\n```', '好了']);
+console.log('PASS a fenced code block stays in one bubble');
+
+// A thread's card shows once, under the newest line about it, as a small card: the report itself is in the thread.
+const cardPage = vm.runInContext('testPage()', context);
+const doneTask = { id: 't_0123456789', title: '查网页推送', status: 'done', summary: '报告已写好。\n\n1. **Web Push 通道**：走 FCM。', links: ['https://dev.mi.com/a'], sessionUrl: '', waiting: false, thread: 't_0123456789' };
+cardPage.lines = [
+  { id: 'a1', role: 'assistant', kind: 'chat', via: 'web', text: '派出去了', at: 1, tasks: [{ ...doneTask, status: 'working', summary: '' }] },
+  { id: 'a2', role: 'assistant', kind: 'chat', via: 'task', text: '线程交差了', at: 2, tasks: [doneTask] }
+];
+const cardRows = cardPage.rows().filter((row) => row.type === 'line');
+assert.deepEqual(copy(cardRows.map((row) => row.cards.map((card) => card.status))), [[], ['done']], 'once, where it was reported');
+assert.equal(cardPage.taskPreview(doneTask), '报告已写好。 Web Push 通道：走 FCM。', 'a preview without the marks');
+assert.ok(taskCard.includes('class="note" x-show="taskPreview(task)" x-text="taskPreview(task)"'));
+assert.match(readFileSync('public/app.css', 'utf8'), /\.ccard \.note \{[^}]*-webkit-line-clamp: 2/, 'two lines at most');
+console.log('PASS a thread shows once in the chat, as a small card with two lines of its report');
+
+// A Markdown file of a thread is drawn as Markdown.
+const filePage = vm.runInContext('testPage()', context);
+filePage.thread = { ...filePage.thread, id: 't_0123456789', loaded: true };
+filePage.api = async () => new TextEncoder().encode('# 报告\n\n- 一');
+await filePage.viewFile({ path: '小米网页推送报告.md', size: 10 });
+assert.equal(filePage.fileView.kind, 'markdown');
+console.log('PASS a thread\'s .md file is shown as Markdown');

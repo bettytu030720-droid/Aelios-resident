@@ -30,8 +30,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   document.head.appendChild(script);
 }) : Promise.resolve(true);
 </script>
-<!-- The page: app.css and app.js; Alpine.js (MIT) lives in vendor/, so the page needs no CDN. -->
+<!-- The page: app.css, markdown.js (x-markdown) and app.js; Alpine.js (MIT) lives in vendor/, so the page needs no CDN. -->
 <link rel="stylesheet" href="/app.css">
+<script src="/markdown.js"></script>
 <script src="/app.js"></script>
 <script defer src="/vendor/alpine-3.14.9.min.js"></script>
 </head>
@@ -162,7 +163,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
               <template x-for="(b, i) in bubblesOf(row.line)" :key="i">
                 <div class="bubble" :class="{ first: b.first, held: menu.open && menu.id === row.line.id }"
                   @contextmenu="openMenu($event, row.line)" @touchstart.passive="pressStart($event, row.line)" @touchend="pressEnd()" @touchmove.passive="pressEnd()" @touchcancel="pressEnd()">
-                  <span class="txt" x-text="b.text"></span>
+                  <div class="md" x-markdown="b.text"></div>
                   <template x-if="b.last">
                     <span class="meta">
                       <svg x-show="pinned[row.line.id]" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="已存进珍贵"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>
@@ -198,24 +199,23 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   </div>
                 </div>
               </template>
-              <template x-for="task in row.line.tasks || []" :key="task.id">
+              <template x-for="task in row.cards" :key="task.id">
                 <div class="ccard" :class="{ dashed: task.status === 'sent' || task.status === 'working', ask: task.waiting }">
                   <div class="head"><span>线程</span><span class="spacer"></span><span class="pill" :class="taskPill(stateOf(task))" x-text="taskStatusText(stateOf(task))"></span></div>
                   <div class="t" x-text="task.title"></div>
                   <template x-if="task.status === 'sent' || task.status === 'working'"><div class="track" aria-hidden="true"><span></span></div></template>
-                  <div class="note" x-show="taskNote(task)" x-text="taskNote(task)"></div>
-                  <template x-if="task.waiting">
+                  <div class="note" x-show="taskPreview(task)" x-text="taskPreview(task)"></div>
+                  <template x-if="task.waiting && (task.choices || []).length">
                     <div class="acts">
-                      <template x-for="(choice, i) in task.choices || []" :key="i">
+                      <template x-for="(choice, i) in task.choices" :key="i">
                         <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(task, choice)" x-text="choice"></button>
                       </template>
-                      <button class="btn small text" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>
                     </div>
                   </template>
                   <div class="sub" x-show="task.chosen" x-text="'你选了：' + task.chosen"></div>
                   <div class="acts">
                     <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>
-                    <template x-for="link in taskLinks(task)" :key="link.url"><a class="btn small" :href="link.url" target="_blank" rel="noopener noreferrer" x-text="link.text"></a></template>
+                    <template x-if="task.waiting"><button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button></template>
                   </div>
                 </div>
               </template>
@@ -475,10 +475,19 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
           <span class="pill" x-show="line.role === 'result'" :class="taskPill(lineState(line))" x-text="taskStatusText(lineState(line))"></span>
         </div>
         <template x-for="(step, i) in line.steps" :key="i"><div class="step-l" x-text="step"></div></template>
-        <div class="text" x-show="line.text" x-text="line.text"></div>
-        <div class="links" x-show="(line.links && line.links.length) || line.sessionUrl">
+        <div class="text" x-show="line.text && line.direct" x-text="line.text"></div>
+        <div class="text md" x-show="line.text && !line.direct" x-markdown="line.text"></div>
+        <div class="links" x-show="(line.links && line.links.length) || line.sessionUrl || waitingFor(line)">
           <a class="btn small" x-show="line.sessionUrl" :href="line.sessionUrl || '#'" target="_blank" rel="noopener noreferrer">打开会话</a>
           <template x-for="link in line.links || []" :key="link"><a class="btn small" :href="link" target="_blank" rel="noopener noreferrer" x-text="linkText(link)"></a></template>
+          <template x-if="waitingFor(line)">
+            <span class="links-end">
+              <template x-for="(choice, i) in waitingFor(line).choices || []" :key="i">
+                <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(waitingFor(line), choice)" x-text="choice"></button>
+              </template>
+              <button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>
+            </span>
+          </template>
         </div>
       </div>
     </template>
@@ -489,6 +498,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </div>
       <p class="hint" x-show="fileView.busy">在读…</p>
       <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
+      <div class="file-md md" x-show="fileView.kind === 'markdown'" x-markdown="fileView.text"></div>
       <img class="file-image" x-show="fileView.kind === 'image'" :src="fileView.url || ''" alt="">
       <template x-if="fileView.kind === 'html'">
         <iframe class="file-page" sandbox="allow-scripts" referrerpolicy="no-referrer" :srcdoc="fileView.text" title="页面预览"></iframe>
@@ -506,18 +516,6 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
       </template>
     </div>
-    <template x-if="threadWaiting()">
-      <div class="card ask-bar">
-        <p class="status-line">这一单在等你拍板。</p>
-        <div class="choices">
-          <template x-for="(choice, i) in threadWaiting().choices || []" :key="i">
-            <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(threadWaiting(), choice)" x-text="choice"></button>
-          </template>
-          <button class="btn small text" type="button" :disabled="Boolean(choosing)" @click="settle(threadWaiting())">不用了</button>
-        </div>
-        <p class="hint" x-text="thread.canSay ? '也可以直接在下面跟它说，说了就算答过了。' : '点「不用了」，它就不再挂着等你。'"></p>
-      </div>
-    </template>
     <div class="thread-say" x-show="thread.canSay">
       <textarea x-model="threadDraft" rows="2" placeholder="直接跟它说，不经过住户" aria-label="跟线程说"></textarea>
       <button class="round go" type="button" :disabled="threadBusy || !threadDraft.trim()" @click="sayToThread()" aria-label="发给它">
