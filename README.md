@@ -18,12 +18,13 @@ It is built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
 - **Remembers the past**: with Aelios connected, every turn goes through Aelios, which brings up related memories and records the turn. Aelios still does its nightly tidy-up.
 - **Handoff letters**: once enough chat has piled up and you have gone quiet for a while, it writes a letter to its later self and folds the older chat away, keeping only the most recent part word for word.
 - **Reaches out to you**: at times you choose it considers whether to message you; when you have been quiet for a while it is asked whether it wants to (the heartbeat); with alarms on it can also schedule its own return.
-- **Sees pictures, hears and sends voice**: it sees the pictures you send; your voice messages are transcribed; once you pick a provider it can answer with voice messages too.
+- **Sees pictures, hears and sends voice**: it sees the pictures you send, from any door; your voice messages are transcribed, ones recorded on the web door too; once you pick a provider it can answer with voice messages, and read any reply aloud on the web door.
 - **Searches the web and reads pages**: your own search keys come first, Cloudflare's search otherwise; long pages are shortened before it reads them.
 - **Stickers**: import a Telegram sticker pack or a zip and it sends one now and then. It can also draw its own little pixel stickers.
 - **Other MCP servers**: add one by address on the settings page, or ask it to connect one in the chat.
 - **Background help**: off by default. Like a Claude project, it keeps chatting with you and hands research, writing and page-making to threads; a thread reports back when it is done, and its files can be viewed and downloaded under **Threads** on the web page. It can also use GitHub Actions (for work that needs a shell) or cloud Claude Code on your subscription.
-- **Usage timeline**: a button at the top right of the web door shows how many tokens each call to a model used, how much of it was read from the prompt cache, and roughly what it cost at Anthropic's list prices: today, 7 days and 30 days on top, every call below. Only numbers are kept, never the chat.
+- **Usage timeline**: on its own page (tap its avatar on the web door), how many tokens each call to a model used, how much of it was read from the prompt cache, and roughly what it cost at Anthropic's list prices: today, 7 days and 30 days on top, every call below. Only numbers are kept, never the chat.
+- **An app on your phone**: the web door can go on the home screen and send notifications: when it reaches out, a thread finishes or an alarm rings, and when it answers after you have left the page.
 
 ## How it fits together
 
@@ -61,10 +62,10 @@ You need a Cloudflare account (the free plan is enough). For long-term memory, a
 2. **Deploy**: Cloudflare dashboard → Workers & Pages → Create → Import a repository, and pick this repository (or your fork). Name the project `aelios-resident`, the same as `name` in `wrangler.jsonc`, and keep the other defaults. From then on, every push to main updates it.
 3. **Add the secret**: Worker → Settings → Variables and Secrets. Only `WEB_KEY` goes here; everything else, the bot token included, is set on the web.
    - `WEB_KEY`: the key to the web door, a long string you make up. Whoever has it can read the whole conversation and change every setting, so don't screenshot or share it; if you think it leaked, replace it here. Without it, an ordinary browser cannot get in; only the Telegram Mini App can.
-4. **Fill in the settings on the web**: open `https://aelios-resident.<your-subdomain>.workers.dev/`, enter `WEB_KEY`, and click the gear at the top right:
-   - With Telegram: **IM** → **bot token**: paste the token from step 1 and save. The resident checks it with Telegram and connects the bot to itself: the webhook, three commands, and the bot's bottom-left menu button that opens the web door. The IM section then says 「接好了：@your_bot」 ("connected"). Then fill in **Who can talk to it on Telegram** (「谁能在 Telegram 上跟它说话」) right below: your Telegram username, such as `@your_name`. Until this is filled in, it answers no one there.
+4. **Fill in the settings on the web**: open `https://aelios-resident.<your-subdomain>.workers.dev/`, enter `WEB_KEY`, and tap **···** (settings) at the top right:
+   - With Telegram: **Chat channels** (「聊天渠道」) → **Connect Telegram** (「接 Telegram」) → **bot token**: paste the token from step 1 and save. The resident checks it with Telegram and connects the bot to itself: the webhook, three commands, and the bot's bottom-left menu button that opens the web door. Then fill in the next step, **Who can talk to it on Telegram** (「谁能在 Telegram 上跟它说话」): your Telegram username, such as `@your_name`. Until this is filled in, it answers no one there. With both done, the Telegram card shows the bot's name and 「已连」 ("connected").
    - **Long-term memory** (「长期记忆」): your Aelios address and key. The key can be any one of `CHATBOX_API_KEY`, `IM_API_KEY` or `MEMORY_MCP_API_KEY` from your Aelios. Then, in the Aelios admin, create an identity for the resident and add the models you will use to that identity's main models. Put the identity's name under **More settings** (「更多设置」) → **Identity** (「身份」); left empty, the key's first identity is used.
-   - Back in the chat, click the model name at the top left to pick a model, and the pencil at the top right to paste in a persona and save it.
+   - Back in the chat, tap the line under its name at the top to pick a model. Tap its avatar at the top left, then **Persona** (「改人设」), to paste in a persona and save it.
 5. Say something on the web door, or send the bot a message.
 
 Set up before the bot token moved to the settings page, with `TG_BOT_TOKEN` and `TG_WEBHOOK_SECRET` in Cloudflare? That keeps working as it is, and `/tg/setup?secret=<TG_WEBHOOK_SECRET>` still connects it. A token saved on the settings page takes precedence over the one in Cloudflare.
@@ -75,11 +76,15 @@ Set up before the bot token moved to the settings page, with `TG_BOT_TOKEN` and 
 
 Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors.
 
-- Each message shows its time and where it came from, plus a heart button that saves it to Aelios' **Precious** (「珍贵」).
-- Its thinking is folded under 「想了一下」 and the tools it used under 「忙活了 X 回」; click to open them.
-- Handoff letters appear, folded, where they put the older chat away.
-- There are dark and light themes, and it works well on a phone.
-- Sending pictures and voice from the web is not supported yet.
+- **Saying something**: type, or tap **+** for pictures (up to 4 at a time, from the album or the camera), the sticker tab, a handoff letter or another model. Hold the microphone to record a voice message (up to a minute); it is heard like one on Telegram.
+- **Long-press** a message (right-click with a mouse) to quote it in your reply, copy it, save it to Aelios' **Precious** (「珍贵」), or have it read aloud (「念给我听」) once a voice provider is set.
+- **What it did**: its thinking and the tools it used are one dashed line under its reply, such as 「想了一下 · 忙活了 2 回」. Tap it for each step, and a step for its full arguments and result.
+- **Cards**: pages it read, alarms it set (which you can move or delete there) and threads it started show under its reply. A thread that needs you to decide offers its answers as buttons.
+- Messages it sent unasked are marked 「主动找你」, a model change shows as a line in the chat, and handoff letters appear, folded, where they put the older chat away. Each message shows its time, and the door it came in by when that is not the web.
+- **Its page**: tap its avatar at the top left to change its picture and name, the model and the persona, and to see its memory, alarms, threads and usage.
+- Night and day themes, or follow the system (at the bottom of settings). It works well on a phone.
+
+**As an app with notifications**: on a phone, add the web door to the home screen (Safari: Share → Add to Home Screen; Chrome: Install app). Then turn on notifications from the card the chat shows, or under **Notifications** (「通知」) in settings. By default (`WEB_PUSH`) it notifies you when it reaches out, a thread finishes or an alarm rings and that message did not reach you on Telegram or WeCom, and when it answers on the web after you have left the page for 20 seconds. On iPhone and iPad, notifications work only from the home-screen icon (iOS 16.4 or later); in the Telegram Mini App there are none. The keys that sign the notifications are made by the resident and stay in it.
 
 ### Telegram
 
@@ -89,7 +94,7 @@ Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Te
 - Each message carries your local time, so it knows what time it is.
 - It sees the pictures you send (photos, or images sent as files, up to 20 MB). With Cloudflare Images (the `IMAGES` binding in `wrangler.jsonc`; free for 5,000 pictures a month) a picture longer than 1568 px on a side is scaled down to that before it goes to the model, which reads it at about that size anyway. Without Images, pictures go as they are, up to 3.75 MB (5 MB once encoded, the most Claude takes for one picture).
 
-**Mini App**: tap the bot's bottom-left menu button and the web door opens right inside Telegram, without `WEB_KEY`. It lets you in by your Telegram-signed identity and checks it against **Who can talk to it on Telegram** every time, so removing someone from the list locks them out. If you move to a custom domain, open the settings page from the new domain and click **Connect again** (「重新接一次」) under IM → bot token (Telegram only opens https Mini Apps). Details are in `src/mini-app.ts`.
+**Mini App**: tap the bot's bottom-left menu button and the web door opens right inside Telegram, without `WEB_KEY`. It lets you in by your Telegram-signed identity and checks it against **Who can talk to it on Telegram** every time, so removing someone from the list locks them out. If you move to a custom domain, open the settings page from the new domain and tap **Connect again** (「重新接一次」) on the Telegram card under Chat channels (Telegram only opens https Mini Apps). Details are in `src/mini-app.ts`.
 
 **Commands**:
 
@@ -109,12 +114,12 @@ WeCom only accepts API calls from the app's trusted IPs (「企业可信 IP」),
 
 1. **The relay**: on that machine, `sudo relay/wecom/install.sh` (add `--media` for voice messages; it installs ffmpeg), then give it a public hostname through a Cloudflare Tunnel, pointing at `http://127.0.0.1:8787`. Details in [relay/wecom](relay/wecom/README.md).
 2. **The app**: WeCom admin (work.weixin.qq.com) → App Management (「应用管理」) → Create an app (「创建应用」). Make sure you are in its visible range (「可见范围」).
-3. **The settings page** → **IM**, the WeCom (「企业微信」) part: fill in who can talk to it (your account (「账号」) in the WeCom contacts), the Corp ID (「企业 ID」, at the bottom of My Enterprise), the app's AgentId and Secret, and the relay address and relay key. Save.
-4. **Receiving messages**: on the app's page, Receive Messages (「接收消息」) → Set API Receiving (「设置 API 接收」). Paste the URL shown in the WeCom part of IM on the settings page (`https://<your resident>/messengers/wecom/webhook`), click Random (「随机获取」) for the Token and the EncodingAESKey, **save both on the resident's settings page first**, then click Save in WeCom. WeCom checks the address on that save, and the resident needs those two to answer it.
+3. **The settings page** → **Chat channels** (「聊天渠道」) → **Connect WeCom** (「接企业微信」), step by step: the Corp ID (「企业 ID」, at the bottom of My Enterprise) and the app's AgentId and Secret; the relay address and relay key; and, after step 4 below, who can talk to it (your account (「账号」) in the WeCom contacts). Save each.
+4. **Receiving messages**: on the app's page, Receive Messages (「接收消息」) → Set API Receiving (「设置 API 接收」). Paste the URL shown in the **Receive messages** (「接收消息」) step on the settings page (`https://<your resident>/messengers/wecom/webhook`), click Random (「随机获取」) for the Token and the EncodingAESKey, **save both on the resident's settings page first**, then click Save in WeCom. WeCom checks the address on that save, and the resident needs those two to answer it.
 5. **Trusted IP**: on the same app page, add the relay machine's outgoing IP (`curl -s https://ifconfig.me` on it) under Trusted IPs (「企业可信 IP」). WeCom only lets you do this once the receiving URL is set.
 6. Send it a message in WeCom. For WeChat: My Enterprise → WeChat Plugin (「微信插件」), scan the invite QR code with WeChat, and the app's chat shows up there.
 
-The **WeCom** line of `/status`, and the WeCom part of IM on the settings page, say what is still missing, whether the relay can be reached and whether it can do voice.
+The **WeCom** line of `/status`, and the WeCom card under Chat channels on the settings page, say what is still missing, whether the relay can be reached and whether it can do voice.
 
 **What works**:
 
@@ -127,7 +132,7 @@ The **WeCom** line of `/status`, and the WeCom part of IM on the settings page, 
 
 ### Choosing a model
 
-Click the model name at the top left of the web door. A search box opens: the current, recent and common models are at the top, all available models below. Type `opus`, `kimi` or `qwen` to filter; a model that is not listed can be entered by its full id.
+Tap the line under its name at the top of the web door (it shows the model in use). A search box opens: the current, recent and common models are at the top, all available models below. Type `opus`, `kimi` or `qwen` to filter; a model that is not listed can be entered by its full id.
 
 - **With Aelios connected**, the list below is Aelios' own model list: the models you chose in Aelios settings → Providers → Model list (`chatgpt/…` names, custom providers and `:floor` names are all here). If Aelios has no saved list, it hands over hundreds or thousands of upstream models; those are not listed one by one, only searchable. A model that is not among this identity's main models is marked 「记不住」 ("won't remember") and dimmed, since its chats would not be remembered, and it is refused at the trial call if you pick it. If Aelios cannot be reached, the picker falls back to the built-in catalog below and says why.
 - **Without Aelios**, the list below is every text model in Cloudflare's model catalog.
@@ -139,7 +144,7 @@ Click the model name at the top left of the web door. A search box opens: the cu
 
 ### Persona
 
-Click the pencil at the top right of the web door. After you save, the next reply follows the new persona.
+Tap its avatar at the top left of the web door, then **Persona** (「改人设」). After you save, the next reply follows the new persona.
 
 - The persona is stored in the Durable Object, not in the code, so a public repository never carries it.
 - The last 10 versions are kept and can be restored with one click.
@@ -148,17 +153,17 @@ Click the pencil at the top right of the web door. After you save, the next repl
 
 ### The settings page
 
-Click the gear at the top right of the web door. It opens on a list of sections: Long-term memory (「长期记忆」), IM (Telegram and WeCom), Heartbeat & alarms (「心跳和闹钟」), Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Other MCP (「别的 MCP」), Background help (「后台帮忙」), Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line under each shows its current state. Open one to see only that section; settings you rarely change are under **More settings** (「更多设置」).
+Tap **···** at the top right of the web door. It opens on a list of sections in four groups: Long-term memory (「长期记忆」), Chat channels (「聊天渠道」, Telegram and WeCom) and Notifications (「通知」); Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Background help (「后台帮忙」) and Other tools (「别的工具（MCP）」); Reaching out & alarms (「主动找你和闹钟」); Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line beside each shows its current state. Open one to see only that section; the explanation of a setting is behind the **?** beside it, and settings you rarely change are under **More settings** (「更多设置」). Telegram and WeCom are set up as numbered steps: the step to do is open, finished ones fold away with a summary.
 
 - Click **Save** (「保存」) and the change applies from the next message.
 - Where a value comes from: a value saved here wins; otherwise the Cloudflare variable of the same name; otherwise the default, which is shown in grey in the input box.
-- The tag beside each item: 「已存」 means saved here, 「Cloudflare：<name>」 means it comes from Cloudflare, 「要填」 means it still needs a value.
+- The tag beside each item: 「已存」 means saved here, 「Cloudflare：<name>」 means it comes from Cloudflare, 「要填」 (amber) means it still needs a value.
 - Keys can be entered but never read back.
 - The button that locks the web door is at the bottom of the page.
 
 ### The usage timeline
 
-Click the pulse button at the top right of the web door, beside the pencil (「时间流」).
+On its page (tap its avatar at the top left), tap **Usage** (「用量」).
 
 - On top, three totals: today, the last 7 days and the last 30 days, counted in your time zone (`TIME_ZONE`). Each shows the cost, the number of calls, the cache hit rate (the share of input read from the cache) and the tokens in and out.
 - Below them, every call to a model, newest first: when; what it was for (a chat turn and the door it came in on, the handoff letter, a check-in, a heartbeat, an alarm, a cloud task's report, shrinking a web page, saving what a search found, the trial call when you pick a model); the model; the tokens (new input, cache read, cache write and whether it went to the 1-hour cache, output and how much of it was thinking); the tools it called; and the cost. A turn that calls tools makes one row for each call to the model.
@@ -249,19 +254,19 @@ Changing the persona, switching models, deleting or branching messages, deployin
 
 ### Reaching out to you
 
-**Check-ins**: under **Heartbeat & alarms** (「心跳和闹钟」) → **Reach out** (「主动找你」), set times such as `every day at 09:00`, `every weekday at 21:30` or `every 3 hours`. At those times it considers whether to message you, and stays silent if it is not a good moment.
+**Check-ins**: under **Reaching out & alarms** (「主动找你和闹钟」) → **Reach out** (「主动找你」), set times such as `every day at 09:00`, `every weekday at 21:30` or `every 3 hours`. At those times it considers whether to message you, and stays silent if it is not a good moment.
 
 **Heartbeat** (`HEARTBEAT`, at most 3 per quiet period by default): when you have been quiet for 55 minutes and the chat is still below the letter threshold (or there is nothing to fold), it is asked whether it wants to reach out. If it does, the message goes to the chat you last wrote from, Telegram or WeCom (it always shows on the web page too); if not, nothing is sent. It is asked again every 55 minutes, up to the limit. Your next message, or an alarm turn that completes, starts the count again from 1.
 
 - Normally each heartbeat comes within the 1-hour lifetime of the previous cache, so it costs about as much as one of your messages. Delayed scheduling, a changed prefix or an expired provider cache can still force a rebuild, so heartbeats are not free.
 - When the threshold is reached, the quiet time is up and there is something to fold, it writes a letter and skips the heartbeat: after a letter the conversation has changed and the whole cache must be rewritten, so asking then would be expensive.
-- Set the number under **Heartbeat & alarms**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
-- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Heartbeat & alarms** with two hour pickers or a preset; `off` asks at night too. Check-ins, alarms and letters are not affected, since those run at a time someone chose.
+- Set the number under **Reaching out & alarms**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
+- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Reaching out & alarms** with two hour pickers or a preset; `off` asks at night too. Check-ins, alarms and letters are not affected, since those run at a time someone chose.
 
 **Alarms** (`ALARMS`, off by default): when on, it gets three tools — set an alarm, list alarms, cancel one. An alarm can ring in a few minutes, once at a set time, or on repeat, like `every day at 21:30`, `every weekday at 08:00`, `every week on sat,sun at 10:00` or `every 3 hours`. When it rings, it gets back the note it wrote and can message you or let it pass.
 
 - Ask it to remind you and it sets one. In its own turns (a heartbeat, or a ring), an alarm must be at least an hour ahead. The heartbeat does not suggest setting an alarm, since later heartbeats will ask again anyway.
-- Its alarms are listed under **Heartbeat & alarms**; click **Delete** (「删掉」) to remove one. When you change the time zone, daily alarms follow the new zone.
+- Its alarms are listed under **Reaching out & alarms**, and on its page; **Move** (「改时间」) changes when one rings and **Delete** (「删掉」) removes it. The card under the reply that set an alarm has the same buttons. When you change the time zone, daily alarms follow the new zone.
 - At most 10 alarms; a repeat at most once an hour; at most 24 rings a day for all alarms together.
 - An alarm turn that completes (even with a `SKIP` reply) counts as new activity: it restarts the quiet timer and stops the old heartbeats; when the quiet time is up, it writes a letter if one is due, or starts the heartbeat. A failed alarm does not count. The ring is still a system note: it never poses as your words and does not change when you last spoke. Heartbeats and check-ins do not count as activity.
 
@@ -282,7 +287,7 @@ Changing the persona, switching models, deleting or branching messages, deployin
 
 ### Voice messages
 
-**Hearing** is always on. A voice message (or audio file) you send on Telegram or WeCom is transcribed first; the model sees `[voice 0:12] what you said`, and asks you to say it again if it could not make it out. It uses Workers AI's Whisper; when ElevenLabs is the voice provider, it uses ElevenLabs Scribe instead and falls back to Whisper on an error. The web shows it as 「🎤 0:12 what you said」.
+**Hearing** is always on. A voice message (or audio file) you send on Telegram or WeCom is transcribed first; the model sees `[voice 0:12] what you said`, and asks you to say it again if it could not make it out. It uses Workers AI's Whisper; when ElevenLabs is the voice provider, it uses ElevenLabs Scribe instead and falls back to Whisper on an error. A voice message recorded on the web door (hold the microphone) is heard the same way. The web door shows each one as a voice message with its length and what was heard; the ones recorded there can be played back.
 
 **Speaking** turns on only when you pick a provider under **Voice** (「语音」). With none, it sends no voice, and not a word about voice is added to its prompts.
 
@@ -294,6 +299,7 @@ Changing the persona, switching models, deleting or branching messages, deployin
 
 - All three go through the resident's AI Gateway. If the key is stored in that Gateway's Provider Keys (alias `default`), you need not enter it on the settings page; which Gateway is used is under **Providers** → **AI Gateway name** (「AI Gateway 的名字」).
 - **When to send voice** (「什么时候发语音」): only when you sent voice (default), every reply, or when it chooses to. Unless it is every reply, it has a `send_voice` tool.
+- On the web door, a reply comes with its voice by the same rule (after a voice message you recorded there, or every reply), and any reply can be read aloud from the long-press menu (「念给我听」). The voice is kept with the message, so it plays again without being made again.
 - It learns the laugh, sigh and pause notation of the provider and model you pick, such as `[laughs]` for ElevenLabs v3 and v4, `[laughter]` and `<speed ratio="0.9"/>` for Cartesia, `(laughs)` for MiniMax and `<laugh>` for Gemini. To make it speak more slowly, say so in the persona and it adds the marks itself.
 - Links, Markdown and emoji are removed from what is spoken; for a reply with links, the links follow as text after the voice message.
 - If a voice message cannot be sent (a provider error, over 2000 characters, or the recipient does not accept voice), it sends text as usual and `/status` says why.
@@ -343,7 +349,7 @@ Custom emoji packs (`t.me/addemoji/…`) cannot be sent by bots and are not acce
 
 ### Other MCP servers
 
-Enter a server's address (https) under **Other MCP** (「别的 MCP」), and its tools work from the next message.
+Enter a server's address (https) under **Other tools** (「别的工具（MCP）」), and its tools work from the next message.
 
 - For a server that needs signing in, click **Authorize** (「去授权」). For one that needs a key, enter the key there; it is sent as `Authorization: Bearer` by default, or written as `x-api-key: your-key` it goes into that header instead.
 - You can also say "connect https://…" or "disconnect …" in the chat and it does it itself. Don't send an address that contains a key in the chat (the chat is recorded in Aelios); connect those only on the settings page.
@@ -361,10 +367,11 @@ A thread can run in three places:
 - **GitHub Actions** (for running commands, tests and opening pull requests): a full Linux machine in a repository of yours.
 - **A claude.ai routine** (with a Claude subscription): each job opens a cloud Claude Code session on your plan. Once connected, jobs go there by default; light reading and writing can still stay on the resident's own threads.
 
-The **Threads** (「线程」) button at the top of the chat lists every thread. Open one to see:
+The **Threads** (「线程」) button at the top of the chat (also on its page) lists every thread. Open one to see:
 
 - What the resident asked, the steps the thread took, and what it handed back. A follow-up job belongs to the same thread, and a thread on the resident carries on with its earlier conversation and files.
 - Its files: text and pictures show as they are, an HTML page shows in an isolated frame (its scripts cannot reach the resident's page or sign-in), and every file can be downloaded.
+- When it needs you to decide, its card in the chat can offer the answers as buttons. The one you tap goes to the thread (on the resident) or to the resident, and the card says what you picked.
 - A box to write to the thread directly (say, "make the title shorter"). That goes to the thread alone, not through the resident, and does not count toward the daily limit.
 
 Connecting GitHub Actions:
@@ -419,6 +426,8 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `WECOM_RELAY_URL` / `WECOM_RELAY_KEY` | empty | The address of the [relay](relay/wecom/README.md) through its Cloudflare Tunnel, and its key (at least 32 characters) |
 | `WECOM_STICKERS` | `off` | `on` sends stickers on WeCom too, as still pictures (an animation's fullest frame) |
 | `WECOM_STICKER_BACKGROUND` | `#EDEDED` | What a see-through sticker background is filled with on WeCom, which would turn it black: a colour like `#111111`, or `none` |
+| `RESIDENT_NAME` | `住户` | Its name on the web door, the home-screen icon and notifications, at most 20 characters; changed by tapping the name on its page. The persona is what it calls itself in the chat |
+| `WEB_PUSH` | `on` | Notifications on the devices that turned them on: `on` sends what did not reach you on Telegram or WeCom (it reached out, a thread finished, an alarm rang) and answers on the web after you left the page; `always` also what went to Telegram or WeCom; `off` none |
 | `TIME_ZONE` | `Asia/Singapore` | The time zone for message times and schedules |
 | `DEBOUNCE_SECONDS` | `3` | Messages sent within this many seconds count as one turn |
 | `CHECKIN_SCHEDULE` | empty (no check-ins) | Times like `every day at 09:00`, `every weekday at 21:30`, `every 3 hours` |
@@ -470,7 +479,7 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 ## Troubleshooting
 
 **It does not answer on Telegram**
-Look at **IM** on the settings page: it says whether the bot is connected here and the last error Telegram reported, and **Connect again** (「重新接一次」) points the bot here again. Check that you are listed under **Who can talk to it on Telegram**; it does not answer group chats. With the token in Cloudflare, opening `/tg/setup?secret=…` again does the same; every item should be `"ok":true`.
+Look at the Telegram card under **Chat channels** on the settings page: it says whether the bot is connected here and the last error Telegram reported, and **Connect again** (「重新接一次」) points the bot here again. Check that you are listed under **Who can talk to it on Telegram**; it does not answer group chats. With the token in Cloudflare, opening `/tg/setup?secret=…` again does the same; every item should be `"ok":true`.
 
 **It stops answering after a picture**
 The model's provider refused the picture (a content check, or a size or format it does not take), and every turn that still carries it would be refused the same way. The resident takes the pictures nobody has answered yet out of the chat, puts 「[图片被退回]」 in their place on the web page, and tells you on Telegram or WeCom with the provider's error, such as `403 permission_error`. Then just carry on. Deleting the picture on Telegram does not help: Telegram does not tell bots about deleted messages.
@@ -479,7 +488,7 @@ The model's provider refused the picture (a content check, or a size or format i
 Save the Token and EncodingAESKey on the resident's settings page first, then click Save in WeCom; the Corp ID must be filled in too. Check that the URL is exactly the one the settings page shows.
 
 **It does not answer on WeCom**
-Look at the WeCom part of **IM** on the settings page, or the WeCom line of `/status`; it names what is missing. Common causes:
+Look at the WeCom card under **Chat channels** on the settings page, or the WeCom line of `/status`; it names what is missing. Common causes:
 - **60020**: the relay machine's IP is not among the app's trusted IPs (「企业可信 IP」), or the machine's outgoing IP changed.
 - **The relay does not accept the key** (「转发机不认这把钥匙」): the relay key on the settings page differs from the one in `/etc/wecom-relay/env`, for example after `--new-key`.
 - **The relay cannot be reached** (「转发机连不上」): check the Tunnel with `curl https://<relay address>/ping -H "x-relay-key: …"`, then `systemctl status wecom-relay` on the machine.
@@ -511,12 +520,11 @@ Most likely the routine's cloud environment does not let the session reach the r
 - The built-in model catalog is `public/models.json`. It is used when Aelios is not connected or its list cannot be fetched; with Aelios connected, it also adds names and descriptions to the models it knows in Aelios' list. When Cloudflare adds models, run `node scripts/update-models.mjs` and push; if you don't, entering the full id in the search box still works.
 - There are two READMEs: `README.md` in English and `README.zh-CN.md` in Chinese. Change both together.
 
-**Not built yet**: sending pictures and voice from the web door; group chats on WeCom; phone calls (live voice); true token-by-token streaming (the web door polls while waiting for a reply).
+**Not built yet**: group chats on WeCom; phone calls (live voice); true token-by-token streaming (the web door polls while waiting for a reply).
 
 **Third-party code** (in `public/vendor/` and `src/web/`, each keeping its MIT license):
 
-- [deep-chat](https://github.com/OvidijusParsiunas/deep-chat) 2.5.1: the chat interface (`deep-chat-LICENSE.txt`)
-- [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9: the model picker, persona and settings page (`alpine-LICENSE.txt`)
+- [Alpine.js](https://github.com/alpinejs/alpine) 3.14.9: the web page (`alpine-LICENSE.txt`)
 - [web-fetch](https://github.com/sakisakisa-design/web-fetch): HTML-to-Markdown conversion, address checks and long-page condensing for reading pages (`web-fetch-LICENSE.txt`)
 
 The ordinary web door loads nothing from outside CDNs; only when opened as a Telegram Mini App does it load Telegram's official `telegram-web-app.js`.

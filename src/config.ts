@@ -44,6 +44,8 @@ const times = (value: string) =>
 const minutes = (value: string) => (value.toLowerCase() === "off" || (Number.isFinite(Number(value)) && Number(value) >= 0) ? null : "填分钟数，或者 off");
 
 export const FIELDS: readonly Field[] = [
+  { key: "RESIDENT_NAME", kind: "text", check: (value) => (value.length <= 20 ? null : "名字最多 20 个字") },
+  { key: "WEB_PUSH", kind: "choice", choices: ["on", "always", "off"] },
   { key: "CUSTOM_BASE_URL", kind: "text", check: address },
   { key: "CUSTOM_API_KEY", kind: "secret" },
   { key: "CUSTOM_FORMAT", kind: "choice", choices: ["openai", "anthropic"] },

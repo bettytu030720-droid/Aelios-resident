@@ -118,7 +118,7 @@ const compiled = await build({
       #theirTurns = new Set(); #readOutside = new Set(); #drafts = new Map();
       #spoke = null; #draftActive = null; #outbox = new Map();
       #turnThread = new Map(); #stickerSent = new Set(); #turnTasks = new Map();
-      #usageLabels = new Map();
+      #usageLabels = new Map(); #webTurns = new Map(); #webSeenAt = 0;
       effectiveHistories = new WeakMap();
       cfg = {}; tz = 'UTC'; liveUser = null;
       constructor(public session, public sql, public hydrationByteBudget, storage) { this.ctx = { storage }; }

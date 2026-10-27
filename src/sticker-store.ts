@@ -139,6 +139,14 @@ export class StickerStore {
     return row;
   }
 
+  /** A sticker by its key, as she sends it from the web page: from a pack that is on. */
+  byKey(key: string): { handle: string; emoji: string; when: string; video: boolean } | null {
+    const [row] = this.sql<{ pack: string; name: string; emoji: string; when_text: string; web_type: string; enabled: number }>`SELECT s.pack, s.name,
+      s.emoji, s.when_text, s.web_type, p.enabled FROM res_stickers s JOIN res_sticker_packs p ON p.id = s.pack WHERE s.key = ${key}`;
+    if (!row || !row.enabled) return null;
+    return { handle: `${row.pack}/${row.name}`, emoji: row.emoji, when: row.when_text, video: row.web_type === "video/webm" };
+  }
+
   /** Where a new pack goes: its own id, or the id of the pack of the same name and kind it replaces. */
   private placeFor(info: PackInfo, source: PackSource): { id: string; replaces: PackRow | null } | { error: string } {
     const packs = this.packRows();

@@ -199,7 +199,7 @@ export const TOOLS = [
   tool("publish_files", "Explicitly publish selected nonprivate files publicly to configured GitHub Pages. Only use when public publication is requested. Deployment remains pending.", { files: fileList }, ["files"]),
   tool("save_artifacts", "Save selected files as this run's artifact, which they download from the run's page. Use it for everything you make for them.", { files: fileList }, ["files"]),
   tool("report_progress", "Send one short progress line in the job's language.", { line: text }, ["line"]),
-  tool("report_result", "Report final result, failure, or a decision needed from the user.", { status: { type: "string", enum: ["done", "failed", "needs_you"] }, summary: text, links: { type: "array", items: text } }, ["status", "summary"])
+  tool("report_result", "Report final result, failure, or a decision needed from the user. With needs_you, choices are up to 4 short answers they can pick with one tap.", { status: { type: "string", enum: ["done", "failed", "needs_you"] }, summary: text, links: { type: "array", items: text }, choices: { type: "array", items: text, maxItems: 4 } }, ["status", "summary"])
 ];
 
 export async function runTool(name, args, context) {
@@ -263,6 +263,8 @@ export async function runHands({ residentUrl, modelBaseUrl, modelApiKey, model =
   const finish = async (body) => {
     const merged = [...new Set([...links, ...extractLinks(body.summary), ...(Array.isArray(body.links) ? body.links : []).filter((url) => typeof url === "string" && /^https:\/\//.test(url))])].slice(0, 8);
     const result = { status: body.status, summary: redact([string(body.summary), ...deliveryNotes].join("\n")).slice(0, 4000), links: merged.map(redact) };
+    // Answers to pick from, only for a decision; the resident checks them again.
+    if (body.status === "needs_you" && Array.isArray(body.choices)) result.choices = body.choices.filter((choice) => typeof choice === "string").slice(0, 4).map((choice) => redact(choice).slice(0, 40));
     await postReport("result", result);
     // For the workflow's last step: a run that reported needs no "stopped" report after it.
     if (reportedFile) writeFileSync(reportedFile, "");

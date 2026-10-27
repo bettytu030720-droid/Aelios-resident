@@ -284,6 +284,8 @@ const server = http.createServer(async (req, res) => {
     log.push({ kind: "voice", endpoint: voice[1], query: url.search, headers, body: json });
     if (voice[1] === "v1/speech-to-text") {
       if (json?.file?.head?.startsWith("OggS")) return reply({ text: " 今天好累呀 " });
+      // A voice message recorded on the web page: a WAV.
+      if (json?.file?.head?.startsWith("RIFF")) return reply({ text: " 网页上说的话 " });
       // A WeCom voice message, made MP3 by the relay on the way down.
       if (json?.file?.head?.startsWith("ID3") && json.file.type === "audio/mpeg") return reply({ text: " 企微里说的话 " });
       return reply({ detail: "unreadable audio" }, 422);

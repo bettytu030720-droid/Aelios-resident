@@ -6,6 +6,11 @@ interface Env {
   // The old model variable: read once and moved onto the web page (see Resident.savedModel).
   MODEL?: string;
   AI_GATEWAY_ID?: string;
+  // The name the web page shows for the resident (default 住户).
+  RESIDENT_NAME?: string;
+  // Web push to the devices that turned it on (web-push.ts): on (default: what Telegram or WeCom did not get, and
+  // replies while the page is closed), always (proactive messages too when Telegram or WeCom got them) or off.
+  WEB_PUSH?: string;
   TG_BOT_USERNAME?: string;
   TG_ALLOWED?: string;
   TIME_ZONE?: string;

@@ -137,7 +137,7 @@ curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"
 ## 4. 接上 Telegram（不要 Telegram 就跳过）
 
 1. **用户建 bot**：请用户在 Telegram 里找 @BotFather，发 `/newbot`，照提示起名字和用户名，最后它会给一串 token。告诉用户：**这串 token 别发给你**。
-2. **用户在设置页填 token**：请用户打开 `<住户地址>`（就用这个地址，住户会把 bot 指到设置页所在的网址），填网页钥匙进门，点右上角的齿轮 →「IM」→「bot token」，粘贴 token，保存。住户会先找 Telegram 核对，再自己接好：webhook 和它的暗号、三个命令，还有 bot 左下角打开网页门的菜单按钮。接好了「IM」里写着「接好了：@bot 的用户名」。
+2. **用户在设置页填 token**：请用户打开 `<住户地址>`（就用这个地址，住户会把 bot 指到设置页所在的网址），填网页钥匙进门，点右上角的「···」（设置）→「聊天渠道」→「接 Telegram」→「bot token」，粘贴 token，保存。住户会先找 Telegram 核对，再自己接好：webhook 和它的暗号、三个命令，还有 bot 左下角打开网页门的菜单按钮。接好了 Telegram 那张卡上写着 bot 的用户名；等「谁能在 Telegram 上跟它说话」也填好，卡上写「已连」。
 3. **你确认接好了**（只看状态，看不到 token）：
 
    ```bash
@@ -158,7 +158,7 @@ curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"
 
 ## 5. 填设置
 
-设置都存在住户自己身上，跟网页设置页（右上角的齿轮）是同一份，用户以后在网页上能看到、能改。一次填一项：
+设置都存在住户自己身上，跟网页设置页（右上角的「···」）是同一份，用户以后在网页上能看到、能改。一次填一项：
 
 ```bash
 curl -sS -X POST <住户地址>/web/config -H "x-web-key: <网页钥匙>" -H "content-type: application/json" \
@@ -217,7 +217,7 @@ curl -sS -X PATCH <Aelios 地址>/api/gateway/config \
 | `key` | `text` |
 |---|---|
 | `AELIOS_URL` | `<Aelios 地址>`，不带末尾的斜杠 |
-| `AELIOS_API_KEY` | `<Aelios 钥匙>`。用户不愿意给你的话，请用户打开网页门 → 齿轮 → 「长期记忆」自己填 |
+| `AELIOS_API_KEY` | `<Aelios 钥匙>`。用户不愿意给你的话，请用户打开网页门 →「···」→「长期记忆」自己填 |
 | `AELIOS_IDENTITY` | 上面那个身份的 `slug` |
 
 `AELIOS_NAMESPACE` 不用填，默认就是 `default`。
@@ -235,7 +235,7 @@ curl -s <住户地址>/web/check -H "x-web-key: <网页钥匙>"
 **用自己的 key、又没接 Aelios 的**，先让用户存 key（接了 Aelios 的，key 在 Aelios 那边已经存好了，跳过这段）：
 
 - 厂商的 key（Anthropic、OpenAI、DeepSeek 等）：这一步用户在 Cloudflare 后台自己点，你别碰 key。把这个链接给用户：<https://dash.cloudflare.com/?to=/:account/ai/ai-gateway>，告诉用户：进 `default`（没有就先建一个叫 `default` 的）→ **Provider Keys** → **Add API Key**，选厂商、粘贴 key，别名填 `default`，保存。
-- 中转站：请用户打开网页门 → 齿轮 → 「供应商」，自己填中转地址（写到 `/v1` 为止）和 key；那家说的是 Anthropic 的格式，就把格式选 `anthropic`。
+- 中转站：请用户打开网页门 →「···」→「供应商」，自己填中转地址（写到 `/v1` 为止）和 key；那家说的是 Anthropic 的格式，就把格式选 `anthropic`。
 
 然后换模型。住户会先拿这个模型试一句，调不通就不换，报错里写着为什么：
 
@@ -262,7 +262,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
   | grep -o '"error":"[^"]*"' || echo 已存
 ```
 
-填完把 `persona.txt` 删掉，或者交还给用户，别提交进仓库。用户不想给你的话，告诉用户：打开网页门，点右上角的铅笔，贴上、保存。没有人设也能聊，用的是一段很短的默认人设。
+填完把 `persona.txt` 删掉，或者交还给用户，别提交进仓库。用户不想给你的话，告诉用户：打开网页门，点左上角它的头像，再点「改人设」，贴上、保存。没有人设也能聊，用的是一段很短的默认人设。
 
 ## 9. 试一句，再打开 Mini App
 
@@ -282,7 +282,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
 
 - 跑 `npx wrangler tail aelios-resident`，请用户再点一次按钮。日志里有 `web: Mini App user not in TG_ALLOWED` 的话，后面是这个人的 `id` 和 `username`，照第 5 步把它加进 `TG_ALLOWED`。
 - 按钮还是旧的，或者没有按钮：跑一次第 4 步第 3 小步里「重新接一次」那条命令。Mini App 只认 https 的地址。
-- 用户以后给住户绑了自己的域名：从新域名再跑一次那条「重新接一次」（把命令里的 `<住户地址>` 换成新域名），或者请用户从新域名打开设置页，在「IM」里点「重新接一次」，按钮就指到新域名。
+- 用户以后给住户绑了自己的域名：从新域名再跑一次那条「重新接一次」（把命令里的 `<住户地址>` 换成新域名），或者请用户从新域名打开设置页，在「聊天渠道」的 Telegram 卡上点「重新接一次」，按钮就指到新域名。
 
 ## 10. 别的功能：一项一项问
 
@@ -304,7 +304,7 @@ node -e 'process.stdout.write(JSON.stringify({text:require("fs").readFileSync(pr
     | grep -o '"error":"[^"]*"' || echo 已存
   ```
 
-- 你手上没有：请用户打开网页门 → 齿轮，在对应那一栏自己填。别让用户把 key 发给你。
+- 你手上没有：请用户打开网页门 →「···」，在对应那一栏自己填。别让用户把 key 发给你。
 
 填完的 key 设置页上只显示「已填」，看不到值。
 
@@ -374,7 +374,7 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
    ```
 
 2. 请用户打开 <https://claude.ai/code/routines> 新建一个定时任务：把 `routine-prompt.txt` 的内容贴进去，选好模型、要它改的仓库和云端环境。
-3. 请用户在「触发」里加一个 API，复制网址，点「生成 token」。网址不是秘密，用户可以告诉你；**token 请用户自己填**：网页门 → 齿轮 → 「云端 Claude Code」，或者在用户自己的终端里 `npx wrangler secret put CLOUD_TASK_TOKEN`。
+3. 请用户在「触发」里加一个 API，复制网址，点「生成 token」。网址不是秘密，用户可以告诉你；**token 请用户自己填**：网页门 →「···」→「后台帮忙」，或者在用户自己的终端里 `npx wrangler secret put CLOUD_TASK_TOKEN`。
 4. 请用户在这个定时任务用的云端环境里，把网络访问选「自定义」，把住户的域名（`<住户地址>` 去掉 `https://`）加进允许的网站，不然结果交不回来。
 5. 你填上开关和网址：`CLOUD_TASKS` 填 `on`，`CLOUD_TASK_URL` 填用户给的网址（形如 `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`）。
 6. 试一下：
@@ -395,14 +395,14 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 1. **转发机**：你能连上那台机器的话（用户同意），在那里 clone 这个仓库，跑 `sudo relay/wecom/install.sh`；用户要语音条就加 `--media`（表情包在企业微信上默认不发，打开后发成静图）。连不上的话，把 relay/wecom/README.md 交给用户，或者交给那台机器上的 AI。
 2. **Tunnel**：请用户在 Cloudflare 后台 → Zero Trust → Networks → Tunnels 给转发机加一个 Public Hostname，指到 `http://127.0.0.1:8787`。那台机器还没有 Tunnel 的，装 cloudflared 的命令里带着 token，让用户在自己的终端里粘贴，别经过你。通了以后用 `curl -s https://<转发地址>/ping -H "x-relay-key: …"` 试（钥匙在转发机上，别打印到对话里；连不上那台机器就请用户自己试）。
 3. **建应用**：请用户在企业微信管理后台「应用管理」→「创建应用」，「可见范围」里要有自己。
-4. **填设置**：照第 5 步的命令填 `WECOM_CORP_ID`（「我的企业」页面最下面）、`WECOM_AGENT_ID`、`WECOM_RELAY_URL`（`https://<转发地址>`）、`WECOM_ALLOWED`（用户在通讯录里的「账号」，不知道就先空着，第 7 小步看被挡下的是谁）。`WECOM_SECRET` 和 `WECOM_RELAY_KEY` 请用户自己在设置页「IM」里企业微信那部分填：Secret 在应用页点「查看」会发到用户的企业微信里，转发钥匙在转发机上用 `sudo sed -n 's/^WECOM_RELAY_KEY=//p' /etc/wecom-relay/env` 看。
+4. **填设置**：照第 5 步的命令填 `WECOM_CORP_ID`（「我的企业」页面最下面）、`WECOM_AGENT_ID`、`WECOM_RELAY_URL`（`https://<转发地址>`）、`WECOM_ALLOWED`（用户在通讯录里的「账号」，不知道就先空着，第 7 小步看被挡下的是谁）。`WECOM_SECRET` 和 `WECOM_RELAY_KEY` 请用户自己在设置页「聊天渠道」→「接企业微信」里填：Secret 在应用页点「查看」会发到用户的企业微信里，转发钥匙在转发机上用 `sudo sed -n 's/^WECOM_RELAY_KEY=//p' /etc/wecom-relay/env` 看。
 5. **接收消息**：请用户在应用页「接收消息」→「设置 API 接收」，URL 填 `<住户地址>/messengers/wecom/webhook`；Token 和 EncodingAESKey 点「随机获取」，**先在住户设置页存好这两项**（`WECOM_TOKEN`、`WECOM_AES_KEY`），再回企业微信点保存。保存不通过就是这两项或企业 ID 没存上、或者抄错了。
 6. **可信 IP**：请用户在同一个应用页「企业可信 IP」填转发机出去时的 IP（那台机器上 `curl -s https://ifconfig.me`）。
-7. **试**：请用户在企业微信里给应用发一句，再发 `/status`，看「企业微信」那一行。不回的话看设置页「IM」里企业微信那部分：有被挡下的账号就照第 5 步的命令填进 `WECOM_ALLOWED`；报 60020 是可信 IP 不对。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码。
+7. **试**：请用户在企业微信里给应用发一句，再发 `/status`，看「企业微信」那一行。不回的话看设置页「聊天渠道」里的企业微信卡：有被挡下的账号就照第 5 步的命令填进 `WECOM_ALLOWED`；报 60020 是可信 IP 不对。想在微信里聊：「我的企业」→「微信插件」，用微信扫邀请关注的二维码。
 
 ### 接别的 MCP
 
-不用现在配。告诉用户：设置页「别的 MCP」填服务地址就能接；也可以在聊天里说「接上 https://…」，它自己接。带 key 的地址别在聊天里发，只在设置页接。
+不用现在配。告诉用户：设置页「别的工具（MCP）」填服务地址就能接；也可以在聊天里说「接上 https://…」，它自己接。带 key 的地址别在聊天里发，只在设置页接。
 
 ### 别的
 
@@ -427,7 +427,8 @@ Telegram：@<bot 的用户名>，私聊它就行（接了才写）
 再补几句：
 
 - 网页门和 Telegram、企业微信是同一段对话。接了 Telegram 的：在 Telegram 里点 bot 左下角的「打开网页」，就是 Mini App，不用再填钥匙。
-- 换模型点网页门左上角的模型名，改人设点右上角的铅笔，别的设置点齿轮。改完下一句就生效。
+- 换模型点网页门顶上名字下面那一行；点左上角它的头像，能换头像、名字，改人设；别的设置点右上角的「···」。改完下一句就生效。
+- 想装成手机 App、收通知：把网页门加到主屏幕（iPhone 上用 Safari「分享 → 添加到主屏幕」），从主屏幕打开，再在聊天里那张卡或设置页「通知」里打开。
 - 第 10 步配了什么、没配什么，一句话说清楚；没配的以后在设置页里开，README 有说明。
 - 网页钥匙怀疑漏了：照第 3 步再生成一把，旧的就作废了。
 
