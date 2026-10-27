@@ -381,8 +381,9 @@ button.pill { background: transparent; font: inherit; font-size: 12px; cursor: p
 .persona-card .head { display: flex; align-items: center; gap: 8px; }
 .persona-card .icon-btn { width: 34px; height: 34px; margin: -6px -8px -6px 0; border-radius: 10px; }
 .persona-card .icon-btn svg { width: 17px; height: 17px; }
-.ask-bar { display: flex; flex-direction: column; gap: 8px; }
-.ask-bar .status-line { margin: 0; }
+.tline .links-end { display: contents; }
+/* Last in a row of buttons, at its right end, on its own line's right end when the row wraps. */
+.btn.end { margin-left: auto; }
 .list { display: flex; flex-direction: column; border-radius: 18px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
 .list > * + * { border-top: 1px solid var(--line-soft); }
 .li { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 50px; padding: 8px 12px; border: 0; background: transparent; color: var(--text-1); text-align: left; text-decoration: none; }

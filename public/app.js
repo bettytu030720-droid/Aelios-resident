@@ -1451,9 +1451,10 @@ function resident() {
       var latest = (this.thread.tasks || []).at(-1);
       return this.runsText(this.thread.runs) + (this.thread.loaded ? ' · ' + this.taskStatusText(latest ? this.stateOf(latest) : this.thread.status) : '');
     },
-    // The task of this thread that waits for her, if one does.
-    threadWaiting() {
-      return (this.thread.tasks || []).find(function (task) { return task.waiting; }) || null;
+    // The task a report in the thread is for, while it waits for her.
+    waitingFor(line) {
+      if (line.role !== 'result') return null;
+      return (this.thread.tasks || []).find(function (task) { return task.id === line.task && task.waiting; }) || null;
     },
     // How a report in the thread stands, by its task.
     lineState(line) {

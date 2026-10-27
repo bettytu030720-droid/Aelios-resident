@@ -204,18 +204,18 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   <div class="t" x-text="task.title"></div>
                   <template x-if="task.status === 'sent' || task.status === 'working'"><div class="track" aria-hidden="true"><span></span></div></template>
                   <div class="note" x-show="taskNote(task)" x-text="taskNote(task)"></div>
-                  <template x-if="task.waiting">
+                  <template x-if="task.waiting && (task.choices || []).length">
                     <div class="acts">
-                      <template x-for="(choice, i) in task.choices || []" :key="i">
+                      <template x-for="(choice, i) in task.choices" :key="i">
                         <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(task, choice)" x-text="choice"></button>
                       </template>
-                      <button class="btn small text" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>
                     </div>
                   </template>
                   <div class="sub" x-show="task.chosen" x-text="'你选了：' + task.chosen"></div>
                   <div class="acts">
                     <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>
                     <template x-for="link in taskLinks(task)" :key="link.url"><a class="btn small" :href="link.url" target="_blank" rel="noopener noreferrer" x-text="link.text"></a></template>
+                    <template x-if="task.waiting"><button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button></template>
                   </div>
                 </div>
               </template>
@@ -476,9 +476,17 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
         <template x-for="(step, i) in line.steps" :key="i"><div class="step-l" x-text="step"></div></template>
         <div class="text" x-show="line.text" x-text="line.text"></div>
-        <div class="links" x-show="(line.links && line.links.length) || line.sessionUrl">
+        <div class="links" x-show="(line.links && line.links.length) || line.sessionUrl || waitingFor(line)">
           <a class="btn small" x-show="line.sessionUrl" :href="line.sessionUrl || '#'" target="_blank" rel="noopener noreferrer">打开会话</a>
           <template x-for="link in line.links || []" :key="link"><a class="btn small" :href="link" target="_blank" rel="noopener noreferrer" x-text="linkText(link)"></a></template>
+          <template x-if="waitingFor(line)">
+            <span class="links-end">
+              <template x-for="(choice, i) in waitingFor(line).choices || []" :key="i">
+                <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(waitingFor(line), choice)" x-text="choice"></button>
+              </template>
+              <button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>
+            </span>
+          </template>
         </div>
       </div>
     </template>
@@ -506,18 +514,6 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
       </template>
     </div>
-    <template x-if="threadWaiting()">
-      <div class="card ask-bar">
-        <p class="status-line">这一单在等你拍板。</p>
-        <div class="choices">
-          <template x-for="(choice, i) in threadWaiting().choices || []" :key="i">
-            <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(threadWaiting(), choice)" x-text="choice"></button>
-          </template>
-          <button class="btn small text" type="button" :disabled="Boolean(choosing)" @click="settle(threadWaiting())">不用了</button>
-        </div>
-        <p class="hint" x-text="thread.canSay ? '也可以直接在下面跟它说，说了就算答过了。' : '点「不用了」，它就不再挂着等你。'"></p>
-      </div>
-    </template>
     <div class="thread-say" x-show="thread.canSay">
       <textarea x-model="threadDraft" rows="2" placeholder="直接跟它说，不经过住户" aria-label="跟线程说"></textarea>
       <button class="round go" type="button" :disabled="threadBusy || !threadDraft.trim()" @click="sayToThread()" aria-label="发给它">

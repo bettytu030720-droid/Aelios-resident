@@ -965,14 +965,22 @@ assert.equal(aside.lines[0].tasks[0].waiting, true, 'a put-aside that did not ge
 aside.threads = { loaded: true, on: true, threads: [{ id: 'a', status: 'needs_you', waiting: false }, { id: 'b', status: 'needs_you', waiting: true }, { id: 'c', status: 'working', waiting: false }] };
 assert.deepEqual(copy(aside.threadsIn('open').map((thread) => thread.id)), ['b', 'c'], 'a thread put aside is listed with the finished ones');
 aside.thread = { ...aside.thread, loaded: true, runs: 'external', status: 'needs_you', tasks: [{ ...waitingCard(), waiting: false }] };
-assert.equal(aside.threadWaiting(), null);
+const report = { id: 'result_t_0123456789', role: 'result', task: 't_0123456789', status: 'needs_you' };
+assert.equal(aside.waitingFor(report), null);
 assert.match(aside.threadSub(), /处理过了$/);
 aside.thread.tasks = [waitingCard()];
-assert.equal(aside.threadWaiting().id, 't_0123456789');
-assert.equal(aside.lineState({ task: 't_0123456789', status: 'needs_you' }), 'needs_you');
-const threadPage = html.slice(html.indexOf('<template x-if="threadWaiting()">'), html.indexOf('<div class="thread-say"'));
-assert.ok(threadPage.includes('@click="settle(threadWaiting())">不用了</button>') && threadPage.includes('choose(threadWaiting(), choice)'));
-assert.ok(markup.includes('@click="settle(task)">不用了</button>'), 'and on the card in the chat');
+assert.equal(aside.waitingFor(report).id, 't_0123456789', 'the report of the task that waits');
+assert.equal(aside.waitingFor({ ...report, role: 'user', id: 'task_t_0123456789' }), null, 'not what was asked');
+assert.equal(aside.lineState(report), 'needs_you');
+// 不用了 sits at the end of the row of buttons it already has (打开会话 on the thread page, 打开线程 in the chat),
+// with nothing written to explain it.
+const reportRow = html.slice(html.indexOf('<div class="links" x-show='), html.indexOf('<div class="card" x-ref="fileView"'));
+assert.ok(reportRow.indexOf('>打开会话</a>') < reportRow.indexOf('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>'));
+assert.ok(reportRow.includes('choose(waitingFor(line), choice)'));
+assert.ok(!html.includes('ask-bar') && !html.includes('这一单在等你拍板') && !html.includes('它就不再挂着等你'));
+const cardRow = markup.slice(markup.indexOf('>打开线程</button>'));
+assert.ok(cardRow.includes('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>'), 'and at the end of the card in the chat');
+assert.match(readFileSync('public/app.css', 'utf8'), /\.btn\.end \{ margin-left: auto; \}/, 'at the right end, also on a wrapped line');
 console.log('PASS 不用了 puts aside a card that waits for her, on every card of it, in the thread list and on its page');
 
 // Its page: no row of shortcuts (they are in the chat), a pen for the persona, the model's pill opens the picker,
