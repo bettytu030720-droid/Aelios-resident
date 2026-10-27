@@ -6,8 +6,8 @@
 //                                       (POST with the x-tg-setup-secret header works too, for scripts); over
 //                                       https also makes the bot's menu button open the web page as a Mini App.
 //                                       A bot token saved on the settings page is connected from there instead
-//   /web/*                              the web page's API (same conversation as Telegram, the model, the persona
-//                                       and the settings), behind WEB_KEY, or inside Telegram behind signed
+//   /web/*                              the web page's API (same conversation as Telegram, the model, the persona,
+//                                       the settings and the usage timeline), behind WEB_KEY, or inside Telegram behind signed
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
@@ -175,6 +175,10 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "POST /web/model": {
       const saved = await agent.webSetModel(String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "GET /web/usage": {
+      const before = Number(url.searchParams.get("before"));
+      return Response.json(await agent.webUsage(Number.isSafeInteger(before) && before > 0 ? before : null));
     }
     case "GET /web/letter":
       return Response.json(await agent.webLetter());

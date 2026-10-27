@@ -8,6 +8,7 @@
 // history. WEB_LEARN=off turns it off. Nothing here holds up the reply: it runs after the turn has finished.
 
 import { generateText, type LanguageModel } from "ai";
+import type { StepLike } from "../usage";
 import { renderWebSearchResults } from "agents/websearch";
 import { callMcpTool } from "../mcp";
 import type { AeliosConfig } from "../aelios";
@@ -95,7 +96,8 @@ export async function learnFromSearch({
   asked,
   searches,
   reply,
-  day
+  day,
+  onStep
 }: {
   model: LanguageModel;
   memory: AeliosConfig;
@@ -103,6 +105,8 @@ export async function learnFromSearch({
   searches: readonly Searched[];
   reply: string;
   day: string;
+  /** Told the call's tokens (usage.ts). */
+  onStep?: (step: StepLike) => void;
 }): Promise<number> {
   const { text } = await generateText({
     model,
@@ -110,7 +114,8 @@ export async function learnFromSearch({
     prompt: learnPrompt(asked, searches, reply),
     // Room for a model that thinks first (Claude 5 always does), so the JSON is not cut off.
     maxOutputTokens: 4000,
-    abortSignal: AbortSignal.timeout(60_000)
+    abortSignal: AbortSignal.timeout(60_000),
+    onStepEnd: onStep
   });
   let saved = 0;
   for (const fact of parseFacts(text)) {

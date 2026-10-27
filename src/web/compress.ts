@@ -15,6 +15,7 @@
 // Compression never fails a read: if the model errors, times out or is off, the page comes back as it was.
 
 import { generateText, type LanguageModel } from "ai";
+import type { StepLike } from "../usage";
 
 const THRESHOLD_TOKENS = 8_000;
 const QUERY_MIN_TOKENS = 800;
@@ -29,8 +30,8 @@ const CALL_TIMEOUT_MS = 20_000;
 
 export const DEFAULT_COMPRESS_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
 
-/** The model that shrinks pages, and its id as it was configured. */
-export type Compressor = { name: string; model: LanguageModel };
+/** The model that shrinks pages, and its id as it was configured. onStep is told each call's tokens (usage.ts). */
+export type Compressor = { name: string; model: LanguageModel; onStep?: (step: StepLike) => void };
 
 export type Compressed = { content: string; note?: string };
 
@@ -212,7 +213,8 @@ async function chat(compressor: Compressor, system: string, user: string, signal
     prompt: user,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     maxRetries: 0,
-    abortSignal: stop
+    abortSignal: stop,
+    onStepEnd: compressor.onStep
   }).then((result) => result.text);
   // The call is cancelled through the signal; the race is for a provider that does not honour it.
   const stopped = new Promise<never>((_, reject) => {

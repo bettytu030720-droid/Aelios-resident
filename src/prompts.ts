@@ -35,6 +35,16 @@ export function isCheckin(text: string): boolean {
   return [CHECKIN_PREFIX, HEARTBEAT_PREFIX, ALARM_PREFIX, OLD_CHECKIN_PREFIX].some((prefix) => text.startsWith(prefix));
 }
 
+/** Which of the system's notes a message is, for the usage timeline; null for one of theirs. */
+export function noteKind(text: string): "letter" | "checkin" | "heartbeat" | "alarm" | "note" | null {
+  if (!isNote(text)) return null;
+  if (text.startsWith(LETTER_PREFIX)) return "letter";
+  if (text.startsWith(HEARTBEAT_PREFIX)) return "heartbeat";
+  if (text.startsWith(ALARM_PREFIX)) return "alarm";
+  if (text.startsWith(CHECKIN_PREFIX) || text.startsWith(OLD_CHECKIN_PREFIX)) return "checkin";
+  return "note";
+}
+
 /**
  * The handoff letter is asked for as one more message at the end of the conversation (see Resident.letterTurn),
  * so the model reads everything before it from the prompt cache. The prompt and the answer are removed afterwards.

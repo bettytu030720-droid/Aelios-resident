@@ -549,3 +549,47 @@ await same.chooseModel('anthropic/claude-opus-5-5');
 assert.equal(same.picker.open, false);
 console.log('PASS choosing the model already in use, spelled the other way, just closes the picker');
 
+
+// The usage timeline (时间流): a button in the header opens it; three sums on top, then one row per call.
+assert.ok(html.includes('@click="openUsage()" aria-label="时间流"'));
+assert.ok(html.includes("view === 'usage'"));
+const timeline = vm.runInContext('resident()', context);
+const usageAsked = [];
+const usageTotals = (calls, extra = {}) => ({ calls, input: 1000, cacheRead: 9000, cacheWrite: 0, output: 500, reasoning: 100, cost: 0.0123, unpriced: 0, ...extra });
+const firstRows = [
+  { id: 3, at: Date.now(), model: 'anthropic/claude-opus-5-5', kind: 'chat', via: 'telegram', step: 0, input: 12, cacheRead: 30000, cacheWrite: 400, cacheWrite1h: 400, output: 250, reasoning: 80, tools: ['memory_recall'], cost: 0.0123 },
+  { id: 2, at: Date.now(), model: '@cf/zai-org/glm-4.7-flash', kind: 'compress', via: '', step: 0, input: 2000, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, output: 100, reasoning: 0, tools: [], cost: null }
+];
+timeline.api = async (path) => {
+  usageAsked.push(path);
+  return path === '/web/usage'
+    ? { totals: { today: usageTotals(2), week: usageTotals(9, { unpriced: 3 }), month: usageTotals(4, { unpriced: 4, cost: 0 }) }, rows: firstRows, more: true, keepDays: 90 }
+    : { totals: null, rows: [{ ...firstRows[1], id: 1 }], more: false, keepDays: 90 };
+};
+await timeline.openUsage();
+assert.equal(timeline.view, 'usage');
+assert.equal(timeline.usage.rows.length, 2);
+assert.equal(timeline.totalCost(timeline.usage.totals.today), '$0.012');
+assert.equal(timeline.totalCalls(timeline.usage.totals.week), '9 次');
+assert.equal(timeline.unpricedText(timeline.usage.totals.week), '3 次没价格');
+assert.equal(timeline.unpricedText(timeline.usage.totals.today), '');
+assert.equal(timeline.unpricedText(timeline.usage.totals.month), '', 'all unpriced is said by the cost line');
+assert.equal(timeline.totalCost(timeline.usage.totals.month), '没有价格');
+assert.equal(timeline.hitText(timeline.usage.totals.today), '90%');
+assert.equal(timeline.hitText({ input: 0, cacheRead: 0, cacheWrite: 0 }), '—');
+assert.equal(timeline.totalTokens(timeline.usage.totals.today), '入 10k · 出 500');
+assert.equal(timeline.kindText(firstRows[0]), '聊天 · Telegram');
+assert.equal(timeline.kindText({ ...firstRows[0], via: '', kind: 'heartbeat', step: 1 }), '心跳 · 工具后');
+assert.equal(timeline.kindText(firstRows[1]), '压缩网页');
+assert.equal(timeline.rowNums(firstRows[0]), '新 12 · 读 30,000 · 写 400（1 小时） · 出 250（想 80）');
+assert.equal(timeline.rowNums({ ...firstRows[0], cacheWrite1h: 0 }), '新 12 · 读 30,000 · 写 400（5 分钟） · 出 250（想 80）');
+assert.equal(timeline.rowNums(firstRows[1]), '新 2,000 · 读 0 · 写 0 · 出 100');
+assert.equal(timeline.money(1.234), '$1.23');
+assert.equal(timeline.money(0.00042), '$0.0004');
+await timeline.moreUsage();
+assert.deepEqual(usageAsked, ['/web/usage', '/web/usage?before=2']);
+assert.equal(timeline.usage.rows.length, 3);
+assert.equal(timeline.usage.more, false);
+timeline.goBack();
+assert.equal(timeline.view, 'chat');
+console.log('PASS the usage timeline opens from the header, sums today, 7 and 30 days, lists each call and pages back');

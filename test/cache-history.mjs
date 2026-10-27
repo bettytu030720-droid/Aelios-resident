@@ -53,6 +53,8 @@ const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, t
   import { historyCutoff, historyAnchor, historyForWindow } from "./src/cache-history.ts";
   import { opensWindow, cacheTtlMs } from "./src/cache-window.ts";
   import { LETTER_PREFIX } from "./src/prompts.ts";
+  import { taskOfNote } from "./src/cloud-tasks.ts";
+  import { usageLabel } from "./src/usage.ts";
   export { historyCutoff, historyAnchor, historyForWindow, LETTER_PREFIX };
   ${residentSource.match(/^function promptCache\([^\n]*[\s\S]*?^\}/m)[0]}
   ${sdkConstant("MODEL_RECENT_WINDOW")}
@@ -72,6 +74,7 @@ const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, t
     #turnThread = new Map();
     #stickerSent = new Set();
     #turnTasks = new Map();
+    #usageLabels = new Map();
     #theirTurns = new Set();
     #readOutside = new Set();
     ctx = { storage: { put: async () => {} } };

@@ -56,6 +56,7 @@ const built = await build({
         #turnThread = new Map();
         #stickerSent = new Set();
         #turnTasks = new Map();
+        #usageLabels = new Map();
         #outbox = new Map();
         #short = false;
         #letterPromise = null;

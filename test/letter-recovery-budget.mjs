@@ -105,6 +105,8 @@ const compiled = await build({
     import { LetterStateStore } from './src/letter-state.ts';
     import { LETTER_PREFIX, isNote, letterPrompt, stamp } from './src/prompts.ts';
     import { markedForLetter } from './src/cache-window.ts';
+    import { taskOfNote } from './src/cloud-tasks.ts';
+    import { usageLabel } from './src/usage.ts';
     export { LETTER_PREFIX, installEffectiveHistory, readAuxiliaryAnswer, removeAuxiliaryTurn };
     const promptCache = () => ({});
     class WebDraft { constructor(..._args) {} }
@@ -116,6 +118,7 @@ const compiled = await build({
       #theirTurns = new Set(); #readOutside = new Set(); #drafts = new Map();
       #spoke = null; #draftActive = null; #outbox = new Map();
       #turnThread = new Map(); #stickerSent = new Set(); #turnTasks = new Map();
+      #usageLabels = new Map();
       effectiveHistories = new WeakMap();
       cfg = {}; tz = 'UTC'; liveUser = null;
       constructor(public session, public sql, public hydrationByteBudget, storage) { this.ctx = { storage }; }

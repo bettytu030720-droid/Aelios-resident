@@ -513,6 +513,36 @@ if (phase === "main") {
     assert.equal(response.status, 200);
   });
 
+  await step("the usage timeline has a row for every call, with the cache split and a list price, and no chat", async () => {
+    assert.equal((await web("/web/usage", "wrong")).status, 401);
+    const usage = await (await web("/web/usage", "test-web-key")).json();
+    assert.equal(usage.keepDays, 90);
+    const { today, week, month } = usage.totals;
+    assert.ok(today.calls > 0 && today.calls === week.calls && week.calls === month.calls, JSON.stringify(usage.totals));
+    if (!usage.more) assert.equal(today.calls, usage.rows.length);
+    assert.ok(usage.rows.every((row, i) => i === 0 || row.id < usage.rows[i - 1].id), "newest first");
+    const test = usage.rows.filter((row) => row.model === "anthropic/claude-test");
+    assert.deepEqual([...new Set(test.map((row) => row.kind))].sort(), ["chat", "letter", "trial"]);
+    const chats = test.filter((row) => row.kind === "chat");
+    assert.equal(chats.length, 2);
+    for (const row of chats) {
+      assert.equal(row.via, "telegram");
+      assert.deepEqual([row.input, row.cacheRead, row.cacheWrite, row.cacheWrite1h, row.output], [20, 1000, 300, 300, 5]);
+      assert.equal(row.cost, null, "a model with no list price");
+    }
+    const opus = usage.rows.filter((row) => row.model === "anthropic/claude-opus-5-5" && row.kind === "chat");
+    assert.equal(opus.length, 2);
+    // 20 × $4 + 1000 × $0.20 + 300 × $8 (one-hour write) + 5 × $20, per million tokens.
+    for (const row of opus) assert.ok(Math.abs(row.cost - 0.00278) < 1e-9, String(row.cost));
+    assert.ok(today.unpriced > 0 && today.cost >= 0.00556 - 1e-9, JSON.stringify(today));
+    assert.ok(usage.rows.some((row) => row.model === "fake" && row.tools.includes("memory_recall")), "tool names are kept");
+    const text = JSON.stringify(usage);
+    for (const said of ["从 Aelios 过吗", "再来一句", "想深一点"]) assert.ok(!text.includes(said), `no chat in the timeline: ${said}`);
+    const older = await (await web(`/web/usage?before=${usage.rows[1].id}`, "test-web-key")).json();
+    assert.equal(older.totals, null, "the totals come with the first page only");
+    assert.ok(older.rows.length > 0 && older.rows.every((row) => row.id < usage.rows[1].id));
+  });
+
   await step("the settings page: secrets stay unread, bad values are refused, a saved value applies to the next message", async () => {
     assert.equal((await web("/web/config", "wrong")).status, 401);
     let config = await (await web("/web/config", "test-web-key")).json();
