@@ -5,7 +5,8 @@ import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = readFileSync('public/app.js', 'utf8');
 assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
-const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {} });
+const resized = [];
+const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {}, ResizeObserver: class { constructor(fn) { resized.push(fn); } observe() {} } });
 vm.runInContext(code, context);
 // What Alpine would add to the page's state.
 vm.runInContext('function testPage() { var p = resident(); p.$nextTick = function (fn) { fn(); }; p.$refs = {}; return p; }', context);
@@ -873,3 +874,49 @@ asker.dismissPush();
 assert.equal(asker.pushInvite(), false);
 assert.ok(readFileSync('public/sw.js', 'utf8').includes("addEventListener('push'"));
 console.log('PASS notifications are offered once, only where they can work');
+
+// The conversation keeps to its bottom while she is there: new lines, however tall, the keyboard or the + panel
+// making it shorter, a sticker loading. Scrolled up, it stays where she reads, and opening a fold does not pull it.
+const scroller = vm.runInContext('testPage()', context);
+const listeners = {};
+const stream = { scrollHeight: 2000, scrollTop: 1400, clientHeight: 600, addEventListener(name, fn) { listeners[name] = fn; } };
+scroller.$refs = { stream };
+scroller.authed = true;
+for (const name of ['loadModel', 'loadAlarms', 'loadTasks']) scroller[name] = async () => {};
+let served = [{ id: 'a', role: 'assistant', text: '早', kind: 'chat', via: 'web', at: 1 }];
+// New lines make the conversation taller once Alpine has drawn them.
+let grow = 0;
+scroller.$nextTick = (fn) => { stream.scrollHeight += grow; grow = 0; fn(); };
+scroller.api = async () => { grow = 900; return { data: served }; };
+await scroller.refresh();
+assert.equal(stream.scrollTop, stream.scrollHeight, 'at the bottom, it follows a line taller than the margin');
+scroller.watchStream();
+assert.equal(resized.length, 1);
+assert.ok(listeners.load && listeners.loadeddata, 'pictures and stickers that load are followed too');
+stream.clientHeight = 300;
+stream.scrollTop = 1800;
+resized[0]();
+assert.equal(stream.scrollTop, stream.scrollHeight, 'the keyboard opens: still the last line above the box');
+stream.scrollHeight += 200;
+listeners.load();
+assert.equal(stream.scrollTop, stream.scrollHeight, 'a sticker loads: still at the bottom');
+stream.scrollTop = 500;
+scroller.onScroll();
+assert.equal(scroller.nearBottom, false);
+served = [...served, { id: 'b', role: 'assistant', text: '在吗', kind: 'chat', via: 'web', at: 2 }];
+await scroller.refresh();
+stream.scrollHeight += grow; // drawn all the same
+grow = 0;
+assert.deepEqual([stream.scrollTop, scroller.unseen], [500, 1], 'scrolled up: it stays, and counts what came');
+resized[0]();
+listeners.load();
+assert.equal(stream.scrollTop, 500, 'the keyboard or a picture does not pull her down');
+stream.scrollTop = stream.scrollHeight - stream.clientHeight;
+scroller.onScroll();
+assert.equal(scroller.nearBottom, true);
+stream.scrollHeight += 800;
+scroller.toggleBusy('b');
+assert.equal(scroller.nearBottom, false, 'opening a fold at the bottom moves the bottom away');
+resized[0]();
+assert.equal(stream.scrollTop, stream.scrollHeight - 800 - stream.clientHeight, 'so what she opened stays in view');
+console.log('PASS the conversation keeps to its bottom while she is there (new lines, the keyboard, a sticker loading), and stays put when she has scrolled up or opened a fold');

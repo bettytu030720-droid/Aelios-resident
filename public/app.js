@@ -374,6 +374,7 @@ function resident() {
     async start() {
       var self = this;
       this.applyTheme();
+      this.$nextTick(function () { self.watchStream(); });
       try {
         matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () { if (self.themePref === 'auto') self.applyTheme(); });
       } catch (e) {}
@@ -602,16 +603,19 @@ function resident() {
       var next = Object.assign({}, this.openBusy);
       next[id] = !next[id];
       this.openBusy = next;
+      this.resettle();
     },
     toggleTool(key) {
       var next = Object.assign({}, this.openTool);
       next[key] = !next[key];
       this.openTool = next;
+      this.resettle();
     },
     toggleLetter(id) {
       var next = Object.assign({}, this.openLetter);
       next[id] = !next[id];
       this.openLetter = next;
+      this.resettle();
     },
     stickersOf(line) {
       return (line.stickers || []).filter(function (sticker) { return /^\/stickers\/[0-9a-f]{24}$/.test(sticker.url); });
@@ -685,7 +689,8 @@ function resident() {
       this.lines = lines;
       this.settleOutbox();
       if (lines.length > before && !stick) this.unseen += lines.length - before;
-      if (stick) this.scrollSoon(false);
+      // At the bottom before the new lines came: follow them, however tall they are.
+      if (stick) this.scrollSoon(true);
     },
     // A line typed here leaves the outbox once the server has its copy.
     // Each line of hers settles one item, oldest first, so two sent together do not both go with the first.
@@ -711,12 +716,29 @@ function resident() {
     },
     scrollSoon(force) {
       var self = this;
+      if (force) this.nearBottom = true;
       this.$nextTick(function () {
         var el = self.$refs && self.$refs.stream;
-        if (!el) return;
-        if (force || self.isNearBottom()) el.scrollTop = el.scrollHeight;
+        if (!el || !(force || self.isNearBottom())) return;
+        el.scrollTop = el.scrollHeight;
         self.unseen = 0;
       });
+    },
+    // The conversation keeps to its bottom while she is there: when the keyboard, the + panel or a quote makes it
+    // shorter, when it comes into view (Alpine shows it a frame later), and when a picture or sticker in it loads.
+    watchStream() {
+      var self = this;
+      var el = this.$refs && this.$refs.stream;
+      if (!el) return;
+      var pin = function () { if (self.nearBottom && el.clientHeight) el.scrollTop = el.scrollHeight; };
+      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(pin).observe(el);
+      el.addEventListener('load', pin, true);
+      el.addEventListener('loadeddata', pin, true);
+    },
+    // Opening or closing something in the conversation moves its bottom without a scroll: say where she is now.
+    resettle() {
+      var self = this;
+      this.$nextTick(function () { self.nearBottom = self.isNearBottom(); });
     },
 
     // ---- saying something ----
