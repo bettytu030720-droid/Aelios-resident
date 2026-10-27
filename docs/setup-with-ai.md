@@ -392,7 +392,7 @@ Telegram 包导进来时每张只有 emoji，它不知道什么时候发。导�
 
 用户要在企业微信（或开了微信插件的微信）里聊才配。要准备：一个企业微信企业（自己建一个免费的就行），和一台有固定公网 IP、能跑 systemd 的 Linux 机器当转发机。转发机不开端口，经 Cloudflare Tunnel 出来。整套顺序照 README.zh-CN.md「企业微信」，转发机照 [relay/wecom/README.md](../relay/wecom/README.md)。
 
-1. **转发机**：你能连上那台机器的话（用户同意），在那里 clone 这个仓库，跑 `sudo relay/wecom/install.sh`；用户要语音条就加 `--media`（表情包在企业微信上默认不发，GIF 在那里只显示第一帧）。连不上的话，把 relay/wecom/README.md 交给用户，或者交给那台机器上的 AI。
+1. **转发机**：你能连上那台机器的话（用户同意），在那里 clone 这个仓库，跑 `sudo relay/wecom/install.sh`；用户要语音条就加 `--media`（表情包在企业微信上默认不发，打开后发成静图）。连不上的话，把 relay/wecom/README.md 交给用户，或者交给那台机器上的 AI。
 2. **Tunnel**：请用户在 Cloudflare 后台 → Zero Trust → Networks → Tunnels 给转发机加一个 Public Hostname，指到 `http://127.0.0.1:8787`。那台机器还没有 Tunnel 的，装 cloudflared 的命令里带着 token，让用户在自己的终端里粘贴，别经过你。通了以后用 `curl -s https://<转发地址>/ping -H "x-relay-key: …"` 试（钥匙在转发机上，别打印到对话里；连不上那台机器就请用户自己试）。
 3. **建应用**：请用户在企业微信管理后台「应用管理」→「创建应用」，「可见范围」里要有自己。
 4. **填设置**：照第 5 步的命令填 `WECOM_CORP_ID`（「我的企业」页面最下面）、`WECOM_AGENT_ID`、`WECOM_RELAY_URL`（`https://<转发地址>`）、`WECOM_ALLOWED`（用户在通讯录里的「账号」，不知道就先空着，第 7 小步看被挡下的是谁）。`WECOM_SECRET` 和 `WECOM_RELAY_KEY` 请用户自己在设置页「IM」里企业微信那部分填：Secret 在应用页点「查看」会发到用户的企业微信里，转发钥匙在转发机上用 `sudo sed -n 's/^WECOM_RELAY_KEY=//p' /etc/wecom-relay/env` 看。

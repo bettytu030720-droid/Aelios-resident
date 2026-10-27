@@ -753,7 +753,7 @@ function resident() {
       { key: 'WECOM_TOKEN', label: 'Token', help: '应用页「接收消息」→「设置 API 接收」，点「随机获取」，复制过来。先在这里存好，再回企业微信点保存。' },
       { key: 'WECOM_AES_KEY', label: 'EncodingAESKey', help: '同一处，也点「随机获取」。' },
       { key: 'WECOM_STICKERS', label: '在企业微信上发表情包', def: 'off', labels: ON_OFF,
-        help: '企业微信只认 JPG 和 PNG，GIF 发过去只显示第一帧，动图都成了静图，所以默认关。关着时它在企业微信上不发表情，网页和 Telegram 照发。' }
+        help: '企业微信不放动图，打开后表情包在这里发成一张静图：动图挑最完整的那一帧，透明底留着，小图放大一倍。Telegram 包里的 WebP、WebM 贴纸要转发机装了 --media。关着时它在企业微信上不发表情，网页和 Telegram 照发。' }
     ] },
     { id: 'heartbeat', title: '心跳和闹钟', fields: [
       { key: 'CHECKIN_SCHEDULE', label: '主动找你', help: '比如 every day at 09:00、every weekday at 21:30、every 3 hours。空着就不主动找。', def: '不主动找' },
