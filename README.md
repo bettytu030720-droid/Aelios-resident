@@ -22,7 +22,7 @@ It is built on Cloudflare's [Think](https://developers.cloudflare.com/agents/).
 - **Searches the web and reads pages**: your own search keys come first, Cloudflare's search otherwise; long pages are shortened before it reads them.
 - **Stickers**: import a Telegram sticker pack or a zip and it sends one now and then. It can also draw its own little pixel stickers.
 - **Other MCP servers**: add one by address on the settings page, or ask it to connect one in the chat.
-- **Background help**: off by default. Daily work runs in a persistent Think child with its own history and file workspace. Optionally connect a fixed GitHub Actions execution repository for tasks that explicitly need Linux, or use existing Claude/Cursor external sessions.
+- **Background help**: off by default. Like a Claude project, it keeps chatting with you and hands research, writing and page-making to threads; a thread reports back when it is done, and its files can be viewed and downloaded under **Threads** on the web page. It can also use GitHub Actions (for work that needs a shell) or cloud Claude Code on your subscription.
 - **Usage timeline**: a button at the top right of the web door shows how many tokens each call to a model used, how much of it was read from the prompt cache, and roughly what it cost at Anthropic's list prices: today, 7 days and 30 days on top, every call below. Only numbers are kept, never the chat.
 
 ## How it fits together
@@ -353,34 +353,48 @@ Enter a server's address (https) under **Other MCP** (「别的 MCP」), and its
 
 ### Background help
 
-Off by default. Once turned on under **Background help** (「后台帮忙」), when you ask it to dig through lots of material, write to the notebook, change code or produce files, it writes the work up as a job and hands it off so none of the intermediate steps use the chat's context or break its cache:
+Off by default. Once turned on under **Background help** (「后台帮忙」), when you ask it to dig through lots of material, write something, make a page or change code, it writes the work up as a job and hands it to a **thread**, and keeps chatting with you. None of the intermediate steps use the chat's context or break its cache. When the thread is done, the resident tells you in its own words.
 
-- **Daily work in a persistent Think child**: local work has its own conversation history and SQLite file workspace, separate from the companion chat. It can read, write and search files and use the resident's search, web-reading, memory, notebook and connected MCP tools. It uses the selected model as an auxiliary call. This workspace does not include a JavaScript execution backend or a shell. Files saved there currently have no download endpoint on the resident.
-- **Choose execution per task**: `cloud_task` accepts `execution: local | linux | external`. With no trigger, local is the default. Configuring a GitHub Actions URL adds an optional Linux environment while keeping local as the default; choose `linux` explicitly for shell commands, dependency installation, builds, tests or document toolchains. A configured claude.ai or Cursor trigger may remain the default external mode; `external` uses that configured provider, not the GitHub workflow.
-- **Optional fixed Actions execution repository**: keep the included `.github/workflows/resident-hands.yml` and `scripts/hands.mjs` in one execution repository. Set `CLOUD_TASK_URL` to `https://api.github.com/repos/<owner>/<execution-repo>/actions/workflows/resident-hands.yml/dispatches` (optional `#branch`, defaults to `main`) and `CLOUD_TASK_TOKEN` to a fine-grained PAT with Actions write access to it. The target repository is supplied separately on each task; it need not contain the workflow or model credentials.
-- **Harness and model**: Actions runs the zero-dependency Node.js tool loop. In the execution repository, set variables `RESIDENT_URL`, `MODEL_BASE_URL` (ending in `/v1`) and `MODEL_NAME`, and secret `MODEL_API_KEY`. `CLOUD_TASK_MODEL` overrides `MODEL_NAME`; use the exact model ID accepted by that endpoint. No Actions model is selected implicitly. Left empty, the local child uses the chat model.
-- **Repositories and permissions**: a task's `repo` names its target as `owner/repo`. The workflow token normally covers only the execution repository. For other repositories, configure `HANDS_GH_TOKEN` in the execution repository with access to the selected targets (Contents and Pull requests write). The dispatch token is separate. Code changes go to a branch and PR. Cloudflare builds or preview links depend on existing repository integration and settings; an environment variable alone does not grant access or install a workflow.
-- **Linux files and pages**: the Actions delivery tool copies chosen output files into an artifact; downloading requires GitHub access and retention follows the workflow settings. This does not expose local child workspace files for download. Public hosting is optional: set execution-repository variable `HANDS_PUBLISH_REPO` to an authorized `owner/repo`, enable GitHub Pages there with **Deploy from a branch → gh-pages → / (root)**, and configure `HANDS_GH_TOKEN` with publishing access. The default `GITHUB_TOKEN` does not trigger branch-based Pages builds. Only intentionally public material belongs on Pages. The Actions prompt requires real password-based encryption for nonpublic deliverables, with passwords returned privately rather than committed or logged; if encryption is unavailable, retain access-controlled artifacts. Document tools and fonts are installed as needed; check generated text and layout.
-- **Existing external providers**: a paid Claude routine uses `https://api.anthropic.com/v1/claude_code/routines/trig_…/fire`; Cursor uses `https://api.cursor.com/v0/agents`. Both need their corresponding trigger token and provider environment. They do not provide the optional Actions Linux mode.
+A thread can run in three places:
 
-The first time you connect a claude.ai routine (the settings page shows the same steps and the prompt to copy):
+- **On the resident itself** (nothing else to set up, no Claude subscription needed): each thread has its own conversation and files and uses the chat's model (or `CLOUD_TASK_MODEL`). It can search the web, read pages, use long-term memory, the notebook, connected MCP tools, and read and write its own files. It has no shell, so it cannot install or run anything.
+- **GitHub Actions** (for running commands, tests and opening pull requests): a full Linux machine in a repository of yours.
+- **A claude.ai routine** (with a Claude subscription): each job opens a cloud Claude Code session on your plan. Once connected, jobs go there by default; light reading and writing can still stay on the resident's own threads.
+
+The **Threads** (「线程」) button at the top of the chat lists every thread. Open one to see:
+
+- What the resident asked, the steps the thread took, and what it handed back. A follow-up job belongs to the same thread, and a thread on the resident carries on with its earlier conversation and files.
+- Its files: text and pictures show as they are, an HTML page shows in an isolated frame (its scripts cannot reach the resident's page or sign-in), and every file can be downloaded.
+- A box to write to the thread directly (say, "make the title shorter"). That goes to the thread alone, not through the resident, and does not count toward the daily limit.
+
+Connecting GitHub Actions:
+
+1. Create a **private** repository to run in. Do not use a fork: a fork of a public repository is public, and so are its run logs and the files it makes.
+2. Copy this repository's `.github/workflows/resident-hands.yml` and `scripts/hands.mjs` into it as they are.
+3. In its Settings → Secrets and variables → Actions, add the secrets `RESIDENT_URL` (the resident's address), `MODEL_BASE_URL` (ending in `/v1`, such as Aelios') and `MODEL_API_KEY`, and the variable `MODEL_NAME` (a model name the endpoint accepts; `CLOUD_TASK_MODEL` on the settings page wins when set).
+4. For pull requests, turn on "Allow GitHub Actions to create and approve pull requests" under Settings → Actions → General. To change other repositories, add the secret `HANDS_GH_TOKEN` with Contents and Pull requests write access to them.
+5. On the settings page, set the trigger URL to `https://api.github.com/repos/<you>/<repo>/actions/workflows/resident-hands.yml/dispatches` (optionally `#branch`, `main` by default) and the token to a GitHub token with Actions write access to that repository. Click **Try it** (「试一下」).
+
+Each Actions job gets a fresh machine. The job is read from the run's event file, not printed in the log, and the report code shows as `***`. Files it makes go into that run's artifact for 30 days. To publish a page publicly: set the variable `HANDS_PUBLISH_REPO` (`owner/repo`), enable GitHub Pages there (Deploy from a branch → gh-pages → / (root)), and give `HANDS_GH_TOKEN` write access to it; it publishes only when the job asks for a public page. A run that times out or crashes tells the resident it stopped, so you do not wait 3 hours for nothing.
+
+The first time you connect a claude.ai routine (the settings page shows the same steps and the prompt to copy under 「想再接 GitHub Actions 或 claude.ai」):
 
 1. Open [claude.ai/code/routines](https://claude.ai/code/routines), create a routine, paste in the prompt from the settings page, and choose the model, repository and cloud environment.
 2. Under the trigger, add an API trigger, copy its URL and click "Generate token". Enter the URL on the settings page; enter the token there too, or store it as the Cloudflare secret `CLOUD_TASK_TOKEN`. The token is shown only once; don't send it in the chat.
 3. In the cloud environment that routine uses, set network access to Custom and add the resident's domain (such as `xxx.workers.dev`) to the allowed sites; otherwise results cannot come back.
 4. Click **Try it** (「试一下」). When the job turns 「做完了」 (done) a few minutes later, it is connected.
 
-After that:
+Wherever it runs:
 
-- It gets the session link as soon as a job is sent. Under that reply on the web there is a small card (sent, working, done, waiting for you, failed, no reply); **Open session** (「打开会话」) opens that session on claude.ai, where you can keep talking. A new result produced there is reported back again.
-- The session reports progress line by line and hands in a result when done (a few sentences and a PR link), which the resident tells you about in its own words. When you ask it to keep going, the previous job's result goes along.
-- A job contains only the work itself, not the conversation or anything private. The session starts out knowing nothing, so it writes the job out in full.
+- Under the reply that sent a job there is a small card (sent, working, done, waiting for you, failed, no reply). **Open thread** (「打开线程」) shows the details; jobs on GitHub or claude.ai also have **Open session** (「打开会话」), and a claude.ai session can be continued there, with a new result reported back again.
+- A job contains only the work itself, not the conversation or anything private. The thread starts out knowing nothing, so the resident writes the job out in full.
 - Jobs are sent only in a turn you started yourself; not if that turn has read a web page, searched the web or called another MCP server. At most 2 jobs per reply and 10 per 24 hours.
 - Results that come back are treated as information, not as instructions. Each job has its own one-time code; nothing without it is accepted, and it expires after 7 days.
-- The prompt says to work on a new branch and open a PR, never push to the default branch, delete anything or spend money unless the job says so.
+- On GitHub and claude.ai it works on a new branch and opens a PR, and never pushes to the default branch, deletes anything or spends money unless the job says so.
+- Only the newest 200 jobs are kept; a thread on the resident whose jobs are all gone is deleted with its files.
 - If no result comes back within 3 hours (longer for a job that keeps reporting progress, up to 12 hours), it tells you, with the link.
 
-For local follow-ups, `follow_up_of` continues the earlier child workspace and history. Actions starts a fresh runner; an earlier result is context, not a saved Linux filesystem. Claude routine runs start new external sessions. The Anthropic trigger API is still in preview and has hourly trigger limits.
+On GitHub and claude.ai, a follow-up starts afresh with the earlier result as context. The Anthropic trigger API is still in preview and has hourly trigger limits.
 
 ### Providers: your own keys and relays
 
@@ -430,10 +444,10 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `VOICE_REPLY` | `mirror` | `mirror` answers voice with voice; `always` makes every reply a voice message; `tool` lets it choose |
 | `VOICE_API_KEY` | empty | That provider's key; not needed if stored in AI Gateway's Provider Keys |
 | `VOICE_BASE_URL` | empty | Usually left empty; when set, voice requests go straight to this address instead of through AI Gateway |
-| `CLOUD_TASKS` | `off` | `on` enables persistent local child work and optional per-task Linux or external execution |
-| `CLOUD_TASK_URL` | empty | Optional Actions execution-repository or Claude/Cursor trigger URL; GitHub adds Linux without changing the local default |
+| `CLOUD_TASKS` | `off` | `on` turns on background help: jobs go to threads |
+| `CLOUD_TASK_URL` | empty | Optional GitHub Actions or claude.ai routine trigger URL; empty uses only the resident's own threads |
 | `CLOUD_TASK_TOKEN` | empty | That trigger's token (when `CLOUD_TASK_URL` is set); can be stored as a Cloudflare secret |
-| `CLOUD_TASK_MODEL` | empty | Exact model ID accepted by the configured endpoint; overrides GitHub Actions `MODEL_NAME`. Empty uses the chat model locally or the repository variable on Actions; no built-in Actions model default |
+| `CLOUD_TASK_MODEL` | empty | The threads' model, as the endpoint names it; empty uses the chat's model on the resident and the repository's `MODEL_NAME` on Actions |
 | `AI_GATEWAY_ID` | empty (`default`) | Which AI Gateway search, voice and, without Aelios, the models go through |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | empty | The relay's address (up to `/v1`) and key; used for `custom/…` models |
 | `CUSTOM_FORMAT` | `openai` | The relay's format: `openai` or `anthropic` (with caching) |

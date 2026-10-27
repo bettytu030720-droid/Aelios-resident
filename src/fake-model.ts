@@ -55,9 +55,14 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const last = prompt[prompt.length - 1];
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
 
-  // The native background worker has its own prompt, history and persisted workspace.
-  if (system.includes("background worker") && user.startsWith("task: t_")) {
+  // A thread of the resident's has its own prompt, history and persisted workspace.
+  if (system.includes("one of the resident's threads") && user.startsWith("task: t_")) {
     const rounds = toolResultsSince(prompt);
+    // What they write to the thread themselves: it makes a page, then answers them.
+    if (user.includes("They wrote this to you directly")) {
+      if (rounds === 0) return { tool: "write", input: { path: "/page.html", content: "<h1>短标题</h1>" } };
+      return { text: `改好了，在 /page.html：${user.split("\n").at(-1)}` };
+    }
     if (user.includes("workspace-write-test")) {
       if (rounds === 0) return { tool: "write", input: { path: "/draft.txt", content: "native-workspace-persisted" } };
       return { text: "写好了" };
@@ -275,10 +280,10 @@ export function fakeModel(): LanguageModelV4 {
     modelId: "fake",
     supportedUrls: {},
     async doGenerate(options) {
-      // The model picker's trial call, or the built-in background worker (which does not touch the chat's cache state).
+      // The model picker's trial call, or a thread of the resident's (which does not touch the chat's cache state).
       const system = options.prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
       const prompt = textOf(options.prompt.map((m) => textOf(m.content)).join("\n"));
-      if (system.includes("background worker")) {
+      if (system.includes("one of the resident's threads")) {
         const choice = decide(options);
         if ("tool" in choice) {
           return {
@@ -336,7 +341,7 @@ export function fakeModel(): LanguageModelV4 {
         throw Object.assign(new Error("You tried to access something that you don't have permissions for."), { statusCode: 403, responseBody: body });
       }
       const choice = decide(options);
-      if (!options.prompt.some((m) => m.role === "system" && textOf(m.content).includes("background worker"))) previous = shape(options);
+      if (!options.prompt.some((m) => m.role === "system" && textOf(m.content).includes("one of the resident's threads"))) previous = shape(options);
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
       let delayMs = 0;
       if ("tool" in choice) {

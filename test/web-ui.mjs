@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m => m[1]).find(s => s.includes('function resident()'));
-const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; } }, setTimeout, clearTimeout, console, Date, URL, window: {} });
+const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; } }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, window: {} });
 vm.runInContext(code, context);
 const page = vm.runInContext('resident()', context);
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
@@ -158,6 +158,8 @@ assert.ok(card.includes('&lt;b&gt;修&lt;/b&gt;错字') && !card.includes('<b>')
 assert.ok(card.includes('class="task-status s-done">做完了<'));
 assert.ok(card.includes('<a href="https://claude.ai/code/session_1" target="_blank" rel="noopener noreferrer">打开会话</a>'));
 assert.ok(card.includes('>r #7</a>') && !card.includes('javascript') && !card.includes('http://example.com'));
+assert.ok(card.includes('<button class="open-thread" type="button" data-thread="t_0123456789">打开线程</button>'), 'a card opens its thread');
+assert.ok(page.toMessages({ ...line, activity: [], text: 'x', tasks: [{ ...task, thread: 't_aaaaaaaaaa' }] })[1].html.includes('data-thread="t_aaaaaaaaaa"'), 'a follow-up opens the thread it belongs to');
 assert.ok(!page.toMessages({ ...line, role: 'user', activity: [], text: 'x', tasks: [task] }).some((m) => m.html && m.html.includes('task-card')), 'only under the resident\'s own lines');
 assert.ok(page.toMessages({ ...line, activity: [], text: 'x', tasks: [{ ...task, status: 'working', progress: '改到一半', summary: '' }] })[1].html.includes('<div class="task-note">改到一半</div>'));
 const taskGroup = page.CONFIG_GROUPS.find((group) => group.id === 'tasks');
@@ -175,35 +177,35 @@ assert.equal(page.sectionSummary('tasks'), '关');
 assert.ok(!page.sectionNeeds('tasks'));
 page.config = { fields: taskFields('on') };
 assert.equal(page.shown(taskGroup.fields[1]), true);
-assert.equal(page.sectionSummary('tasks'), '开了，还没接好');
-assert.ok(page.sectionNeeds('tasks'));
+assert.ok(page.sectionNeeds('tasks'), 'not known to be set up until the resident says so');
 assert.equal(page.tagText(taskGroup.fields[2]), 'Cloudflare：CLOUD_TASK_TOKEN', 'a token kept as a Cloudflare secret is shown as such');
 assert.equal(page.cloudHost(), 'r.example');
-page.cloud = { ...page.cloud, on: true, configured: true, today: 3 };
-assert.equal(page.sectionSummary('tasks'), '接好了 · 24 小时内派了 3 单');
 page.cloud = { ...page.cloud, on: true, configured: true, mode: 'local', today: 2 };
-assert.equal(page.sectionSummary('tasks'), '自己后台干 · 24 小时内派了 2 单');
-assert.ok(!page.sectionNeeds('tasks'));
-page.cloud = { ...page.cloud, linuxAvailable: true };
-assert.equal(page.sectionSummary('tasks'), '自己后台干 · Linux 已接好 · 24 小时内派了 2 单');
-assert.ok(!page.sectionNeeds('tasks'));
-assert.match(page.groupHint(taskGroup), /Think 原生子 agent/);
-assert.match(page.groupHint(taskGroup), /日常仍默认本地/);
-assert.match(page.helpFor(taskGroup.fields[1]), /固定 Actions 执行仓库/);
-assert.ok(html.includes('x-show="cloud.linuxAvailable"'));
-assert.ok(html.includes('execution: linux'));
-assert.ok(html.includes('没有 shell 或 JavaScript 执行后端'));
-assert.ok(html.includes('没有住户下载入口'));
-page.cloud = { ...page.cloud, mode: 'cloud', linuxAvailable: false, today: 3 };
-assert.equal(page.sectionSummary('tasks'), '接好了 · 24 小时内派了 3 单');
+assert.equal(page.sectionSummary('tasks'), '自己的线程 · 24 小时内派了 2 单');
+assert.ok(!page.sectionNeeds('tasks'), 'threads here need nothing more');
+page.cloud = { ...page.cloud, mode: 'linux' };
+assert.equal(page.sectionSummary('tasks'), '自己的线程 + GitHub Actions · 24 小时内派了 2 单');
+page.cloud = { ...page.cloud, mode: 'external', today: 3 };
+assert.equal(page.sectionSummary('tasks'), 'claude.ai + 自己的线程 · 24 小时内派了 3 单');
+page.cloud = { ...page.cloud, mode: 'incomplete', configured: false };
+assert.equal(page.sectionSummary('tasks'), '触发网址没填对 · 24 小时内派了 3 单');
+assert.ok(page.sectionNeeds('tasks'));
+// Plain words, and the setup that keeps a run's log and files private.
+assert.match(page.groupHint(taskGroup), /线程/);
+assert.ok(!/Think|SQLite|子 agent|Harness|Cursor/.test(page.groupHint(taskGroup) + page.helpFor(taskGroup.fields[0]) + page.helpFor(taskGroup.fields[1])));
+assert.match(page.helpFor(taskGroup.fields[1]), /留空就只用住户自己的线程/);
+assert.ok([page.groupHint(taskGroup), ...taskGroup.fields.map((field) => page.helpFor(field))].every((text) => text.length <= 50), 'one short line each');
+assert.ok(html.includes('<details class="how">'), 'the how-to is folded away');
+assert.ok(html.includes('<strong>私有</strong>仓库') && html.includes('别用 fork'));
+assert.ok(html.includes('Allow GitHub Actions to create and approve pull requests'));
+assert.ok(!/Cursor|cursor\.com|linuxAvailable|没有住户下载入口/.test(html));
 // The hands' model: off until it is turned on, then one tap fills it, and tapping it again saves nothing.
 const taskModel = taskGroup.fields.find((field) => field.key === 'CLOUD_TASK_MODEL');
 assert.equal(page.shown(taskModel), true, 'the model is offered once tasks are on');
 assert.equal(taskGroup.title, '后台帮忙');
-assert.match(page.helpFor(taskModel), /接口实际接受的模型 ID/);
-assert.match(page.helpFor(taskModel), /没有固定默认模型/);
+assert.match(page.helpFor(taskModel), /聊天的模型/);
+assert.match(page.helpFor(taskModel), /MODEL_NAME/);
 assert.ok(!html.includes('copilot/'));
-assert.ok(html.includes('HANDS_PUBLISH_REPO') && html.includes('Actions artifact'));
 assert.equal(page.picksFor(taskModel).join('|'), 'anthropic/claude-sonnet-5.5|anthropic/claude-opus-5.5');
 assert.equal(page.pickLabel(taskModel, 'anthropic/claude-sonnet-5.5'), 'Claude Sonnet（示例）');
 assert.equal(page.textInEffect(taskModel), '', 'empty means: the chat model here, the workflow\'s own on GitHub Actions');
@@ -211,6 +213,42 @@ page.config = { fields: taskFields('on').map((field) => field.key === 'CLOUD_TAS
 assert.equal(page.textInEffect(taskModel), 'my-provider/my-model');
 assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');
 console.log('PASS cloud tasks: a card under the reply, escaped and https only; the settings appear once it is turned on');
+
+// Threads: a file is fetched as bytes and shown by its kind; a page only inside a sandboxed frame.
+assert.ok(html.includes('<iframe class="file-page" sandbox="allow-scripts"'), 'a page runs apart from this one');
+assert.ok(!/sandbox="[^"]*allow-same-origin/.test(html));
+assert.equal(page.runsText('local'), '在住户这里干');
+assert.equal(page.runsText('linux'), '在 GitHub Actions 上干');
+assert.equal(page.sizeText(512), '512 B');
+assert.equal(page.sizeText(2048), '2.0 KB');
+page.thread = { ...page.thread, id: 't_0123456789', loaded: true };
+const files = { 'index.html': '<h1>你好</h1><script>1</script>', 'notes.md': '# 笔记', 'logo.png': '\x89PNG', 'blob.bin': '\u0000\u0001' };
+const fetched = [];
+page.api = async (path, options) => {
+  fetched.push(path);
+  assert.ok(options && options.bytes, 'a file comes as bytes');
+  const name = new URL(path, 'https://r.example').searchParams.get('path');
+  return new TextEncoder().encode(files[name]);
+};
+await page.viewFile({ path: 'index.html', size: 10 });
+assert.equal(page.fileView.kind, 'html');
+assert.equal(page.fileView.text, files['index.html']);
+assert.equal(fetched[0], '/web/thread/file?id=t_0123456789&path=index.html');
+await page.viewFile({ path: 'notes.md', size: 6 });
+assert.equal(page.fileView.kind, 'text');
+await page.viewFile({ path: 'logo.png', size: 4 });
+assert.equal(page.fileView.kind, 'image');
+assert.match(page.fileView.url, /^blob:/);
+await page.viewFile({ path: 'blob.bin', size: 2 });
+assert.equal(page.fileView.kind, 'other');
+assert.equal(page.fileView.text, '');
+page.closeFile();
+assert.equal(page.fileView.path, '');
+assert.equal(page.backText(), '回到聊天');
+page.view = 'thread';
+assert.equal(page.backText(), '回到线程');
+page.view = 'chat';
+console.log('PASS threads: files come as bytes and show as text, a picture, or a page in a sandboxed frame');
 // Keys for sites web_fetch reads: counted in the 搜网和读网页 row, only while reading pages is on.
 page.config = { fields: [
   { key: 'WEB_SEARCH', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] },

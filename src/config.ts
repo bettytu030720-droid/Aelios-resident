@@ -92,8 +92,8 @@ export const FIELDS: readonly Field[] = [
   { key: "CLOUD_TASKS", kind: "choice", choices: ["on", "off"] },
   { key: "CLOUD_TASK_URL", kind: "text", check: fireUrlProblem },
   { key: "CLOUD_TASK_TOKEN", kind: "secret" },
-  // Which model the hands work with: the built-in background thread, and the GitHub Actions job (its harness comes
-  // from the prefix: copilot/… runs GitHub's Copilot CLI, anything else the repository's own hands.mjs loop).
+  // Which model the threads work with: the resident's own, and the GitHub Actions job's (scripts/hands.mjs). Empty:
+  // the chat's model here, and the repository's MODEL_NAME on Actions.
   { key: "CLOUD_TASK_MODEL", kind: "text" }
 ];
 
