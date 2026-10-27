@@ -333,6 +333,19 @@ if (phase === "main") {
     assert.deepEqual(await waitForSends(before, 1), ["看到 0 张图，还有一行附件说明。"]);
   });
 
+  await step("a picture the provider refuses is taken out of the chat and she is told, so the next turn works", async () => {
+    const before = (await sent()).length;
+    // The fake model answers 403 permission_error for as long as a picture sent with 拒收 is in the chat.
+    await post("拒收这张", { photo: "photo-2" });
+    const [notice] = await waitForSends(before, 1);
+    assert.match(notice, /退回了（403 permission_error）/);
+    const { data } = await (await web("/web/messages", "test-web-key")).json();
+    assert.equal(data.findLast((l) => l.role === "user").text, "拒收这张\n[图片被退回]");
+    const after = (await sent()).length;
+    await post("看图");
+    assert.deepEqual(await waitForSends(after, 1), ["看到 0 张图。"], "the refused picture no longer goes with every turn");
+  });
+
   await step("the heart keeps a line in Aelios' precious memories", async () => {
     const response = await web("/web/pin", "test-web-key", { text: "这是第二个气泡。" });
     assert.deepEqual(await response.json(), { ok: true });

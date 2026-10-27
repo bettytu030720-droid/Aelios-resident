@@ -17,7 +17,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 
 | 阶段 | 测什么 |
 | --- | --- |
-| `main` | 主流程（默认） |
+| `main` | 主流程（默认），含服务商拒收一张图后把它拿掉、告诉她、下一轮照常回 |
 | `checkin` | 主动找你（起 Worker 时带 `--var CHECKIN_SCHEDULE:"every 1 minute"`） |
 | `idle` | token 门槛和闲置时间同时满足才自动写信（带 `--var LETTER_IDLE_MINUTES:0.05`） |
 | `crash-1`、`crash-2` | 回到一半进程被杀 |
@@ -54,6 +54,8 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `mcp-servers.mjs` | 接别的 MCP |
 | `stickers.mjs` | 表情包，和发到企业微信的静图：GIF 按浏览器的画法读出最完整的一帧（各种 disposal、局部帧、隔行），PNG 用 Node 自己的 zlib 读回来逐像素对、CRC 对，读 PNG（每种过滤、调色板和 tRNS、16 位灰度、灰度带透明），放大不糊，透明底垫上底色、半透明的边混色 |
 | `voice.mjs` | 语音条 |
+| `pictures.mjs` | 她发的图多大：有 Cloudflare Images 时长边超过 1568 或超过 3.75 MB 的缩小（照片出 JPEG、别的出 WebP），够小的不动，读不了的原样发；没有 Images 时超过 3.75 MB 的留成一行字 |
+| `refused-pictures.mjs` | 服务商拒收图片：哪些错算（403、413、415、422，和说到图的 400），哪些不算（401、402、404、429、5xx）；拿掉的是还没回过的图，没有就拿最近 8 条里的；换成一行说明、不改传入的消息、第二次报同一个错不重复 |
 | `wecom.mjs` | 企业微信门的零件：解密（拿 Node 自己的 AES 对照，每种补位都试）、签名、地址验证、XML、她发来的各种消息、去 Markdown、按字节拆、设置缺什么、报错说成人话 |
 | `wecom-relay.mjs` | 转发机 `relay/wecom/wecom-relay.py`（要 python3）：没钥匙一律 403、原样转发和不转的、日志不带 token；本机 ffmpeg 能做的转码（AMR、MP3、GIF、PNG）也试一遍 |
 | `cloud-tasks.mjs` | 云端 Claude Code 的单子、回报和记录 |

@@ -4,6 +4,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   Think,
+  type ChatErrorClassification,
+  type ChatErrorContext,
   type ChatOptions,
   type ChunkContext,
   type ToolCallResultContext,
@@ -66,7 +68,8 @@ import { resumeLetterCompaction } from "./letter-recovery";
 import { LetterStateStore, type WriteState } from "./letter-state";
 import { deliverLetter } from "./letter-delivery";
 import { letterDeliveryStatus, letterWriteStatus } from "./letter-status";
-import { withPictures, type Download } from "./pictures";
+import { shrinkWith, withPictures, type Download } from "./pictures";
+import { REFUSED_PICTURE, refusalOf, refusedNotice, withoutRefused } from "./refused-pictures";
 import {
   TELEGRAM_WEBHOOK_PATH,
   chatAction,
@@ -723,7 +726,7 @@ export class Resident extends Think<Env> {
         this.#heardVoice = true;
         message = { ...message, parts: toMessengerUserMessage(listened).parts };
       }
-      message = await withPictures(message, listened ?? context, download);
+      message = await withPictures(message, listened ?? context, download, shrinkWith(this.env.IMAGES));
     }
     return super.chatWithMessengerContext(message, callback, context, options);
   }
@@ -2280,6 +2283,43 @@ export class Resident extends Think<Env> {
     return true;
   }
 
+  /**
+   * A turn the provider refused because of a picture of hers: the pictures come out of the chat, or every turn after
+   * this one would carry them and be refused the same way (refused-pictures.ts). Think shows a failure from the
+   * model's stream here, with the provider's own error; it is still a failure, as Think handles it.
+   */
+  override classifyChatError(error: unknown, _ctx?: ChatErrorContext): ChatErrorClassification | void {
+    this.noteRefusal(error);
+  }
+
+  /** A failure thrown before the stream started comes here instead. */
+  override onChatError(error: unknown, ctx?: ChatErrorContext): unknown {
+    this.noteRefusal(error);
+    return super.onChatError(error, ctx);
+  }
+
+  #takingOut: Promise<void> = Promise.resolve();
+
+  private noteRefusal(error: unknown): void {
+    const reason = refusalOf(error);
+    if (!reason) return;
+    // One at a time: the same failure can come by both ways, and she should be told once.
+    this.#takingOut = this.#takingOut.then(() => this.takeOutRefusedPictures(reason));
+    this.ctx.waitUntil(this.#takingOut);
+  }
+
+  private async takeOutRefusedPictures(reason: string): Promise<void> {
+    try {
+      const changed = withoutRefused(this.messages, reason);
+      if (!changed.length) return;
+      for (const message of changed) await this.updateMessageInHistory(message);
+      console.log("pictures refused by the provider, taken out", { reason, messages: changed.length });
+      await this.toHer(refusedNotice(reason));
+    } catch (error) {
+      console.error("could not take out refused pictures", { error: String(error) });
+    }
+  }
+
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
     if (result.requestId) this.#drafts.delete(result.requestId);
     if (!this.#drafts.size) this.#draftActive = null;
@@ -2540,6 +2580,7 @@ export class Resident extends Think<Env> {
         const pictures = message.parts.filter((part) => part.type === "file").length + (text.match(EVICTED_PICTURE)?.length ?? 0);
         const said = text
           .replace(EVICTED_PICTURE, "")
+          .replace(REFUSED_PICTURE, "\n[图片被退回]")
           .trim()
           .replace(STAMP_PREFIX, "")
           .replace(VOICE_MARK, (_, length?: string, missed?: string) => `🎤${length ? ` ${length}` : ""}${missed ? "（没听清）" : ""}`);

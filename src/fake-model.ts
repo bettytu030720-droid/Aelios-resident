@@ -280,6 +280,14 @@ export function fakeModel(): LanguageModelV4 {
         });
         return { stream };
       }
+      // A picture sent with 拒收 in its words is refused while it is in the chat, as a provider's content check
+      // refuses one: the same 403 on every call that carries it.
+      const refused = options.prompt.some((m) => m.role === "user" && Array.isArray(m.content) && textOf(m.content).includes("拒收") &&
+        m.content.some((part) => part.type === "file" && part.mediaType.startsWith("image/")));
+      if (refused) {
+        const body = JSON.stringify({ type: "error", error: { type: "permission_error", message: "You tried to access something that you don't have permissions for." } });
+        throw Object.assign(new Error("You tried to access something that you don't have permissions for."), { statusCode: 403, responseBody: body });
+      }
       const choice = decide(options);
       previous = shape(options);
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
