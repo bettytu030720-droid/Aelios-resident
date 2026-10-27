@@ -3,29 +3,79 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
-const code = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m => m[1]).find(s => s.includes('function resident()'));
-const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; } }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, window: {} });
+const code = readFileSync('public/app.js', 'utf8');
+assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
+const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {} });
 vm.runInContext(code, context);
-const page = vm.runInContext('resident()', context);
+// What Alpine would add to the page's state.
+vm.runInContext('function testPage() { var p = resident(); p.$nextTick = function (fn) { fn(); }; p.$refs = {}; return p; }', context);
+const page = vm.runInContext('testPage()', context);
+const copy = (value) => JSON.parse(JSON.stringify(value));
+// Nothing the model or anyone else wrote is put into the page as HTML: every message, card and tool call is bound with x-text.
+assert.ok(!html.includes('x-html'), 'the page never binds HTML');
+assert.ok(!code.includes('innerHTML'), 'the script never writes HTML');
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
   { type: 'reasoning', text: '<img src=x onerror=unsafe()>' },
-  { type: 'tool', id: 'one', name: 'web_fetch', input: '{"url":"https://example.com"}', output: '</pre><script>unsafe()</script>', state: 'output-available' },
-  { type: 'tool', id: 'two', name: 'memory_recall', input: '猫', output: '小橘', state: 'output-available' }
+  { type: 'tool', id: 'one', name: 'web_fetch', input: '{"url":"https://example.com"}', output: '# Example Domain\n</pre><script>unsafe()</script>', state: 'output-available' },
+  { type: 'tool', id: 'two', name: 'memory_recall', input: '{"query":"猫"}', output: '小橘', state: 'output-available' }
 ] };
-const rendered = page.toMessages(line)[0].html;
-assert.ok(rendered.includes('想了一下'));
-assert.ok(rendered.includes('忙活了 2 回'));
-assert.equal((rendered.match(/<details/g) || []).length, 2);
-assert.ok(!rendered.includes(' open'));
-assert.ok(!rendered.includes('<script>') && !rendered.includes('<img '));
-assert.ok(rendered.includes('&lt;script&gt;'));
-assert.ok(rendered.includes('quoted&quot;&lt;&gt;'));
-console.log('PASS thoughts and tools are collapsed, counted per call, and HTML-escaped');
-assert.equal(page.activityHtml({ activity: [] }), '');
-assert.ok(page.activityHtml({ ...line, pending: true }).includes('正在想…'));
-assert.ok(page.activityHtml({ ...line, pending: true }).includes('还在继续'));
-assert.equal(page.toMessages({ ...line, text: '', activity: [line.activity[1]] }).length, 1);
+const busy = page.busyOf(line);
+assert.equal(busy.label, '想了一下 · 忙活了 2 回');
+assert.equal(busy.live, false);
+assert.deepEqual(copy(busy.items.map((item) => [item.what, item.detail, item.state])), [['想了一下', '<img src=x onerror=unsafe()>', ''], ['读了网页', 'https://example.com', ''], ['翻了记忆', '猫', '']]);
+assert.deepEqual(copy(busy.items[1].body), [{ label: '参数', text: '{"url":"https://example.com"}' }, { label: '结果', text: '# Example Domain\n</pre><script>unsafe()</script>' }], 'the full arguments and result are kept, to be shown as text');
+assert.deepEqual(copy(page.openBusy), {}, 'folded until tapped');
+page.toggleBusy(line.id);
+assert.equal(page.openBusy[line.id], true);
+page.toggleBusy(line.id);
+assert.equal(page.openBusy[line.id], false);
+assert.deepEqual(copy(page.bubblesOf(line)), [{ text: '答复<script>unsafe</script>', first: true, last: true }]);
+assert.equal(page.bubblesOf({ ...line, text: '一\n\n二' }).length, 2, 'a blank line starts a new bubble, as on Telegram');
+const markup = html.slice(html.indexOf('<template x-for="row in rows()"'), html.indexOf('<footer class="compose"'));
+for (const binding of ['x-text="b.text"', 'x-text="busyOf(row.line).label"', 'x-text="item.what"', 'x-text="item.detail"', 'x-text="part.text"', 'x-text="p.title"', 'x-text="task.title"', 'x-text="taskNote(task)"', 'x-text="row.line.text"']) {
+  assert.ok(markup.includes(binding), binding + ' is bound as text');
+}
+console.log('PASS thoughts and tools fold into one line under the reply, counted per call, kept whole and bound as text');
+assert.equal(page.busyOf({ activity: [] }), null);
+assert.equal(page.busyOf({ ...line, activity: [line.activity[0]], pending: true }).label, '正在想…');
+assert.equal(page.busyOf({ ...line, pending: true }).label, '想了一下 · 忙活了 2 回 · 还在继续');
+assert.equal(page.busyOf({ ...line, pending: true }).live, true);
+assert.equal(page.busyOf({ ...line, activity: [{ type: 'reasoning', text: '' }] }), null, 'empty reasoning is not made up');
+assert.equal(page.busyOf({ ...line, activity: [{ type: 'tool', id: 'x', name: 'mcp_notion_search', input: '', state: 'input-available' }] }).items[0].what, '用了工具 notion_search');
+assert.equal(page.busyOf({ ...line, activity: [{ type: 'tool', id: 'x', name: 'web_search', input: '{}', state: 'output-error', output: 'no' }] }).items[0].state, '出错了');
+const toolOnly = { ...line, text: '', activity: [line.activity[1]] };
+assert.equal(page.bubblesOf(toolOnly).length, 0);
+assert.ok(page.busyOf(toolOnly), 'a tool-only reply still shows what it did');
 console.log('PASS empty reasoning is not fabricated; running activity and tool-only replies render');
+// The pages it read become cards, http(s) only, once each.
+const pages = page.pagesOf({ activity: [
+  line.activity[1],
+  { ...line.activity[1], id: 'again' },
+  { type: 'tool', id: 'bad', name: 'web_fetch', input: '{"url":"javascript:unsafe()"}', output: '', state: 'output-available' },
+  { type: 'tool', id: 'failed', name: 'web_fetch', input: '{"url":"https://failed.example"}', output: 'nope', state: 'output-error' }
+] });
+assert.deepEqual(copy(pages), [{ url: 'https://example.com', host: 'example.com', title: 'Example Domain' }]);
+console.log('PASS pages it read are cards with their heading, http(s) only and once each');
+// The conversation as rows: a day line, a line above what it wrote unasked, notices, the letter, and the dots while it thinks.
+const day = Date.UTC(2026, 9, 25, 4);
+page.lines = [
+  { id: 'u1', role: 'user', text: '早', kind: 'chat', via: 'web', at: day },
+  { id: 'a1', role: 'assistant', text: '早呀', kind: 'chat', via: 'web', at: day + 1000 },
+  { id: 'n1', role: 'system', text: '换成了 gpt-5', kind: 'notice', at: day + 2000 },
+  { id: 'a2', role: 'assistant', text: '想你了', kind: 'chat', via: 'checkin', at: day + 3000 },
+  { id: 'a3', role: 'assistant', text: '还有一句', kind: 'chat', via: 'checkin', at: day + 4000 },
+  { id: 'l1', role: 'system', text: '信', kind: 'letter', at: day + 86400000 }
+];
+assert.deepEqual(copy(page.rows().map((row) => row.type)), ['day', 'line', 'line', 'notice', 'why', 'line', 'line', 'day', 'letter'], 'one line above two messages it wrote unasked');
+assert.match(page.rows().find((row) => row.type === 'why').text, /^主动找你 · /);
+page.lines = [{ id: 'u1', role: 'user', text: '在吗', kind: 'chat', via: 'web', at: null }];
+page.sending = 1;
+assert.equal(page.rows().at(-1).type, 'typing', 'dots until the reply starts');
+page.lines.push({ id: 'a1', role: 'assistant', text: '在', kind: 'chat', via: 'web', at: null, pending: true });
+assert.ok(!page.rows().some((row) => row.type === 'typing'), 'no dots once the reply shows');
+page.sending = 0;
+page.lines = [];
+console.log('PASS the conversation becomes rows: days, notices, letters, one line above what it wrote unasked, dots while waiting');
 page.miniApp = true;
 page.authed = true;
 page.miniSession = async () => { throw new Error('请关闭小窗后重新打开'); };
@@ -36,14 +86,9 @@ console.log('PASS a failed Mini App renewal visibly returns to the reconnect scr
 assert.ok(!html.includes('<script src="https://telegram.org/'));
 assert.ok(html.includes("script.src = 'https://telegram.org/js/telegram-web-app.js'"));
 console.log('PASS ordinary WEB_KEY pages do not load Telegram third-party JS');
-const withSticker = page.toMessages({ ...line, activity: [], text: '好呀', stickers: [{ url: '/stickers/0123456789abcdef01234567', video: false }, { url: 'https://evil.example/x.gif', video: false }] });
-assert.equal(withSticker.length, 2);
-assert.ok(withSticker[1].html.includes('class="sticker-row"') && withSticker[1].html.includes('<img src="/stickers/0123456789abcdef01234567"'));
-assert.ok(!withSticker.some((message) => message.html.includes('evil.example')));
-const onlySticker = page.toMessages({ ...line, activity: [], text: '', stickers: [{ url: '/stickers/0123456789abcdef01234567', video: true }] });
-assert.equal(onlySticker.length, 1);
-assert.ok(onlySticker[0].html.includes('<video src="/stickers/0123456789abcdef01234567" autoplay loop muted playsinline>'));
-console.log('PASS stickers show after the words, only from the resident itself, and a sticker-only reply is just the sticker');
+assert.deepEqual(copy(page.stickersOf({ stickers: [{ url: '/stickers/0123456789abcdef01234567', video: false }, { url: 'https://evil.example/x.gif', video: false }, { url: '/stickers/../web/key', video: false }] })), [{ url: '/stickers/0123456789abcdef01234567', video: false }]);
+assert.ok(markup.includes('<video :src="s.url" autoplay loop muted playsinline'));
+console.log('PASS stickers show only from the resident itself');
 const voiceFields = (provider, model = '') => [
   { key: 'VOICE_PROVIDER', kind: 'choice', value: provider, fromWorker: '', choices: ['off', 'elevenlabs', 'cartesia', 'openrouter'] },
   { key: 'VOICE_MODEL', kind: 'text', value: model, fromWorker: '' },
@@ -75,8 +120,10 @@ assert.equal(page.placeholderFor(metaOf('VOICE_ID')), '模型自己的');
 console.log('PASS voice settings show once a provider is picked, with that provider\'s models to pick from');
 page.config = { fields: [...voiceFields('elevenlabs'), { key: 'STICKERS', kind: 'choice', value: '', fromWorker: '', choices: ['on', 'off'] }, { key: 'TG_ALLOWED', kind: 'text', value: '', fromWorker: '@her' }], voice: { hears: 'whisper', gap: 'VOICE_ID' } };
 page.stickers = { on: true, packs: [{ id: 'a' }, { id: 'b' }], left: 0 };
-assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.id), ['aelios', 'im', 'heartbeat', 'voice', 'stickers', 'web', 'mcp', 'tasks', 'thinking', 'custom']);
-assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.title).slice(1, 3), ['IM', '心跳和闹钟']);
+assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.id), ['aelios', 'im', 'push', 'voice', 'stickers', 'web', 'tasks', 'mcp', 'heartbeat', 'thinking', 'custom']);
+assert.deepEqual(Array.from(page.CONFIG_MENU, (item) => item.title).slice(1, 3), ['聊天渠道', '通知']);
+assert.ok(page.CONFIG_MENU.every((item) => item.title), 'every row has a title');
+assert.deepEqual(copy(page.SETTINGS_HOME.flatMap((group) => group.rows)).sort(), Array.from(page.CONFIG_MENU, (item) => item.id).sort(), 'the settings list shows each section once');
 // IM: only the web while neither door is set up.
 page.config.telegram = { from: null, bot: null, here: false, error: null, lastError: null };
 page.config.wecom = { gap: 'off', allowed: [], relay: null, error: null, refused: null };
@@ -150,18 +197,37 @@ console.log('PASS the settings page opens on a list with a line of state per sec
 // Cloud tasks: a card under the reply that sent it, escaped, with https links only; the settings shown once it is on.
 const task = { id: 't_0123456789', title: '<b>修</b>错字', status: 'done', sessionUrl: 'https://claude.ai/code/session_1', progress: '', summary: '好了"<img src=x onerror=unsafe()>',
   links: ['https://github.com/o/r/pull/7', 'javascript:unsafe()', 'http://example.com/a'], test: false };
-const withTask = page.toMessages({ ...line, activity: [], text: '派出去了', tasks: [task] });
-assert.equal(withTask.length, 2);
-const card = withTask[1].html;
-assert.ok(card.startsWith('<div class="task-card"') && card.includes('data-task="t_0123456789"'));
-assert.ok(card.includes('&lt;b&gt;修&lt;/b&gt;错字') && !card.includes('<b>') && !card.includes('<img'));
-assert.ok(card.includes('class="task-status s-done">做完了<'));
-assert.ok(card.includes('<a href="https://claude.ai/code/session_1" target="_blank" rel="noopener noreferrer">打开会话</a>'));
-assert.ok(card.includes('>r #7</a>') && !card.includes('javascript') && !card.includes('http://example.com'));
-assert.ok(card.includes('<button class="open-thread" type="button" data-thread="t_0123456789">打开线程</button>'), 'a card opens its thread');
-assert.ok(page.toMessages({ ...line, activity: [], text: 'x', tasks: [{ ...task, thread: 't_aaaaaaaaaa' }] })[1].html.includes('data-thread="t_aaaaaaaaaa"'), 'a follow-up opens the thread it belongs to');
-assert.ok(!page.toMessages({ ...line, role: 'user', activity: [], text: 'x', tasks: [task] }).some((m) => m.html && m.html.includes('task-card')), 'only under the resident\'s own lines');
-assert.ok(page.toMessages({ ...line, activity: [], text: 'x', tasks: [{ ...task, status: 'working', progress: '改到一半', summary: '' }] })[1].html.includes('<div class="task-note">改到一半</div>'));
+assert.deepEqual(copy(page.taskLinks(task)), [{ url: 'https://claude.ai/code/session_1', text: '打开会话' }, { url: 'https://github.com/o/r/pull/7', text: 'r #7' }], 'https links only');
+assert.deepEqual(copy(page.taskLinks({ ...task, sessionUrl: 'javascript:unsafe()', links: [] })), []);
+assert.equal(page.taskStatusText('done'), '做完了');
+assert.equal(page.taskNote(task), task.summary, 'the title and summary are bound as text, never as HTML');
+assert.equal(page.taskNote({ ...task, status: 'working', progress: '改到一半', summary: '' }), '改到一半');
+assert.equal(page.taskNote({ ...task, status: 'sent', progress: '', summary: '' }), '派出去了，等它开工');
+const taskCard = markup.slice(markup.indexOf('<template x-for="task in row.line.tasks || []"'));
+assert.ok(markup.indexOf('<template x-for="task in row.line.tasks || []"') > markup.indexOf("row.line.role === 'assistant'") && markup.indexOf('<template x-for="task in row.line.tasks || []"') < markup.indexOf('<!-- her message -->'), "only under the resident's own lines");
+assert.ok(taskCard.includes('@click="openThread(task.thread)">打开线程</button>'), 'a card opens its thread');
+assert.ok(taskCard.includes('<template x-for="link in taskLinks(task)"') && taskCard.includes('rel="noopener noreferrer"'));
+// A thread that needs her: its choices are buttons, and the one she picks is said back.
+assert.ok(taskCard.includes('@click="choose(task, choice)" x-text="choice"'));
+assert.ok(taskCard.includes("x-text=\"'你选了：' + task.chosen\""));
+const chose = [];
+const chooser = vm.runInContext('testPage()', context);
+chooser.notify = () => {};
+chooser.poll = async () => {};
+chooser.loadTasks = async () => {};
+chooser.refresh = async () => {};
+chooser.api = async (path, options) => { chose.push([path, options && options.body]); return { ok: true }; };
+const asking = { ...task, status: 'needs_you', choices: ['用 A', '用 B'], chosen: null };
+await chooser.choose(asking, '用 B');
+assert.deepEqual(copy(chose), [['/web/task/choose', { id: 't_0123456789', text: '用 B' }]]);
+assert.equal(asking.chosen, '用 B', 'the card shows the choice right away');
+await chooser.choose(asking, '用 A');
+assert.equal(chose.length, 1, 'a choice is made once');
+const refused = { ...asking, chosen: null };
+chooser.api = async () => { throw new Error('这张卡已经不等你选了'); };
+await chooser.choose(refused, '用 A');
+assert.equal(refused.chosen, null, 'a choice that did not get through can be made again');
+assert.equal(chooser.sending, 0);
 const taskGroup = page.CONFIG_GROUPS.find((group) => group.id === 'tasks');
 const taskFields = (on) => [
   { key: 'CLOUD_TASKS', kind: 'choice', value: on, fromWorker: '', choices: ['on', 'off'] },
@@ -195,7 +261,7 @@ assert.match(page.groupHint(taskGroup), /线程/);
 assert.ok(!/Think|SQLite|子 agent|Harness|Cursor/.test(page.groupHint(taskGroup) + page.helpFor(taskGroup.fields[0]) + page.helpFor(taskGroup.fields[1])));
 assert.match(page.helpFor(taskGroup.fields[1]), /留空就只用住户自己的线程/);
 assert.ok([page.groupHint(taskGroup), ...taskGroup.fields.map((field) => page.helpFor(field))].every((text) => text.length <= 50), 'one short line each');
-assert.ok(html.includes('<details class="how">'), 'the how-to is folded away');
+assert.ok(html.includes('<details>\n              <summary>想再接 GitHub Actions 或 claude.ai</summary>'), 'the how-to is folded away');
 assert.ok(html.includes('<strong>私有</strong>仓库') && html.includes('别用 fork'));
 assert.ok(html.includes('Allow GitHub Actions to create and approve pull requests'));
 assert.ok(!/Cursor|cursor\.com|linuxAvailable|没有住户下载入口/.test(html));
@@ -260,7 +326,7 @@ page.sites = [{ host: 'gated.example', names: ['CF-Access-Client-Id', 'CF-Access
 assert.equal(page.sectionSummary('web'), '搜网开 · 读网页开 · 1 个网站带钥匙');
 page.config.fields[1].value = 'off';
 assert.equal(page.sectionSummary('web'), '搜网开 · 读网页关');
-assert.ok(html.includes('x-if="group.id === \'web\'"') && html.includes('sitePreset(\'access\')'));
+assert.ok(html.includes('x-if="configSection === \'web\' && inEffect(metaOf(\'WEB_FETCH\')) !== \'off\'"') && html.includes('sitePreset(\'access\')'));
 console.log('PASS keys for sites: counted in the 搜网和读网页 row while reading pages is on');
 // The key is typed as name : value rows; the page joins them into the lines the resident reads.
 page.siteDraft = { site: 'gated.example', lines: [{ name: '', value: '' }] };
@@ -305,10 +371,10 @@ page.notify = () => {};
 await page.removeAlarm(page.alarms.alarms[0]);
 assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/web/alarms/remove', { id: 'a_1' }]]);
 assert.equal(page.alarms.alarms.length, 0);
-assert.ok(html.includes('x-if="group.id === \'heartbeat\'"') && html.includes('removeAlarm(alarm)'));
+assert.ok(html.includes('x-if="configSection === \'heartbeat\' && alarms.alarms.length"') && html.includes('removeAlarm(alarm)'));
 console.log('PASS heartbeat three times and alarms off by default; alarms counted in the 心跳和闹钟 row and deleted from the settings page');
 // Letter settings: one visible threshold, two conditions, and a fixed recent-chat budget instead of a second knob.
-const letterPage = vm.runInContext('resident()', context);
+const letterPage = vm.runInContext('testPage()', context);
 const thinkingGroup = letterPage.CONFIG_GROUPS.find((group) => group.id === 'thinking');
 const threshold = thinkingGroup.fields.find((meta) => meta.key === 'LETTER_TOKEN_THRESHOLD');
 const idle = thinkingGroup.fields.find((meta) => meta.key === 'LETTER_IDLE_MINUTES');
@@ -329,11 +395,12 @@ assert.match(letterPage.helpFor(threshold), /50000/);
 assert.match(letterPage.helpFor(threshold), /当前携带的聊天估算，含旧交接信、工具调用和结果、图片/);
 assert.match(letterPage.helpFor(threshold), /不含人设、工具定义和历史思考/);
 assert.match(letterPage.helpFor(threshold), /不按累计聊天总量算/);
-assert.match(letterPage.groupHint(thinkingGroup), /同时满足聊天达到 token 门槛、没人说话达到闲置时间（默认 55 分钟）/);
-assert.match(letterPage.groupHint(thinkingGroup), /连续聊天即使超过门槛也不会立即写/);
-assert.match(letterPage.groupHint(thinkingGroup), /固定保留最近约 8000 token 原始聊天，整轮问答不拆开；最近一轮本身超过 8000 时整轮保留/);
-assert.match(letterPage.groupHint(thinkingGroup), /交接信、人设、工具定义另算/);
-assert.match(letterPage.groupHint(thinkingGroup), /手动 \/handoff 不受门槛限制，但也要有旧内容可收/);
+assert.match(letterPage.helpFor(threshold), /同时满足聊天达到 token 门槛、没人说话达到闲置时间（默认 55 分钟）/);
+assert.match(letterPage.helpFor(threshold), /连续聊天即使超过门槛也不会立即写/);
+assert.match(letterPage.helpFor(threshold), /固定保留最近约 8000 token 原始聊天，整轮问答不拆开；最近一轮本身超过 8000 时整轮保留/);
+assert.match(letterPage.helpFor(threshold), /交接信、人设、工具定义另算/);
+assert.match(letterPage.helpFor(threshold), /手动 \/handoff 不受门槛限制，但也要有旧内容可收/);
+assert.ok(letterPage.groupHint(thinkingGroup).length <= 40, 'the section itself says it in one short line');
 assert.match(letterPage.helpFor(idle), /达到门槛后，也要等这么久没人说话/);
 assert.match(letterPage.helpFor(idle), /off 只靠手动 \/handoff/);
 assert.match(letterPage.helpFor(letterPage.metaOf('HEARTBEAT')), /还没达到写信门槛，或没有旧内容可收/);
@@ -371,7 +438,7 @@ assert.equal(letterPage.placeholderFor(threshold), '50000');
 assert.equal(letterPage.tagText(threshold), 'Cloudflare：LETTER_TOKEN_THRESHOLD');
 console.log('PASS the letter threshold uses the normal save/clear API, refreshes letter state, and inherits Cloudflare or the default');
 // Writing and delivery have independent outcomes. Missing fields never imply an empty successful handoff.
-const statePage = vm.runInContext('resident()', context);
+const statePage = vm.runInContext('testPage()', context);
 statePage.notify = () => {};
 for (const response of [null, {}, { write: null }, { delivery: {} }, { write: {}, delivery: { latest: {} } }]) {
   statePage.setLetter(response);
@@ -421,7 +488,7 @@ statePage.setLetter(snapshot('failed', 2, 1, false));
 assert.equal(statePage.letterCanRetry(), false);
 assert.equal(statePage.letterDeliveryCounts(), '待发送 2 · 待重试 2 · 已暂停 1');
 statePage.setLetter(snapshot('sent', 3, 4));
-const letterPanel = html.slice(html.indexOf('<template x-if="group.id === \'thinking\'">'), html.indexOf('<template x-for="meta in group.fields"'));
+const letterPanel = html.slice(html.indexOf('<template x-if="configSection === \'thinking\'">'), html.indexOf('<template x-for="meta in plainFields(groupOf(configSection))"'));
 assert.ok(letterPanel.length > 0 && !letterPanel.includes('x-html'));
 for (const binding of ['letterWriteStatus()', "'最近写信时间：' + letterTime(letter.write && letter.write.at)", 'letter.write && letter.write.error', 'letterDeliveryStatus()', 'letterDeliveryCounts()', 'letterDeliveryDetail()', 'letter.delivery.latest && letter.delivery.latest.lastError', 'letterError']) {
   assert.ok(letterPanel.includes('x-text="' + binding + '"'), binding + ' uses text-only binding');
@@ -471,10 +538,10 @@ assert.equal(statePage.letterError, '');
 assert.equal(statePage.letter.write, null);
 console.log('PASS retry sends only POST /web/letter/retry, handles paused targets and duplicate clicks, and preserves state on network errors');
 // Open/save must read the status endpoint. A status read failure must not turn a successful config save into a failure.
-const configPage = vm.runInContext('resident()', context);
+const configPage = vm.runInContext('testPage()', context);
 const configCalls = [];
 configPage.notify = () => {};
-for (const name of ['loadMcp', 'loadSites', 'loadStickers', 'loadTasks', 'loadAlarms']) configPage[name] = async () => {};
+for (const name of ['loadMcp', 'loadSites', 'loadStickers', 'loadTasks', 'loadAlarms', 'loadPushState']) configPage[name] = async () => {};
 let failRead = false;
 configPage.api = async (path, options) => {
   configCalls.push(path);
@@ -501,7 +568,7 @@ console.log('PASS opening and saving config read /web/letter; a failed status re
 // The model picker. Without Aelios it browses the catalog the page ships with; with Aelios connected it browses
 // Aelios' own model list (what can actually be picked there), falling back to the catalog when that cannot be had.
 const pickerPage = (patch = {}) => {
-  const picker = vm.runInContext('resident()', context);
+  const picker = vm.runInContext('testPage()', context);
   picker.catalog = [
     { id: 'anthropic/claude-opus-5.5', name: 'claude-opus-5.5', provider: 'Anthropic', hosted: false, desc: 'Opus.' },
     { id: 'openai/gpt-5', name: 'gpt-5', provider: 'OpenAI', hosted: false, desc: 'GPT.' },
@@ -617,10 +684,10 @@ assert.equal(same.picker.open, false);
 console.log('PASS choosing the model already in use, spelled the other way, just closes the picker');
 
 
-// The usage timeline (时间流): a button in the header opens it; three sums on top, then one row per call.
-assert.ok(html.includes('@click="openUsage()" aria-label="时间流"'));
+// The usage timeline: a row on the profile page opens it; three sums on top, then one row per call.
+assert.ok(html.includes('<button class="li" type="button" @click="openUsage()"><span class="name">用量</span><span class="val" x-text="usageToday()"></span>'));
 assert.ok(html.includes("view === 'usage'"));
-const timeline = vm.runInContext('resident()', context);
+const timeline = vm.runInContext('testPage()', context);
 const usageAsked = [];
 const usageTotals = (calls, extra = {}) => ({ calls, input: 1000, cacheRead: 9000, cacheWrite: 0, output: 500, reasoning: 100, cost: 0.0123, unpriced: 0, ...extra });
 const firstRows = [
@@ -657,6 +724,152 @@ await timeline.moreUsage();
 assert.deepEqual(usageAsked, ['/web/usage', '/web/usage?before=2']);
 assert.equal(timeline.usage.rows.length, 3);
 assert.equal(timeline.usage.more, false);
+assert.equal(timeline.backText(), '回去');
 timeline.goBack();
-assert.equal(timeline.view, 'chat');
-console.log('PASS the usage timeline opens from the header, sums today, 7 and 30 days, lists each call and pages back');
+assert.equal(timeline.view, 'profile', 'back to the profile it was opened from');
+console.log('PASS the usage timeline opens from the profile, sums today, 7 and 30 days, lists each call and pages back');
+
+// Saying something: the words, pictures and the line she quotes go to /web/say in one request; it shows at once and
+// gives way to the server's copy. Two sent together each wait for their own copy; one that failed can be sent again.
+const talk = vm.runInContext('testPage()', context);
+const said = [];
+let serverLines = [];
+let answer = { status: 'completed' };
+talk.authed = true;
+for (const name of ['loadModel', 'loadAlarms', 'loadTasks']) talk[name] = async () => {};
+talk.poll = () => {};
+talk.api = async (path, options) => {
+  if (path === '/web/messages') return { data: serverLines };
+  said.push([path, options && options.body]);
+  if (answer instanceof Error) throw answer;
+  return answer;
+};
+talk.lines = [{ id: 'a0', role: 'assistant', text: '上次那只猫呢', kind: 'chat', via: 'web', at: 1 }];
+talk.quote = { id: 'a0', who: 'assistant', text: '上次那只猫呢' };
+talk.pics = [{ url: 'blob:one', data: 'AAAA' }];
+talk.draft = '  在这儿  ';
+assert.equal(talk.canSend(), true);
+const first = talk.sendDraft();
+assert.deepEqual(copy(said[0]), ['/web/say', { text: '在这儿', pictures: [{ data: 'AAAA' }], quote: 'a0' }]);
+assert.deepEqual([talk.draft, talk.pics.length, talk.quote], ['', 0, null], 'the box is cleared');
+assert.equal(talk.outbox.length, 1);
+assert.deepEqual(copy([talk.outbox[0].text, talk.outbox[0].pics, talk.outbox[0].quote.id, talk.outbox[0].state]), ['在这儿', ['blob:one'], 'a0', 'sending']);
+assert.deepEqual(copy(talk.rows().slice(-2).map((row) => row.type)), ['local', 'typing'], 'shown before the server has it, with the dots under it');
+const second = talk.sendSticker({ key: '0123456789abcdef01234567', video: false });
+assert.deepEqual(copy(said[1]), ['/web/say', { sticker: '0123456789abcdef01234567' }]);
+assert.equal(talk.outbox.length, 2);
+// The server has only the first so far: only the first gives way.
+serverLines = [...talk.lines, { id: 'u1', role: 'user', text: '在这儿', kind: 'chat', via: 'web', at: 2, pictures: 1 }];
+talk.lines = serverLines;
+talk.settleOutbox();
+assert.deepEqual(copy(talk.outbox.map((item) => item.payload.sticker || item.payload.text)), ['0123456789abcdef01234567']);
+talk.settleOutbox();
+assert.equal(talk.outbox.length, 1, 'her first line does not settle the second as well');
+serverLines = [...serverLines, { id: 'u2', role: 'user', text: '', kind: 'chat', via: 'web', at: 3, stickers: [{ url: '/stickers/0123456789abcdef01234567', video: false }] }];
+await Promise.all([first, second]);
+assert.equal(talk.outbox.length, 0);
+answer = new Error('网断了');
+talk.draft = '再说一句';
+await talk.sendDraft();
+assert.equal(talk.outbox.length, 1);
+assert.deepEqual([talk.outbox[0].state, talk.outbox[0].error], ['failed', '网断了']);
+assert.equal(talk.sending, 0);
+answer = { status: 'completed' };
+serverLines = [...serverLines, { id: 'u3', role: 'user', text: '再说一句', kind: 'chat', via: 'web', at: 4 }];
+await talk.retry(talk.outbox[0]);
+assert.deepEqual(copy(said.at(-1)), ['/web/say', { text: '再说一句' }], 'sent again as it was');
+assert.equal(talk.outbox.length, 0);
+answer = { status: 'interrupted' };
+talk.draft = '喂';
+await talk.sendDraft();
+assert.match(talk.outbox[0].error, /没回出来（interrupted）/, 'a reply that did not finish says so');
+console.log('PASS words, pictures, a quote and stickers go in one /web/say; each shows at once and gives way to its own copy; a failed one is sent again');
+
+// Quoting from the long-press menu, and how a voice message's length reads.
+talk.lines = [{ id: 'a9', role: 'assistant', text: '  好多\n话  ', kind: 'chat', via: 'web', at: 5 }, { id: 'u9', role: 'user', text: '', kind: 'chat', via: 'web', at: 6, voice: { key: null, seconds: 3 } }];
+talk.identity.name = '小助手';
+talk.menu = { open: true, id: 'a9' };
+talk.quoteFromMenu();
+assert.deepEqual(copy(talk.quote), { id: 'a9', who: 'assistant', text: ' 好多 话 ' });
+assert.equal(talk.menu.open, false);
+assert.equal(talk.quoteName('assistant'), '小助手');
+assert.equal(talk.quoteName('user'), '你');
+talk.menu = { open: true, id: 'u9' };
+talk.quoteFromMenu();
+assert.equal(talk.quote.text, '[语音]');
+assert.equal(talk.voiceLen({ seconds: 3.4 }), '0:03');
+assert.equal(talk.voiceLen({ seconds: 75 }), '1:15');
+assert.equal(talk.voiceLen({ seconds: 0 }), '');
+console.log('PASS a quote is a short excerpt of the line held; voice lengths read as m:ss');
+
+// A recording becomes a 16 kHz mono WAV.
+const wav = vm.runInContext('encodeWav([new Float32Array(4800).fill(0.5), new Float32Array(4800).fill(-0.5)], 48000, 16000)', context);
+const view = new DataView(wav.buffer);
+assert.equal(String.fromCharCode(...wav.slice(0, 4)), 'RIFF');
+assert.equal(String.fromCharCode(...wav.slice(8, 12)), 'WAVE');
+assert.equal(view.getUint16(22, true), 1, 'mono');
+assert.equal(view.getUint32(24, true), 16000);
+assert.equal(view.getUint32(40, true), 3200 * 2, '0.2 s at 16 kHz');
+assert.ok(view.getInt16(44, true) > 16000 && view.getInt16(44 + 3199 * 2, true) < -16000);
+console.log('PASS a recording is made a 16 kHz mono WAV');
+
+// The chat doors as steps: a door not started is just a button; the first step not done is open, the rest fold.
+const doors = vm.runInContext('testPage()', context);
+const imFields = (values) => ['TG_BOT_TOKEN', 'TG_ALLOWED', 'WECOM_ALLOWED', 'WECOM_CORP_ID', 'WECOM_AGENT_ID', 'WECOM_SECRET', 'WECOM_RELAY_URL', 'WECOM_RELAY_KEY', 'WECOM_TOKEN', 'WECOM_AES_KEY', 'WECOM_STICKERS', 'WECOM_STICKER_BACKGROUND']
+  .map((key) => ({ key, kind: /TOKEN$|SECRET|KEY$/.test(key) && key !== 'TG_ALLOWED' ? 'secret' : key === 'WECOM_STICKERS' ? 'choice' : 'text', value: values[key] || '', fromWorker: '', saved: Boolean(values[key]), choices: ['on', 'off'] }));
+doors.config = { fields: imFields({}), telegram: { from: null }, wecom: { gap: 'off' } };
+assert.equal(doors.doorIdle('telegram'), true);
+assert.equal(doors.doorIdle('wecom'), true);
+assert.deepEqual(copy(doors.doorPill('telegram')), { text: '没接', cls: '' });
+doors.toggleStep('wecom', 'start');
+assert.equal(doors.doorIdle('wecom'), false, 'the button opens its steps');
+assert.deepEqual(copy(doors.doorSteps('wecom').map((step) => [step.id, step.state, step.open])), [['app', 'now', true], ['relay', 'later', false], ['receive', 'later', false], ['who', 'later', false], ['stickers', 'extra', false]]);
+doors.config = { fields: imFields({ WECOM_CORP_ID: 'ww1', WECOM_AGENT_ID: '1000002', WECOM_SECRET: 's' }), telegram: { from: null }, wecom: { gap: 'WECOM_RELAY_URL' } };
+assert.deepEqual(copy(doors.doorSteps('wecom').map((step) => step.state)), ['done', 'now', 'later', 'later', 'extra']);
+assert.deepEqual(copy(doors.doorPill('wecom')), { text: '差 3 步', cls: 'warn' });
+assert.equal(doors.doorSteps('wecom')[0].open, false, 'a step done folds away');
+doors.toggleStep('wecom', 'app');
+assert.equal(doors.doorSteps('wecom')[0].open, true, 'and opens again when tapped');
+assert.equal(doors.stepSummary(doors.doorSteps('wecom')[0]), '都填好了');
+assert.ok(doors.doorSteps('wecom')[2].url, 'the receive step shows the address to paste into WeCom');
+doors.config = { fields: imFields({ TG_BOT_TOKEN: 'x', TG_ALLOWED: '@her' }), telegram: { from: 'page', bot: 'my_bot', here: true }, wecom: { gap: 'off' } };
+assert.deepEqual(copy(doors.doorPill('telegram')), { text: '已连', cls: 'ok' });
+assert.equal(doors.stepSummary(doors.doorSteps('telegram')[1]), '@her');
+doors.config.telegram.here = false;
+assert.deepEqual(copy(doors.doorPill('telegram')), { text: '没接好', cls: 'warn' });
+assert.ok(html.includes('x-show="!doorIdle(door)"'));
+console.log('PASS the chat doors are steps: not started is one button, the step to do is open, the done ones fold with a summary');
+
+// Pills say how a setting stands in colour: to fill in, or saved here.
+doors.config = { fields: [{ key: 'VOICE_ID', kind: 'text', value: '', fromWorker: '' }, { key: 'AELIOS_URL', kind: 'text', value: 'https://a.example', fromWorker: '' }], voice: { gap: 'VOICE_ID' } };
+assert.equal(doors.tagClass(doors.metaOf('VOICE_ID')), 'warn');
+assert.equal(doors.tagClass(doors.metaOf('AELIOS_URL')), 'ok');
+console.log('PASS setting pills: 要填 warns, 已存 is calm');
+
+// Alarms it set show as cards: still there (with how it repeats), or gone.
+const ring = vm.runInContext('testPage()', context);
+ring.alarms = { on: true, limit: 10, alarms: [{ id: 'a_1', note: '叫她起床', next: '10-26 周一 09:00', when: '每天 09:00', edit: 'time', date: '', time: '09:00' }] };
+const setAlarm = (id, output) => ({ type: 'tool', id, name: 'set_alarm', input: '{}', output: JSON.stringify(output), state: 'output-available' });
+const cards = ring.alarmCardsOf({ activity: [setAlarm('x', { id: 'a_1', note: '叫她起床', rings: '明天 09:00', repeat: 'every day' }), setAlarm('y', { id: 'a_2', note: '喝水', rings: '15:00' }), { type: 'tool', id: 'z', name: 'set_alarm', input: '{}', output: 'not json', state: 'output-available' }] });
+assert.deepEqual(copy(cards.map((card) => [card.id, card.rings, card.when, card.alive])), [['a_1', '10-26 周一 09:00', '每天 09:00', true], ['a_2', '15:00', '一次', false]]);
+assert.equal(ring.nextAlarm(), '1 个 · 下次 10-26 周一 09:00');
+ring.editAlarm(cards[0].alarm);
+assert.deepEqual(copy([ring.alarmEdit.open, ring.alarmEdit.id, ring.alarmEdit.kind, ring.alarmEdit.time]), [true, 'a_1', 'time', '09:00']);
+console.log('PASS alarms it set are cards in the chat, alive or gone, and can be moved from there');
+
+// Notifications are offered once in the chat, where the browser can have them, and not again after 以后再说.
+const asker = vm.runInContext('testPage()', context);
+asker.lines = [1, 2, 3].map((n) => ({ id: 'l' + n, role: 'user', text: 'x', kind: 'chat', via: 'web', at: n }));
+Object.assign(asker.push, { supported: true, on: false, ios: false, standalone: false, asked: '' });
+assert.equal(asker.pushInvite(), true);
+asker.miniApp = true;
+assert.equal(asker.pushInvite(), false, 'not inside Telegram');
+asker.miniApp = false;
+asker.push.ios = true;
+assert.equal(asker.pushInvite(), false, 'on iPhone only once it is on the home screen');
+asker.push.standalone = true;
+assert.equal(asker.pushInvite(), true);
+asker.dismissPush();
+assert.equal(asker.pushInvite(), false);
+assert.ok(readFileSync('public/sw.js', 'utf8').includes("addEventListener('push'"));
+console.log('PASS notifications are offered once, only where they can work');

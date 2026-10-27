@@ -75,6 +75,8 @@ const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, t
     #stickerSent = new Set();
     #turnTasks = new Map();
     #usageLabels = new Map();
+    #webTurns = new Map();
+    #webSeenAt = 0;
     #theirTurns = new Set();
     #readOutside = new Set();
     ctx = { storage: { put: async () => {} } };

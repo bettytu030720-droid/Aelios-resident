@@ -56,6 +56,7 @@ import {
   alarmNote,
   localOf,
   nextRing,
+  parseAt,
   parseRule,
   planAlarm,
   ruleInWords,
@@ -70,7 +71,9 @@ import { resumeLetterCompaction } from "./letter-recovery";
 import { LetterStateStore, type WriteState } from "./letter-state";
 import { deliverLetter } from "./letter-delivery";
 import { letterDeliveryStatus, letterWriteStatus } from "./letter-status";
-import { shrinkWith, withPictures, type Download } from "./pictures";
+import { PICTURE_SEND_BYTES, shrinkWith, withPictures, type Download } from "./pictures";
+import { MEDIA_MAX_BYTES, MediaStore, type MediaFile } from "./media-store";
+import { makePushKeys, pushTargetOf, sendPush, type PushKeys, type PushTarget } from "./web-push";
 import { REFUSED_PICTURE, refusalOf, refusedNotice, withoutRefused } from "./refused-pictures";
 import {
   TELEGRAM_WEBHOOK_PATH,
@@ -159,6 +162,10 @@ import type { Rgb } from "./gif";
 import {
   SPEAK_MAX_CHARS,
   VOICE_MARK,
+  audioTypeOf,
+  clock,
+  mp3Seconds,
+  wavSeconds,
   dialectOf,
   heard,
   hearing,
@@ -211,6 +218,17 @@ const PERSONA_MAX_CHARS = 30000;
 const PERSONA_VERSIONS = 10;
 // How many models that passed their trial call the web page's picker lists first.
 const RECENT_MODELS = 8;
+// The name the web page shows until RESIDENT_NAME is set.
+const DEFAULT_NAME = "住户";
+// Pictures in one message from the web page, and how large one may come (the page makes them smaller first).
+const WEB_PICTURES_MAX = 4;
+const WEB_PICTURE_MAX_BYTES = 12 * 1024 * 1024;
+// The page makes the avatar a 512-pixel square before it comes.
+const AVATAR_MAX_BYTES = 512 * 1024;
+// The page asks for the conversation every few seconds while it is open: longer without, and it has been left.
+const WEB_AWAY_MS = 20_000;
+// Devices that can get notifications at once.
+const PUSH_DEVICES_MAX = 10;
 // How long a page web_fetch read is kept, so asking about it again costs no second fetch.
 const PAGE_KEEP_MS = 60 * 60 * 1000;
 // Claude models ("anthropic/…") go out on Anthropic's Messages API, where this asks for prompt caching:
@@ -251,16 +269,36 @@ function num(value: string | undefined, fallback: number): number {
 export type WebLine = {
   id: string;
   role: "user" | "assistant";
-  kind: "chat" | "letter";
+  /** notice: a line of the web page's own (the model was changed), not part of the conversation. */
+  kind: "chat" | "letter" | "notice";
   text: string;
   at: number | null;
   via: "telegram" | "wecom" | "web" | "checkin" | "task" | null;
   activity?: Activity[];
-  /** Stickers sent in this reply, shown after its words. */
+  /** Stickers sent in this reply, shown after its words; or the one she sent from the web page. */
   stickers?: { url: string; video: boolean }[];
+  /** How many pictures her message has, each read from /web/picture by its place. */
+  pictures?: number;
+  /** A voice message: hers (its recording when she made it on the web page), or the voice this reply was said in. */
+  voice?: { key: string | null; seconds: number | null; missed?: boolean };
+  /** The message she was replying to. */
+  quote?: { who: "user" | "assistant"; text: string };
   /** Cloud tasks this reply sent, or reported on, as cards. */
   tasks?: TaskCard[];
   pending?: boolean;
+};
+
+/** A message from the web page (webSay): words, and any of pictures, a voice message, a sticker, a reply to. */
+export type WebSay = {
+  text?: string;
+  /** Pictures, base64. */
+  pictures?: { data?: string }[];
+  /** A voice message recorded there (WAV, WebM or MP4), base64. */
+  voice?: { data?: string };
+  /** A sticker's key, from a pack that is on. */
+  sticker?: string;
+  /** The id of the message she replies to. */
+  quote?: string;
 };
 
 /** Token use of the latest model call. Input includes the cached part. */
@@ -354,6 +392,49 @@ const EMPTY_REPLY = "（我好像没说出话来，再发一次？）";
 const STICKER_TOOLS = new Set(["send_sticker", "make_sticker"]);
 // What Think leaves of a picture once it has aged out of the conversation (its media eviction).
 const EVICTED_PICTURE = /\[evicted image\/[^\]]*\]/g;
+
+// What a message typed on the web page carries besides its words (webSay), kept in its metadata.
+type WebSaidMeta = {
+  at?: number;
+  /** A voice message recorded on the web page: its recording (media-store.ts) and length. */
+  voice?: { key: string; seconds: number | null };
+  /** A sticker she sent, by its key. */
+  sticker?: string;
+  /** The message she replied to. */
+  quote?: { who: "user" | "assistant"; text: string };
+};
+
+// The lines webSay puts in front of her words for the model, taken off again on the web page.
+const QUOTE_MARK = /^\[replying to (?:your|their own) message: "[^\]]*"\]\n?/;
+const STICKER_MARK = /\[sticker [^\]]*\]\n?/;
+// How much of a quoted message goes along.
+const QUOTE_MAX = 120;
+
+/** "0:12" → 12. */
+function secondsOf(clockText: string): number {
+  const [minutes, seconds] = clockText.split(":").map(Number);
+  return minutes * 60 + seconds;
+}
+
+/**
+ * The page's own notices (the model was changed) among the conversation, each before the first line that came
+ * after it. Lines without a time (a letter) keep their place.
+ */
+function withNotices(lines: WebLine[], notices: { id: string; at: number; text: string }[]): WebLine[] {
+  // Notices older than everything shown are left out: their moment has scrolled away with the chat.
+  const shownFrom = lines.find((line) => line.at !== null)?.at ?? Infinity;
+  let next = notices.findIndex((notice) => notice.at >= shownFrom);
+  if (next < 0) return lines;
+  const out: WebLine[] = [];
+  const add = (notice: { id: string; at: number; text: string }) =>
+    out.push({ id: notice.id, role: "assistant", kind: "notice", text: notice.text, at: notice.at, via: null });
+  for (const line of lines) {
+    while (next < notices.length && line.at !== null && notices[next].at < line.at) add(notices[next++]);
+    out.push(line);
+  }
+  for (const notice of notices.slice(next)) add(notice);
+  return out;
+}
 
 /** The letter in the letter turn's answer: its text after the last tool call, should the model have made one. */
 function letterText(answer: readonly { parts?: readonly { type: string; text?: string }[] }[]): string {
@@ -1029,14 +1110,57 @@ export class Resident extends Think<Env> {
   }
 
   /** The settings page's list of the alarms it set. */
-  webAlarms(): { on: boolean; limit: number; alarms: { id: string; note: string; next: string; when: string }[] } {
+  webAlarms(): {
+    on: boolean;
+    limit: number;
+    alarms: { id: string; note: string; next: string; when: string; date: string; time: string; edit: "date" | "time" | null }[];
+  } {
+    const pad = (n: number) => String(n).padStart(2, "0");
     return {
       on: this.alarmsOn(),
       limit: MAX_ALARMS,
       alarms: this.alarms()
         .all()
-        .map((alarm) => ({ id: alarm.id, note: alarm.note, next: stamp(new Date(alarm.next), this.tz), when: ruleInWords(alarm.repeat) }))
+        .map((alarm) => {
+          const local = localOf(alarm.next, this.tz);
+          const rule = alarm.repeat ? parseRule(alarm.repeat) : null;
+          return {
+            id: alarm.id,
+            note: alarm.note,
+            next: stamp(new Date(alarm.next), this.tz),
+            when: ruleInWords(alarm.repeat),
+            date: `${local.year}-${pad(local.month)}-${pad(local.day)}`,
+            time: `${pad(local.hour)}:${pad(local.minute)}`,
+            // What the page lets her change: a one-time alarm's day and time, a daily or weekly one's time of day.
+            edit: !rule ? "date" : !("error" in rule) && rule.kind === "days" ? "time" : null
+          };
+        })
     };
+  }
+
+  /** The web page moves an alarm: a one-time one to another day and time, a repeating one to another time of day. */
+  async webEditAlarm(id: string, when: string): Promise<ReturnType<Resident["webAlarms"]> | { error: string }> {
+    const alarm = this.alarms().get(id);
+    if (!alarm) return { error: "这个闹钟已经没了" };
+    const now = Date.now();
+    const text = when.trim();
+    if (alarm.repeat) {
+      const time = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(text);
+      if (!time) return { error: "填一个钟点，比如 07:30" };
+      if (!/ at \d{1,2}:\d{2}$/.test(alarm.repeat)) return { error: "这个闹钟按小时重复，没有钟点可改" };
+      const repeat = alarm.repeat.replace(/ at \d{1,2}:\d{2}$/, ` at ${time[1].padStart(2, "0")}:${time[2]}`);
+      const rule = parseRule(repeat);
+      if ("error" in rule) return { error: "这个时间排不上" };
+      this.alarms().repeatAt(id, repeat, now);
+      await this.armAlarm({ ...alarm, repeat, anchor: now }, nextRing(rule, now, now, this.tz));
+    } else {
+      const at = parseAt(text, now, this.tz);
+      if (typeof at !== "number") return { error: "填一个时间，比如 2026-11-02 09:00" };
+      if (at < now + 60_000) return { error: "要在至少一分钟以后" };
+      if (at > now + 366 * 86400_000) return { error: "最多一年以后" };
+      await this.armAlarm(alarm, at);
+    }
+    return this.webAlarms();
   }
 
   async webRemoveAlarm(id: string): Promise<ReturnType<Resident["webAlarms"]>> {
@@ -1209,7 +1333,11 @@ export class Resident extends Think<Env> {
       inputSchema: z.object({
         status: z.enum(["done", "failed", "needs_you"]),
         summary: z.string().describe("A few sentences in the job's language: what you did, the files you made, and what they need to know or decide."),
-        links: z.array(z.string()).optional().describe("Relevant https links, at most 8.")
+        links: z.array(z.string()).optional().describe("Relevant https links, at most 8."),
+        choices: z
+          .array(z.string())
+          .optional()
+          .describe("With needs_you: up to 4 short answers they can pick with one tap, a few words each, in the job's language.")
       }),
       execute: async (input) => (await this.taskReport(task.id, code, "result", input)).body
     });
@@ -1976,6 +2104,12 @@ export class Resident extends Think<Env> {
           ? "checkin"
           : "web";
       this.#drafts.set(ctx.requestId, new WebDraft(`live_${ctx.requestId}`, Date.now(), via));
+      if (via === "web") {
+        // A reply to a voice message she recorded there can be said in the voice too (speakOnWeb).
+        if (this.#webTurns.size > 20) this.#webTurns.clear();
+        const lastUser = this.messages.findLast((message) => message.role === "user");
+        this.#webTurns.set(ctx.requestId, { voice: Boolean((lastUser?.metadata as WebSaidMeta | undefined)?.voice) });
+      }
       // activeTurn is async-context-local; a separate history RPC must check it inside the captured turn.
       const withinTurn = AsyncLocalStorage.snapshot();
       this.#draftActive = () => withinTurn(() => this.activeTurn?.requestId === ctx.requestId);
@@ -2684,7 +2818,9 @@ export class Resident extends Think<Env> {
     if (result.requestId) this.#drafts.delete(result.requestId);
     if (!this.#drafts.size) this.#draftActive = null;
     const searches = (result.requestId && this.#searches.get(result.requestId)) || [];
+    const web = result.requestId ? this.#webTurns.get(result.requestId) : undefined;
     if (result.requestId) {
+      this.#webTurns.delete(result.requestId);
       this.#searches.delete(result.requestId);
       this.#theirTurns.delete(result.requestId);
       this.#readOutside.delete(result.requestId);
@@ -2721,8 +2857,15 @@ export class Resident extends Think<Env> {
     // its note too, because a response hook replayed after a restart has no trigger.
     const proactive =
       isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
-    if (proactive && reply && reply !== SKIP && !(await this.checkinAsVoice(reply))) {
-      for (const bubble of splitIntoBubbles(reply)) await this.toHer(bubble);
+    if (proactive && reply && reply !== SKIP) {
+      let delivered = await this.checkinAsVoice(reply);
+      if (!delivered) for (const bubble of splitIntoBubbles(reply)) delivered = (await this.toHer(bubble)) || delivered;
+      this.ctx.waitUntil(this.pushOut(reply, delivered ? "delivered" : "proactive"));
+    }
+    // A reply on the web page: said in the voice too when it should be, and pushed when the page has been left.
+    if (web && !proactive && reply && reply !== SKIP) {
+      this.ctx.waitUntil(this.speakOnWeb(result.message.id, reply, web.voice));
+      if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
     }
     if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
       const thread = await this.herThread();
@@ -2941,14 +3084,37 @@ export class Resident extends Think<Env> {
           continue;
         }
         via = meta?.messenger ? (meta.messenger.messengerId === "wecom" ? "wecom" : "telegram") : "web";
-        const pictures = message.parts.filter((part) => part.type === "file").length + (text.match(EVICTED_PICTURE)?.length ?? 0);
-        const said = text
-          .replace(EVICTED_PICTURE, "")
-          .replace(REFUSED_PICTURE, "\n[图片被退回]")
-          .trim()
-          .replace(STAMP_PREFIX, "")
-          .replace(VOICE_MARK, (_, length?: string, missed?: string) => `🎤${length ? ` ${length}` : ""}${missed ? "（没听清）" : ""}`);
-        lines.push({ id: message.id, role: "user", kind: "chat", text: [said, ...Array(pictures).fill("[图片]")].filter(Boolean).join("\n"), at, via });
+        const own = message.metadata as WebSaidMeta | undefined;
+        const pictures = message.parts.filter((part) => part.type === "file").length;
+        // Pictures that aged out of the conversation before media were kept: only their mark is left.
+        const gone = text.match(EVICTED_PICTURE)?.length ?? 0;
+        let voice: WebLine["voice"];
+        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "");
+        if (own?.quote) said = said.replace(QUOTE_MARK, "");
+        if (own?.sticker) said = said.replace(STICKER_MARK, "");
+        said = said
+          .replace(VOICE_MARK, (_, length?: string, missed?: string) => {
+            voice ??= {
+              key: own?.voice?.key ?? null,
+              seconds: length ? secondsOf(length) : (own?.voice?.seconds ?? null),
+              ...(missed ? { missed: true } : {})
+            };
+            return "";
+          })
+          .trim();
+        const sticker = own?.sticker ? this.stickers().byKey(own.sticker) : null;
+        lines.push({
+          id: message.id,
+          role: "user",
+          kind: "chat",
+          text: [said, ...Array(gone).fill("[图片]")].filter(Boolean).join("\n"),
+          at,
+          via,
+          ...(pictures ? { pictures } : {}),
+          ...(voice ? { voice } : {}),
+          ...(own?.quote ? { quote: own.quote } : {}),
+          ...(own?.sticker ? { stickers: [{ url: `/stickers/${own.sticker}`, video: sticker?.video ?? false }] } : {})
+        });
         continue;
       }
       if (message.role !== "assistant") continue;
@@ -2973,6 +3139,13 @@ export class Resident extends Think<Env> {
         ...(tasks ? { tasks } : {})
       });
     }
+    // The voice each reply was said in on the web page, or read out in since.
+    const media = this.media();
+    const spoken = media.spokenOf(lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id));
+    for (const line of lines) {
+      const key = spoken.get(line.id);
+      if (key) line.voice = { key, seconds: media.seconds(key) };
+    }
     // Only include a running draft when the SDK has not already exposed its assistant row.
     for (const [requestId, draft] of this.#drafts) {
       if (!this.#draftActive?.()) { this.#drafts.delete(requestId); continue; }
@@ -2993,22 +3166,339 @@ export class Resident extends Think<Env> {
         lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true, ...(stickers ? { stickers } : {}), ...(tasks ? { tasks } : {}) });
       }
     }
-    return lines;
+    this.#webSeenAt = Date.now();
+    return withNotices(lines, this.notices());
   }
 
-  /** A message typed on the web page: one turn in the same conversation, answered there (not on Telegram). */
-  async webSay(text: string): Promise<{ status: string }> {
-    const said = text.trim().slice(0, 4000);
-    if (!said) return { status: "empty" };
+  /**
+   * A message from the web page: one turn in the same conversation, answered there (not on Telegram). Besides
+   * words it can carry pictures, a voice message recorded there (heard like one on Telegram, voice.ts), a sticker
+   * from a pack that is on, and the message it replies to. What could not be taken comes back as an error, and
+   * nothing is sent.
+   */
+  async webSay(input: WebSay): Promise<{ status: string } | { error: string }> {
+    let said = String(input.text ?? "").trim().slice(0, 4000);
+    const metadata: WebSaidMeta = { at: Date.now() };
+    const pictures: UIMessage["parts"] = [];
+    for (const picture of (input.pictures ?? []).slice(0, WEB_PICTURES_MAX)) {
+      const part = await this.webPicturePart(picture);
+      if ("error" in part) return part;
+      pictures.push(part);
+    }
+    if (input.voice) {
+      const heardIt = await this.hearWebVoice(input.voice);
+      if ("error" in heardIt) return heardIt;
+      said = said ? `${said}\n${heardIt.line}` : heardIt.line;
+      metadata.voice = { key: heardIt.key, seconds: heardIt.seconds };
+    }
+    if (input.sticker) {
+      const sticker = this.stickers().byKey(String(input.sticker));
+      if (!sticker) return { error: "这张表情包不在开着的包里了" };
+      const what = [sticker.emoji, sticker.when || sticker.handle.split("/")[1]].filter(Boolean).join(" ");
+      said = `${said}${said ? "\n" : ""}[sticker ${what.replace(/\]/g, "］")}]`;
+      metadata.sticker = String(input.sticker);
+    }
+    if (!said && !pictures.length) return { status: "empty" };
+    let lead = "";
+    if (input.quote) {
+      const quoted = await this.session.getMessage(String(input.quote)).catch(() => null);
+      if (quoted && (quoted.role === "user" || quoted.role === "assistant")) {
+        const words = textOf(quoted).trim().replace(STAMP_PREFIX, "").replace(QUOTE_MARK, "").replace(VOICE_MARK, "").replace(/\s+/g, " ").trim();
+        const excerpt = words.length > QUOTE_MAX ? `${words.slice(0, QUOTE_MAX)}…` : words;
+        if (excerpt) {
+          metadata.quote = { who: quoted.role, text: excerpt };
+          lead = `[replying to ${quoted.role === "assistant" ? "your" : "their own"} message: "${excerpt.replace(/[\]"]/g, (c) => (c === "]" ? "］" : "”"))}"]\n`;
+        }
+      }
+    }
     const result = await this.saveMessages([
       {
         id: crypto.randomUUID(),
         role: "user",
-        parts: [{ type: "text", text: `[${stamp(new Date(), this.tz)}] ${said}` }],
-        metadata: { at: Date.now() }
+        parts: [{ type: "text", text: `[${stamp(new Date(), this.tz)}] ${lead}${said}` }, ...pictures],
+        metadata
       }
     ]);
     return { status: result.status };
+  }
+
+  /** A picture sent from the web page, as the model reads it: shrunk like one from Telegram (pictures.ts). */
+  private async webPicturePart(picture: { data?: unknown }): Promise<UIMessage["parts"][number] | { error: string }> {
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(atob(String(picture.data ?? "")), (c) => c.charCodeAt(0));
+    } catch {
+      return { error: "图片没传完整，再发一次" };
+    }
+    if (!bytes.length || bytes.length > WEB_PICTURE_MAX_BYTES) return { error: `图片太大了，最多 ${WEB_PICTURE_MAX_BYTES / 1024 / 1024} MB` };
+    const shrink = shrinkWith(this.env.IMAGES);
+    if (shrink) {
+      const smaller = await shrink(bytes).catch((error) => (console.error("pictures: could not shrink", { error: String(error) }), null));
+      if (smaller) bytes = smaller;
+    }
+    const type = sniff(bytes);
+    if (!type?.startsWith("image/") || type === "image/svg+xml") return { error: "这不是一张能看的图片（要 JPEG、PNG、WebP 或 GIF）" };
+    if (bytes.length > PICTURE_SEND_BYTES) return { error: "图片太大了，模型看不了，换一张小一点的" };
+    let binary = "";
+    for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+    return { type: "file", mediaType: type, url: `data:${type};base64,${btoa(binary)}` };
+  }
+
+  /** A voice message recorded on the web page: kept to play back, and heard into her words like one on Telegram. */
+  private async hearWebVoice(voice: { data?: unknown }): Promise<{ line: string; key: string; seconds: number | null } | { error: string }> {
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(atob(String(voice.data ?? "")), (c) => c.charCodeAt(0));
+    } catch {
+      return { error: "语音没传完整，再录一次" };
+    }
+    const type = audioTypeOf(bytes);
+    if (!bytes.length || !type) return { error: "这段录音读不了，再录一次" };
+    if (bytes.length > MEDIA_MAX_BYTES) return { error: "这段语音太长了" };
+    const seconds = type === "audio/wav" ? wavSeconds(bytes) : type === "audio/mpeg" ? mp3Seconds(bytes) : 0;
+    const saved = this.media().put("voice", type, bytes, seconds || null);
+    if ("error" in saved) return saved;
+    const mark = seconds ? `voice ${clock(seconds)}` : "voice";
+    const hear = hearing(this.cfg);
+    try {
+      if (!hear) throw new Error("nothing to hear it with: the Worker has no AI binding");
+      const text = (await hear(bytes, type)).trim().replace(/\s+/g, " ");
+      return { line: `[${mark}] ${text || "…"}`, key: saved.key, seconds: seconds || null };
+    } catch (error) {
+      console.error("voice: could not hear a web voice message", { error: String(error) });
+      return { line: `[${mark}, could not be heard]`, key: saved.key, seconds: seconds || null };
+    }
+  }
+
+  // ---- the web door's own things: pictures, voices, the avatar and name, notices, commands ----
+
+  #mediaStore: MediaStore | null = null;
+  /** When the web page last asked for the conversation: a reply while it is closed is pushed (web push). */
+  #webSeenAt = 0;
+  /** Web turns now running, and whether her message in it was a voice message (so the reply can be one). */
+  #webTurns = new Map<string, { voice: boolean }>();
+
+  private media(): MediaStore {
+    this.#mediaStore ??= new MediaStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#mediaStore;
+  }
+
+  /** A picture of a message, by its place among the message's pictures. Null when there is none (any more). */
+  async webPicture(id: string, n: number): Promise<{ type: string; bytes: Uint8Array } | null> {
+    const message = await this.session.getMessage(id).catch(() => null);
+    const part = message?.parts.filter((item) => item.type === "file")[n] as { mediaType?: string; url?: string } | undefined;
+    const found = part?.url?.match(/^data:([^;,]+);base64,(.*)$/s);
+    if (!found || !found[1].startsWith("image/") || found[1] === "image/svg+xml") return null;
+    try {
+      return { type: found[1], bytes: Uint8Array.from(atob(found[2]), (c) => c.charCodeAt(0)) };
+    } catch {
+      return null;
+    }
+  }
+
+  /** A voice recording or read-out kept for the web page. The avatar is public and goes by /avatar/ instead. */
+  webMedia(key: string): MediaFile | null {
+    const kind = this.media().kindOf(key);
+    return kind === "voice" || kind === "spoken" ? this.media().get(key) : null;
+  }
+
+  /**
+   * 「念给我听」: a reply read out in the voice set up on the settings page. Once said, it is kept and played again
+   * without asking the voice provider twice.
+   */
+  async webSpeak(id: string): Promise<{ key: string; seconds: number | null } | { error: string }> {
+    const media = this.media();
+    const had = media.spokenFor(id);
+    if (had && media.kindOf(had)) return { key: had, seconds: media.seconds(had) };
+    const speak = speaker(this.cfg);
+    if (!speak) return { error: "还没设置声音：去设置 →「语音」选一家" };
+    const message = await this.session.getMessage(id).catch(() => null);
+    if (!message || message.role !== "assistant") return { error: "找不到这条消息了" };
+    const said = speakable(textOf(message));
+    if (!said) return { error: "这条没有能念的字" };
+    if (said.length > SPEAK_MAX_CHARS) return { error: `太长了，最多念 ${SPEAK_MAX_CHARS} 字` };
+    try {
+      const spoken = await speak(said);
+      const saved = media.put("spoken", "audio/mpeg", spoken.audio, spoken.seconds || null);
+      if ("error" in saved) return saved;
+      media.saySpoken(id, saved.key);
+      return { key: saved.key, seconds: spoken.seconds || null };
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      console.error("voice: could not read a message out", { error: reason });
+      return { error: `没念出来：${reason}` };
+    }
+  }
+
+  /** A reply on the web page said in the voice too (VOICE_REPLY always, or mirror after a voice message of hers). */
+  private async speakOnWeb(messageId: string, reply: string, heardVoice: boolean): Promise<void> {
+    const mode = replyOf(this.cfg);
+    if (mode === "tool" || (mode === "mirror" && !heardVoice)) return;
+    const speak = speaker(this.cfg);
+    const said = speakable(reply);
+    if (!speak || !said || said.length > SPEAK_MAX_CHARS) return;
+    try {
+      const spoken = await speak(said);
+      const saved = this.media().put("spoken", "audio/mpeg", spoken.audio, spoken.seconds || null);
+      if (!("error" in saved)) this.media().saySpoken(messageId, saved.key);
+      await this.ctx.storage.delete("voice_error");
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      console.error("voice: no voice for a web reply", { error: reason });
+      await this.ctx.storage.put("voice_error", { at: Date.now(), reason });
+    }
+  }
+
+  /** Slash commands from the web page's buttons: the same answers Telegram gets. */
+  async webCommand(name: string): Promise<{ text: string } | { error: string }> {
+    if (!["status", "letter", "handoff"].includes(name)) return { error: "没有这个命令" };
+    return { text: await this.command(name) };
+  }
+
+  /** The name the web page shows (RESIDENT_NAME), and its avatar's address, if one was put up. */
+  webIdentity(): { name: string; avatar: string | null } {
+    const key = this.settings("avatar")?.value;
+    return { name: this.cfg.RESIDENT_NAME?.trim() || DEFAULT_NAME, avatar: key ? `/avatar/${key}` : null };
+  }
+
+  /** A new avatar from the web page: a square picture, made small there first. */
+  webSetAvatar(bytes: Uint8Array): { name: string; avatar: string | null } | { error: string } {
+    const type = sniff(bytes);
+    if (type !== "image/png" && type !== "image/jpeg" && type !== "image/webp") return { error: "头像要 PNG、JPEG 或 WebP" };
+    if (bytes.length > AVATAR_MAX_BYTES) return { error: `头像最多 ${AVATAR_MAX_BYTES / 1024} KB` };
+    const saved = this.media().put("avatar", type, bytes);
+    if ("error" in saved) return saved;
+    const before = this.settings("avatar")?.value;
+    this.saveSetting("avatar", saved.key);
+    if (before) this.media().remove(before);
+    return this.webIdentity();
+  }
+
+  webRemoveAvatar(): { name: string; avatar: string | null } {
+    const before = this.settings("avatar")?.value;
+    if (before) {
+      this.media().remove(before);
+      this.saveSetting("avatar", "");
+    }
+    return this.webIdentity();
+  }
+
+  /** The avatar's picture, public (the key changes with every new avatar). */
+  avatarFile(key: string): MediaFile | null {
+    return this.settings("avatar")?.value === key ? this.media().get(key) : null;
+  }
+
+  /** The web page's own notices, oldest first: a few weeks of them. */
+  private notices(): { id: string; at: number; text: string }[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_web_notices (at INTEGER NOT NULL, text TEXT NOT NULL)`;
+    return this.sql<{ rowid: number; at: number; text: string }>`SELECT rowid, at, text FROM res_web_notices ORDER BY at`.map((row) => ({
+      id: `notice_${row.rowid}`,
+      at: row.at,
+      text: row.text
+    }));
+  }
+
+  private addNotice(text: string): void {
+    this.notices();
+    this.sql`INSERT INTO res_web_notices (at, text) VALUES (${Date.now()}, ${text})`;
+    this.sql`DELETE FROM res_web_notices WHERE at < ${Date.now() - 30 * 86400_000} OR rowid NOT IN (SELECT rowid FROM res_web_notices ORDER BY at DESC LIMIT 50)`;
+  }
+
+  /** An answer picked on a thread's card that waits for their decision: to the thread, or else to the resident. */
+  async webChoose(taskId: string, choice: string): Promise<{ ok: true } | { error: string }> {
+    const store = this.cloudTasks();
+    const task = store.get(taskId);
+    if (!task || !store.choose(taskId, choice)) return { error: "这张卡已经不等你选了" };
+    if (task.runs === "local") {
+      const said = await this.webThreadSay(task.root, choice);
+      if (!("error" in said)) return { ok: true };
+    }
+    const sent = await this.webSay({ text: `关于「${task.title}」：${choice}` });
+    return "error" in sent ? sent : { ok: true };
+  }
+
+  // ---- web push to the devices that turned it on (web-push.ts) ----
+
+  /** The VAPID key pair this resident signs pushes with: made once, kept in storage. */
+  private async pushKeys(): Promise<PushKeys> {
+    const kept = await this.ctx.storage.get<PushKeys>("push_keys");
+    if (kept) return kept;
+    const made = await makePushKeys();
+    await this.ctx.storage.put("push_keys", made);
+    return made;
+  }
+
+  private pushTargets(): (PushTarget & { at: number })[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_push_targets (endpoint TEXT PRIMARY KEY, p256dh TEXT NOT NULL, auth TEXT NOT NULL, at INTEGER NOT NULL)`;
+    return this.sql<{ endpoint: string; p256dh: string; auth: string; at: number }>`SELECT endpoint, p256dh, auth, at FROM res_push_targets
+      ORDER BY at DESC`.map((row) => ({ endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth }, at: row.at }));
+  }
+
+  private pushMode(): "on" | "always" | "off" {
+    const mode = this.cfg.WEB_PUSH?.trim().toLowerCase();
+    return mode === "off" || mode === "always" ? mode : "on";
+  }
+
+  /** The settings page's 通知: the key a device subscribes with, and how many devices have. */
+  async webPush(): Promise<{ publicKey: string; devices: number; mode: "on" | "always" | "off" }> {
+    return { publicKey: (await this.pushKeys()).publicKey, devices: this.pushTargets().length, mode: this.pushMode() };
+  }
+
+  /** A device that turned notifications on (its PushSubscription). The oldest goes when there are too many. */
+  async webPushSubscribe(value: unknown): Promise<Awaited<ReturnType<Resident["webPush"]>> | { error: string }> {
+    const target = pushTargetOf(value);
+    if (!target) return { error: "这台设备给的推送地址不对" };
+    this.pushTargets();
+    this.sql`INSERT INTO res_push_targets (endpoint, p256dh, auth, at) VALUES (${target.endpoint}, ${target.keys.p256dh}, ${target.keys.auth}, ${Date.now()})
+      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, at = excluded.at`;
+    this.sql`DELETE FROM res_push_targets WHERE endpoint NOT IN (SELECT endpoint FROM res_push_targets ORDER BY at DESC LIMIT ${PUSH_DEVICES_MAX})`;
+    return this.webPush();
+  }
+
+  async webPushUnsubscribe(endpoint: string): Promise<Awaited<ReturnType<Resident["webPush"]>>> {
+    this.pushTargets();
+    this.sql`DELETE FROM res_push_targets WHERE endpoint = ${endpoint}`;
+    return this.webPush();
+  }
+
+  /** 「试一下」: one notification to every device. */
+  async webPushTest(): Promise<{ sent: number; failed: string[] }> {
+    return this.push({ title: this.webIdentity().name, body: "通知开好了，之后它找你会出现在这里。", tag: "test" });
+  }
+
+  /**
+   * A message of the resident's pushed to her devices: a proactive one that Telegram and WeCom did not get (or got,
+   * with WEB_PUSH=always), and a reply on the web page that came after she left the page.
+   */
+  private async pushOut(text: string, why: "proactive" | "delivered" | "reply"): Promise<void> {
+    const mode = this.pushMode();
+    if (mode === "off" || (why === "delivered" && mode !== "always")) return;
+    const first = unmarked(text, dialectOf(this.cfg)).replace(/\s+/g, " ").trim();
+    if (!first) return;
+    await this.push({ title: this.webIdentity().name, body: first.length > 160 ? `${first.slice(0, 160)}…` : first, tag: "chat" });
+  }
+
+  private async push(message: { title: string; body: string; tag: string }): Promise<{ sent: number; failed: string[] }> {
+    const targets = this.pushTargets();
+    if (!targets.length) return { sent: 0, failed: [] };
+    const keys = await this.pushKeys();
+    const origin = (await this.ctx.storage.get<string>("origin")) ?? "";
+    // The push services want a way to reach whoever sends: the resident's own address.
+    const subject = origin.startsWith("https://") ? origin : "mailto:resident@localhost";
+    const icon = this.webIdentity().avatar ?? "/icon-192.png";
+    const payload = JSON.stringify({ ...message, icon, url: "/" });
+    let sent = 0;
+    const failed: string[] = [];
+    for (const target of targets) {
+      const result = await sendPush(target, payload, keys, subject, { urgency: message.tag === "chat" ? "high" : "normal", topic: message.tag });
+      if ("ok" in result) sent += 1;
+      else if ("gone" in result) this.sql`DELETE FROM res_push_targets WHERE endpoint = ${target.endpoint}`;
+      else {
+        console.error("push: not sent", { error: result.error });
+        failed.push(result.error);
+      }
+    }
+    return { sent, failed };
   }
 
   async webModel(): Promise<WebModel> {
@@ -3076,11 +3566,13 @@ export class Resident extends Think<Env> {
         return { error: `这个模型用不了：${reason.slice(0, 300)}${hintFor(reason)}` };
       }
     }
+    const before = this.savedModel();
     this.saveSetting("model", model);
     if (model) {
       const recent = [model, ...this.recentModels().filter((id) => id !== model)].slice(0, RECENT_MODELS);
       this.saveSetting("recent_models", JSON.stringify(recent));
     }
+    if (model !== before) this.addNotice(model ? `换成了 ${model}` : `换回了默认的 ${this.defaultModel}`);
     return this.webModel();
   }
 
@@ -3191,9 +3683,9 @@ export class Resident extends Think<Env> {
 
   /** /tg/setup, for a webhook secret set in Cloudflare: the secret given must be that one. */
   async telegramSetup(given: string, origin: string): Promise<{ status: number; text: string; json: boolean }> {
-    if (!this.telegramConfig().token) return { status: 400, text: "no bot token yet: fill it in on the settings page (IM → Telegram), which connects it", json: false };
+    if (!this.telegramConfig().token) return { status: 400, text: "no bot token yet: fill it in on the settings page (聊天渠道 → Telegram), which connects it", json: false };
     const secret = this.cfg.TG_WEBHOOK_SECRET?.trim();
-    if (!secret) return { status: 400, text: "no TG_WEBHOOK_SECRET: connect from the settings page (IM → Telegram) instead, which makes one", json: false };
+    if (!secret) return { status: 400, text: "no TG_WEBHOOK_SECRET: connect from the settings page (聊天渠道 → Telegram) instead, which makes one", json: false };
     if (!timingSafeEqual(given, secret)) return { status: 401, text: "unauthorized", json: false };
     // The address an MCP sign-in started from the chat comes back to.
     await this.noteOrigin(origin);
@@ -3443,7 +3935,7 @@ export class Resident extends Think<Env> {
   }
 
   private async importTelegramSet(name: string): Promise<{ on: boolean; packs: PackView[]; left: number; skipped?: string[] } | { error: string }> {
-    if (!this.cfg.TG_BOT_TOKEN?.trim()) return { error: "要先在设置页「IM」接好 Telegram 机器人，才能导 Telegram 的贴纸包" };
+    if (!this.cfg.TG_BOT_TOKEN?.trim()) return { error: "要先在设置页「聊天渠道」接好 Telegram 机器人，才能导 Telegram 的贴纸包" };
     const set = await getStickerSet(this.telegramConfig(), name).catch((error) => ({ error: String(error) }));
     if ("error" in set) return { error: `Telegram 说找不到这个贴纸包：${set.error.slice(0, 200)}` };
     if (set.sticker_type === "custom_emoji") return { error: "这是表情符号包，不是贴纸包，机器人发不了" };

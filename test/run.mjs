@@ -21,6 +21,9 @@
 //   alarms   alarms the resident sets itself (start wrangler with --var ALARM_MINUTE_SECONDS:0.05)
 //   wecom    the WeCom door: its address check, pushes opened and checked, replies, stickers and voice messages
 //            through the fake relay, a relay without --media, a wrong relay key, out-of-turn messages
+//   web      the web page's own ways to talk: pictures, a quote, a voice message recorded there and replies said back,
+//            a sticker, the command buttons, a model change in the chat, its name and avatar, notifications, moving an
+//            alarm, answering a thread that needs her
 //   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
 //            --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:): connected, the resident started again, the Mini App
 //            and commands with that token, connecting again, a token Telegram refuses, taking it off
@@ -34,7 +37,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -325,7 +328,16 @@ if (phase === "main") {
     assert.deepEqual(await waitForSends(before, 1), ["看到 1 张图。"]);
     assert.ok((await log()).some((e) => e.kind === "tg.file" && e.path === "photos/photo-1.jpg"), "the largest size was downloaded");
     const { data } = await (await web("/web/messages", "test-web-key")).json();
-    assert.equal(data.findLast((l) => l.role === "user").text, "看图\n[图片]");
+    const line = data.findLast((l) => l.role === "user");
+    assert.deepEqual([line.text, line.pictures], ["看图", 1], "the words, and one picture to show");
+    const picture = await web(`/web/picture?id=${encodeURIComponent(line.id)}&n=0`, "test-web-key");
+    assert.equal(picture.status, 200);
+    assert.match(picture.headers.get("content-type"), /^image\//);
+    assert.equal(picture.headers.get("content-security-policy"), "sandbox", "never a page of this origin");
+    assert.equal(picture.headers.get("x-content-type-options"), "nosniff");
+    assert.ok((await picture.arrayBuffer()).byteLength > 0);
+    assert.equal((await web(`/web/picture?id=${encodeURIComponent(line.id)}&n=1`, "test-web-key")).status, 404, "only the pictures it has");
+    assert.equal((await web(`/web/picture?id=${encodeURIComponent(line.id)}&n=0`, "wrong-key")).status, 401, "only with the web key");
   });
 
   await step("a photo that cannot be downloaded stays a line of text", async () => {
@@ -1327,11 +1339,12 @@ if (phase === "voice") {
     assert.deepEqual([call.body.model_id, call.body.language, call.body.output_format.container], ["sonic-3.6", "zh", "mp3"]);
   });
 
-  await step("the web page shows her voice messages as a microphone and their length", async () => {
+  await step("the web page shows her voice messages as a voice bubble with their length and what was heard", async () => {
     const lines = (await (await web("/web/messages", KEY)).json()).data;
-    const theirs = lines.filter((line) => line.role === "user").map((line) => line.text);
-    assert.ok(theirs.some((text) => /🎤 0:03 今天好累呀/.test(text)), JSON.stringify(theirs.slice(-6)));
-    assert.ok(theirs.some((text) => /🎤 0:03（没听清）/.test(text)));
+    const theirs = lines.filter((line) => line.role === "user" && line.voice);
+    assert.ok(theirs.some((line) => line.voice.seconds === 3 && line.text === "今天好累呀" && !line.voice.missed), JSON.stringify(theirs.slice(-6)));
+    assert.ok(theirs.some((line) => line.voice.seconds === 3 && line.voice.missed));
+    assert.ok(!JSON.stringify(theirs).includes("🎤"), "the mark the model reads is not shown");
   });
 
   await set({ VOICE_PROVIDER: "", VOICE_API_KEY: "", VOICE_MODEL: "", VOICE_ID: "", VOICE_REPLY: "", VOICE_BASE_URL: "" });
@@ -2230,7 +2243,7 @@ if (phase === "telegram") {
     assert.equal((await post("在吗", { secret: "anything" })).status, 401);
     const setup = await fetch(`${WORKER}/tg/setup?secret=anything`);
     assert.equal(setup.status, 400);
-    assert.match(await setup.text(), /settings page \(IM → Telegram\)/);
+    assert.match(await setup.text(), /settings page \(聊天渠道 → Telegram\)/);
     assert.deepEqual((await config()).telegram, { from: null, bot: null, here: false, error: null, lastError: null });
     assert.equal((await ofKind("tg.getMe")).length, 0, "nothing asked of Telegram without a token");
   });
@@ -2335,4 +2348,245 @@ if (phase === "crash-1") {
 if (phase === "crash-2") {
   await sleep(15000);
   console.log("after restart she got:", JSON.stringify(await sent()));
+}
+
+if (phase === "web") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const json = async (path, body) => {
+    const response = await web(path, KEY, body);
+    return { status: response.status, data: await response.json() };
+  };
+  const set = async (settings) => {
+    for (const [key, text] of Object.entries(settings)) {
+      const response = await web("/web/config", KEY, { key, text });
+      assert.equal(response.status, 200, `${key}: ${await response.clone().text()}`);
+    }
+  };
+  const lines = async () => (await json("/web/messages")).data.data;
+  const say = async (body) => {
+    const { status, data } = await json("/web/say", body);
+    assert.equal(status, 200, JSON.stringify(data));
+    return data;
+  };
+  // A 16 kHz mono WAV of silence, as the page records one.
+  const wav = (seconds) => {
+    const n = 16000 * seconds;
+    const b = Buffer.alloc(44 + n * 2);
+    b.write("RIFF", 0); b.writeUInt32LE(36 + n * 2, 4); b.write("WAVE", 8); b.write("fmt ", 12);
+    b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(16000, 24);
+    b.writeUInt32LE(32000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write("data", 36); b.writeUInt32LE(n * 2, 40);
+    return b.toString("base64");
+  };
+  const png = Buffer.from(PNG).toString("base64");
+
+  await step("words from the web are answered there and not sent to Telegram; pictures go with them and are shown from /web/picture", async () => {
+    assert.deepEqual(await say({ text: "你好" }), { status: "completed" });
+    assert.deepEqual(await say({ text: "看图", pictures: [{ data: png }, { data: png }] }), { status: "completed" });
+    const all = await lines();
+    const mine = all.findLast((line) => line.role === "user");
+    assert.deepEqual([mine.text, mine.pictures, mine.via], ["看图", 2, "web"]);
+    assert.equal(all.at(-1).text, "看到 2 张图。", "the model saw both");
+    const picture = await web(`/web/picture?id=${encodeURIComponent(mine.id)}&n=1`, KEY);
+    assert.equal(picture.status, 200);
+    assert.match(picture.headers.get("content-type"), /^image\//);
+    assert.equal((await sent()).length, 0, "nothing went to Telegram");
+  });
+
+  await step("a picture that is not one, or an empty message, is refused and nothing is saved", async () => {
+    const before = (await lines()).length;
+    const bad = await json("/web/say", { text: "x", pictures: [{ data: Buffer.from("<svg></svg>").toString("base64") }] });
+    assert.equal(bad.status, 400);
+    assert.match(bad.data.error, /不是一张能看的图片/);
+    assert.equal((await json("/web/say", { text: "x", pictures: [{ data: "%%%" }] })).status, 400);
+    assert.deepEqual(await say({ text: "   " }), { status: "empty" });
+    assert.equal((await lines()).length, before);
+  });
+
+  await step("quoting a line: the model is told what she replies to, and the page shows the quote", async () => {
+    const reply = (await lines()).findLast((line) => line.role === "assistant");
+    await say({ text: "回你这句", quote: reply.id });
+    const all = await lines();
+    const mine = all.findLast((line) => line.role === "user");
+    assert.deepEqual([mine.text, mine.quote], ["回你这句", { who: "assistant", text: "看到 2 张图。" }]);
+    assert.match(all.at(-1).text, /\[replying to your message: "看到 2 张图。"\]\n回你这句/);
+    await say({ text: "引用一条没有的", quote: "no-such-message" });
+    assert.equal((await lines()).findLast((line) => line.role === "user").quote, undefined, "a quote it cannot find is left out");
+  });
+
+  await step("a voice message recorded on the web is kept to play back and, with no one to hear it, marked unheard", async () => {
+    await say({ voice: { data: wav(2) } });
+    const all = await lines();
+    const mine = all.findLast((line) => line.role === "user");
+    assert.equal(mine.voice.seconds, 2);
+    assert.equal(mine.voice.missed, true);
+    assert.match(mine.voice.key, /^[0-9a-f]{32}$/);
+    assert.match(all.at(-1).text, /\[voice 0:02, could not be heard\]/, "the model is told");
+    const audio = await web(`/web/media?key=${mine.voice.key}`, KEY);
+    assert.equal(audio.status, 200);
+    assert.equal(audio.headers.get("content-type"), "audio/wav");
+    assert.equal(audio.headers.get("content-security-policy"), "sandbox");
+    assert.equal((await audio.arrayBuffer()).byteLength, 44 + 16000 * 2 * 2);
+    assert.equal((await web(`/web/media?key=${mine.voice.key}`, "wrong")).status, 401);
+    assert.equal((await web("/web/media?key=../../x", KEY)).status, 404);
+    const garbled = await json("/web/say", { voice: { data: Buffer.from("not audio at all").toString("base64") } });
+    assert.equal(garbled.status, 400);
+  });
+
+  await step("with a voice set up, her web voice message is heard, the reply comes with its voice, and any reply can be read out", async () => {
+    await set({ VOICE_BASE_URL: "http://127.0.0.1:9999/voice", VOICE_API_KEY: "test-voice-key", VOICE_PROVIDER: "elevenlabs", VOICE_ID: "voice-123" });
+    await say({ voice: { data: wav(1) } });
+    let all = await lines();
+    const mine = all.findLast((line) => line.role === "user");
+    assert.deepEqual([mine.text, mine.voice.seconds, Boolean(mine.voice.missed)], ["网页上说的话", 1, false]);
+    // The voice is made after the reply is in, so it can take a moment.
+    const start = Date.now();
+    while (!(all.at(-1).voice && all.at(-1).voice.key) && Date.now() - start < 15000) {
+      await sleep(300);
+      all = await lines();
+    }
+    const spoken = all.at(-1).voice;
+    assert.ok(spoken && /^[0-9a-f]{32}$/.test(spoken.key), "the reply to a voice message has its voice");
+    assert.equal((await web(`/web/media?key=${spoken.key}`, KEY)).headers.get("content-type"), "audio/mpeg");
+    const earlier = all.find((line) => line.role === "assistant" && !line.voice);
+    const read = await json("/web/speak", { id: earlier.id });
+    assert.equal(read.status, 200, JSON.stringify(read.data));
+    assert.match(read.data.key, /^[0-9a-f]{32}$/);
+    const again = await json("/web/speak", { id: earlier.id });
+    assert.equal(again.data.key, read.data.key, "read once, kept");
+    assert.equal((await lines()).find((line) => line.id === earlier.id).voice.key, read.data.key, "and shown with the message");
+    assert.equal((await json("/web/speak", { id: mine.id })).status, 400, "only its own lines");
+    assert.equal((await sent()).length, 0, "nothing went to Telegram");
+    await set({ VOICE_PROVIDER: "", VOICE_ID: "", VOICE_API_KEY: "", VOICE_BASE_URL: "" });
+    assert.equal((await json("/web/speak", { id: earlier.id })).data.key, read.data.key, "a voice already made still plays");
+    const unspoken = (await lines()).find((line) => line.role === "assistant" && !line.voice);
+    assert.match((await json("/web/speak", { id: unspoken.id })).data.error ?? "", /还没设置声音/);
+  });
+
+  await step("a sticker of hers from an imported pack: the model reads what it means, the page shows it", async () => {
+    const pack = zip([
+      { name: "pack.json", data: JSON.stringify({ format: "resident-stickers/1", name: "Mine", stickers: [{ id: "hug", file: "hug.png", emoji: "🤗", when: "A hug." }] }), deflate: true },
+      { name: "hug.png", data: PNG, deflate: true }
+    ]);
+    const imported = await fetch(`${WORKER}/web/stickers/import?name=mine.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body: pack });
+    assert.equal(imported.status, 200, await imported.clone().text());
+    const packs = (await json("/web/stickers")).data.packs;
+    const key = packs.flatMap((p) => p.stickers).find((s) => s.emoji === "🤗").key;
+    await say({ sticker: key });
+    const all = await lines();
+    const mine = all.findLast((line) => line.role === "user");
+    assert.deepEqual([mine.text, mine.stickers], ["", [{ url: `/stickers/${key}`, video: false }]]);
+    assert.match(all.at(-1).text, /\[sticker 🤗 A hug\.\]/);
+    assert.equal((await json("/web/say", { sticker: "0".repeat(24) })).status, 400, "only stickers from a pack that is on");
+  });
+
+  await step("the buttons for /status, /letter and /handoff answer as the commands do; nothing else runs", async () => {
+    const status = await json("/web/command", { name: "status" });
+    assert.equal(status.status, 200);
+    assert.match(status.data.text, /模型/);
+    assert.equal((await json("/web/command", { name: "letter" })).status, 200);
+    const other = await json("/web/command", { name: "rm" });
+    assert.deepEqual([other.status, other.data.error], [400, "没有这个命令"]);
+  });
+
+  await step("a model change shows as a line in the chat, at the time it happened", async () => {
+    const picked = await json("/web/model", { text: "fake" });
+    assert.equal(picked.status, 200, JSON.stringify(picked.data));
+    const notice = (await lines()).findLast((line) => line.kind === "notice");
+    assert.ok(notice, "a notice line");
+    assert.match(notice.text, /fake/);
+    assert.ok(notice.at > 0);
+  });
+
+  await step("its name and avatar: set on its page, shown to the page, the home-screen app and its icon", async () => {
+    let check = (await json("/web/check")).data;
+    assert.deepEqual([check.name, check.avatar], ["住户", null]);
+    assert.equal((await web("/web/config", KEY, { key: "RESIDENT_NAME", text: "名".repeat(21) })).status, 400, "at most 20 characters");
+    await set({ RESIDENT_NAME: "小助手" });
+    const upload = await fetch(`${WORKER}/web/avatar`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "image/png" }, body: PNG });
+    assert.equal(upload.status, 200, await upload.clone().text());
+    const { avatar } = await upload.json();
+    assert.match(avatar, /^\/avatar\/[0-9a-f]{32}$/);
+    check = (await json("/web/check")).data;
+    assert.deepEqual([check.name, check.avatar], ["小助手", avatar]);
+    const shown = await fetch(`${WORKER}${avatar}`);
+    assert.equal(shown.status, 200, "public, like a sticker");
+    assert.equal(shown.headers.get("content-type"), "image/png");
+    const app = await fetch(`${WORKER}/manifest.webmanifest`);
+    assert.match(app.headers.get("content-type"), /manifest\+json/);
+    const manifest = await app.json();
+    assert.deepEqual([manifest.name, manifest.display, manifest.start_url], ["小助手", "standalone", "/"]);
+    assert.equal(manifest.icons[0].src, avatar);
+    const notPicture = await fetch(`${WORKER}/web/avatar`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "image/png" }, body: "hello" });
+    assert.equal(notPicture.status, 400);
+    const tooBig = await fetch(`${WORKER}/web/avatar`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "image/png" }, body: new Uint8Array(600 * 1024) });
+    assert.equal(tooBig.status, 413);
+    assert.equal((await fetch(`${WORKER}/web/avatar`, { method: "POST", body: PNG })).status, 401, "only with the web key");
+    assert.deepEqual((await json("/web/avatar/remove", {})).data, { name: "小助手", avatar: null });
+    assert.equal((await fetch(`${WORKER}${avatar}`)).status, 404, "a removed avatar is gone");
+    assert.equal((await (await fetch(`${WORKER}/manifest.webmanifest`)).json()).icons[0].src, "/icon-192.png");
+  });
+
+  await step("notifications: the page gets the resident's own key; a device that is not a push service is refused", async () => {
+    const state = (await json("/web/push")).data;
+    assert.match(state.publicKey, /^[A-Za-z0-9_-]{87}$/, "an uncompressed P-256 key, base64url");
+    assert.equal(state.devices, 0);
+    assert.equal((await json("/web/push")).data.publicKey, state.publicKey, "made once, kept");
+    for (const subscription of [null, { endpoint: "http://push.example/x", keys: { p256dh: "a", auth: "b" } }, { endpoint: "https://push.example/x" }]) {
+      assert.equal((await json("/web/push/subscribe", { subscription })).status, 400, JSON.stringify(subscription));
+    }
+    assert.deepEqual((await json("/web/push/test", {})).data, { sent: 0, failed: [] }, "no device, nothing sent");
+    assert.equal((await web("/web/push", "wrong")).status, 401);
+  });
+
+  await step("an alarm it set can be moved from the page: a daily one to another time, a one-time one to another day", async () => {
+    await set({ ALARMS: "on" });
+    await say({ text: "每天早上叫我" });
+    await say({ text: "等会儿提醒我喝水" });
+    const { alarms } = (await json("/web/alarms")).data;
+    const daily = alarms.find((alarm) => alarm.note === "叫她起床");
+    const once = alarms.find((alarm) => alarm.note === "提醒她喝水");
+    assert.deepEqual([daily.edit, daily.time, once.edit], ["time", "09:00", "date"]);
+    const moved = await json("/web/alarms/edit", { id: daily.id, when: "07:30" });
+    assert.equal(moved.status, 200, JSON.stringify(moved.data));
+    const now = moved.data.alarms.find((alarm) => alarm.id === daily.id);
+    assert.deepEqual([now.when, now.time], ["每天 07:30", "07:30"]);
+    assert.match(now.next, / 07:30$/);
+    const later = new Date(Date.now() + 3 * 86400_000);
+    const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(later);
+    const onceMoved = await json("/web/alarms/edit", { id: once.id, when: `${day} 21:15` });
+    assert.equal(onceMoved.status, 200, JSON.stringify(onceMoved.data));
+    assert.deepEqual(Object.values((({ date, time }) => ({ date, time }))(onceMoved.data.alarms.find((alarm) => alarm.id === once.id))), [day, "21:15"]);
+    assert.match((await json("/web/alarms/edit", { id: once.id, when: "2001-01-01 09:00" })).data.error, /至少一分钟以后/);
+    assert.match((await json("/web/alarms/edit", { id: daily.id, when: "七点" })).data.error, /填一个钟点/);
+    assert.equal((await json("/web/alarms/edit", { id: "a_nope", when: "07:30" })).status, 400);
+    const card = (await lines()).find((line) => line.role === "assistant" && (line.activity ?? []).some((item) => item.name === "set_alarm"));
+    assert.ok(card, "the reply that set it carries the set_alarm call its card is drawn from");
+  });
+
+  await step("a thread that needs her offers answers; the one she taps is said to the resident, once", async () => {
+    await set({ CLOUD_TASKS: "on", CLOUD_TASK_URL: "https://api.anthropic.com/v1/claude_code/routines/trig_testtask01/fire", CLOUD_TASK_TOKEN: "good-token" });
+    await say({ text: "派活" });
+    const fire = (await log()).filter((e) => e.kind === "routine.fire").at(-1);
+    const [, id, code] = fire.body.text.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/) ?? [];
+    assert.ok(id && code);
+    const asked = await fetch(`${WORKER}/tasks/${id}/result`, { method: "POST", headers: { "content-type": "application/json", "x-task-code": code },
+      body: JSON.stringify({ status: "needs_you", summary: "用哪个标题？", choices: ["短的", "长的", "短的"] }) });
+    assert.equal(asked.status, 200);
+    const start = Date.now();
+    let card;
+    while (!card && Date.now() - start < 15000) {
+      card = (await lines()).flatMap((line) => line.tasks ?? []).find((task) => task.id === id && task.status === "needs_you");
+      if (!card) await sleep(300);
+    }
+    assert.ok(card, "the card shows it waits for her");
+    assert.deepEqual([card.choices, card.chosen], [["短的", "长的"], ""]);
+    assert.equal((await json("/web/task/choose", { id, text: "中等的" })).status, 400, "only an answer it offered");
+    const chose = await json("/web/task/choose", { id, text: "长的" });
+    assert.equal(chose.status, 200, JSON.stringify(chose.data));
+    const all = await lines();
+    assert.equal(all.findLast((line) => line.role === "user").text, "关于「修 README 的错字」：长的");
+    assert.equal(all.flatMap((line) => line.tasks ?? []).find((task) => task.id === id).chosen, "长的");
+    assert.equal((await json("/web/task/choose", { id, text: "短的" })).status, 400, "once");
+  });
 }

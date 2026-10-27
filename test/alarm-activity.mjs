@@ -57,6 +57,8 @@ const built = await build({
         #stickerSent = new Set();
         #turnTasks = new Map();
         #usageLabels = new Map();
+        #webTurns = new Map();
+        #webSeenAt = 0;
         #outbox = new Map();
         #short = false;
         #letterPromise = null;
@@ -81,6 +83,9 @@ const built = await build({
         savedModel() { return "fake"; }
         alarmsOn() { return true; }
         async checkinAsVoice() { return false; }
+        pushed = [];
+        async pushOut(...args) { this.pushed.push(args); }
+        async speakOnWeb() {}
         learn(...args) { this.learned.push(args); }
         letterState() { return { write: (value) => this.writes.push(value) }; }
         failLetter(error) { this.writes.push({ state: "failed", error }); }

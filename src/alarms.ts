@@ -245,6 +245,11 @@ export class AlarmStore {
     this.sql`UPDATE res_alarms SET next_at = ${next} WHERE id = ${id}`;
   }
 
+  /** A repeating alarm moved to another time of day: its new repeat, counted from now. */
+  repeatAt(id: string, repeat: string, now: number): void {
+    this.sql`UPDATE res_alarms SET repeat = ${repeat}, anchor = ${now} WHERE id = ${id}`;
+  }
+
   armed(id: string, next: number, scheduleId: string): void {
     this.sql`UPDATE res_alarms SET next_at = ${next}, schedule_id = ${scheduleId} WHERE id = ${id}`;
   }

@@ -152,6 +152,9 @@ export function audioTypeOf(bytes: Uint8Array): string | null {
   if (ascii(0, 3) === "ID3" || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return "audio/mpeg";
   if (ascii(0, 4) === "OggS") return "audio/ogg";
   if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "audio/wav";
+  // What a browser records in: WebM (Chrome, Firefox) or MP4 (Safari).
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return "audio/webm";
+  if (ascii(4, 8) === "ftyp") return "audio/mp4";
   return null;
 }
 
@@ -389,6 +392,22 @@ export function mp3Seconds(bytes: Uint8Array): number {
     const kbps = BITRATES[version === 3 ? 1 : 2][bytes[at + 2] >> 4];
     if (!kbps || ((bytes[at + 1] >> 1) & 3) !== 1) continue;
     return ((bytes.length - at) * 8) / (kbps * 1000);
+  }
+  return 0;
+}
+
+/** How long a WAV recording plays, from its byte rate and its data chunk. 0 when it is not one this can read. */
+export function wavSeconds(bytes: Uint8Array): number {
+  const ascii = (from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
+  if (bytes.length < 44 || ascii(0, 4) !== "RIFF" || ascii(8, 12) !== "WAVE") return 0;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let byteRate = 0;
+  for (let at = 12; at + 8 <= bytes.length; ) {
+    const id = ascii(at, at + 4);
+    const size = view.getUint32(at + 4, true);
+    if (id === "fmt " && at + 20 <= bytes.length) byteRate = view.getUint32(at + 16, true);
+    if (id === "data") return byteRate ? Math.min(size, bytes.length - at - 8) / byteRate : 0;
+    at += 8 + size + (size % 2);
   }
   return 0;
 }

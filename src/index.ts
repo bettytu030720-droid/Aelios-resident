@@ -11,6 +11,8 @@
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
+//   GET  /avatar/<key>                  the resident's avatar, put up on the web page (public, like a sticker)
+//   GET  /manifest.webmanifest          the web page as an app for the home screen, with the resident's name and avatar
 //   POST /tasks/<id>/progress|result    a GitHub Actions run or a cloud Claude Code session reporting on its task
 //                                       (cloud-tasks.ts), with the task's one-time code in x-task-code
 //   everything else                     the web page itself (public/)
@@ -33,6 +35,34 @@ const THREAD_ID = /^t_[0-9a-f]{10}$/;
 const WECOM_MAX_BYTES = 64 * 1024;
 // Telegram and the web page both talk to this one agent.
 const AGENT_NAME = "default";
+// A message from the web page with four pictures and a voice message, in base64; any other call is small.
+const SAY_MAX_BYTES = 24 * 1024 * 1024;
+const JSON_MAX_BYTES = 1024 * 1024;
+const AVATAR_UPLOAD_MAX = 512 * 1024;
+
+/** A file of hers the web page reads and shows itself: never run as a page of this origin, never kept by caches. */
+function privateFile(type: string): HeadersInit {
+  return {
+    "content-type": type,
+    "content-security-policy": "sandbox",
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, max-age=86400"
+  };
+}
+
+/** What makes the web page an app to put on the home screen: its name and icon follow the resident's. */
+async function manifest(env: Env): Promise<Response> {
+  const { name, avatar } = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).webIdentity();
+  const icons = [
+    ...(avatar ? [{ src: avatar, sizes: "512x512", purpose: "any" }] : []),
+    { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: avatar ? "maskable" : "any maskable" },
+    { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: avatar ? "maskable" : "any maskable" }
+  ];
+  return Response.json(
+    { name, short_name: name, start_url: "/", scope: "/", display: "standalone", background_color: "#070a16", theme_color: "#070a16", icons },
+    { headers: { "content-type": "application/manifest+json", "cache-control": "no-cache" } }
+  );
+}
 
 async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
@@ -146,6 +176,18 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     const saved = await agent.webImportStickerZip(bytes, (url.searchParams.get("name") ?? "").replace(/\.zip$/i, ""));
     return Response.json(saved, { status: "error" in saved ? 400 : 200 });
   }
+  // The avatar comes as it is: a square the page has made small.
+  if (url.pathname === "/web/avatar" && request.method === "POST") {
+    if (Number(request.headers.get("content-length") ?? 0) > AVATAR_UPLOAD_MAX) return Response.json({ error: "头像太大了" }, { status: 413 });
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.length > AVATAR_UPLOAD_MAX) return Response.json({ error: "头像太大了" }, { status: 413 });
+    const saved = await agent.webSetAvatar(bytes);
+    return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+  }
+  // A message can carry pictures and a voice message, in base64: larger than the other calls, but not without end.
+  if (Number(request.headers.get("content-length") ?? 0) > (url.pathname === "/web/say" ? SAY_MAX_BYTES : JSON_MAX_BYTES)) {
+    return Response.json({ error: "发的东西太大了" }, { status: 413 });
+  }
   const body =
     request.method === "POST"
       ? ((await request.json().catch(() => ({}))) as {
@@ -159,16 +201,69 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
           emoji?: string;
           site?: string;
           host?: string;
+          pictures?: { data?: string }[];
+          voice?: { data?: string };
+          sticker?: string;
+          quote?: string;
+          subscription?: unknown;
+          endpoint?: string;
         })
       : {};
   switch (`${request.method} ${url.pathname}`) {
     case "GET /web/check":
-      return Response.json({ ok: true, aelios: await agent.hasMemory(), via: who.via });
+      return Response.json({ ok: true, aelios: await agent.hasMemory(), via: who.via, ...(await agent.webIdentity()) });
     case "GET /web/messages":
       return Response.json({ data: await agent.webHistory() });
-    case "POST /web/say":
+    case "POST /web/say": {
       await agent.noteOrigin(url.origin);
-      return Response.json(await agent.webSay(String(body.text ?? "")));
+      const said = await agent.webSay({
+        text: String(body.text ?? ""),
+        ...(Array.isArray(body.pictures) ? { pictures: body.pictures.map((picture) => ({ data: String(picture?.data ?? "") })) } : {}),
+        ...(body.voice ? { voice: { data: String(body.voice.data ?? "") } } : {}),
+        ...(body.sticker ? { sticker: String(body.sticker) } : {}),
+        ...(body.quote ? { quote: String(body.quote) } : {})
+      });
+      return Response.json(said, { status: "error" in said ? 400 : 200 });
+    }
+    case "GET /web/picture": {
+      // Her picture, as bytes the page shows itself: never a page of this origin.
+      const n = Number(url.searchParams.get("n"));
+      const picture = Number.isSafeInteger(n) && n >= 0 ? await agent.webPicture(url.searchParams.get("id") ?? "", n) : null;
+      if (!picture) return new Response("not found", { status: 404 });
+      return new Response(picture.bytes, { headers: privateFile(picture.type) });
+    }
+    case "GET /web/media": {
+      const key = url.searchParams.get("key") ?? "";
+      const file = /^[0-9a-f]{32}$/.test(key) ? await agent.webMedia(key) : null;
+      if (!file) return new Response("not found", { status: 404 });
+      return new Response(file.bytes, { headers: privateFile(file.type) });
+    }
+    case "POST /web/speak": {
+      const spoken = await agent.webSpeak(String(body.id ?? ""));
+      return Response.json(spoken, { status: "error" in spoken ? 400 : 200 });
+    }
+    case "POST /web/command": {
+      const answer = await agent.webCommand(String(body.name ?? ""));
+      return Response.json(answer, { status: "error" in answer ? 400 : 200 });
+    }
+    case "POST /web/avatar/remove":
+      return Response.json(await agent.webRemoveAvatar());
+    case "POST /web/task/choose": {
+      await agent.noteOrigin(url.origin);
+      const chosen = await agent.webChoose(String(body.id ?? ""), String(body.text ?? ""));
+      return Response.json(chosen, { status: "error" in chosen ? 400 : 200 });
+    }
+    case "GET /web/push":
+      return Response.json(await agent.webPush());
+    case "POST /web/push/subscribe": {
+      await agent.noteOrigin(url.origin);
+      const saved = await agent.webPushSubscribe(body.subscription);
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/push/unsubscribe":
+      return Response.json(await agent.webPushUnsubscribe(String(body.endpoint ?? "")));
+    case "POST /web/push/test":
+      return Response.json(await agent.webPushTest());
     case "POST /web/pin":
       return Response.json({ ok: await agent.webPin(String(body.text ?? "")) });
     case "GET /web/model":
@@ -246,6 +341,10 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json(await agent.webAlarms());
     case "POST /web/alarms/remove":
       return Response.json(await agent.webRemoveAlarm(String(body.id ?? "")));
+    case "POST /web/alarms/edit": {
+      const moved = await agent.webEditAlarm(String(body.id ?? ""), String(body.when ?? ""));
+      return Response.json(moved, { status: "error" in moved ? 400 : 200 });
+    }
     case "GET /web/tasks":
       return Response.json(await agent.webTasks(url.origin));
     case "POST /web/tasks/test": {
@@ -296,6 +395,15 @@ export default {
       if (url.pathname === WECOM_PATH) return await handleWecom(request, env, url);
       if (url.pathname === "/tg/setup") return await handleSetup(request, env, url);
       if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);
+      if (url.pathname === "/manifest.webmanifest" && request.method === "GET") return await manifest(env);
+      const avatar = url.pathname.match(/^\/avatar\/([0-9a-f]{32})$/);
+      if (avatar && request.method === "GET") {
+        const file = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).avatarFile(avatar[1]);
+        if (!file) return new Response("not found", { status: 404 });
+        return new Response(file.bytes, {
+          headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" }
+        });
+      }
       const sticker = url.pathname.match(/^\/stickers\/([0-9a-f]{24})$/);
       if (sticker && request.method === "GET") {
         const file = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).stickerFile(sticker[1]);
