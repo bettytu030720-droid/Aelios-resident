@@ -399,7 +399,7 @@ Wherever it runs:
 - Jobs are sent only in a turn you started yourself; not if that turn has read a web page, searched the web or called another MCP server. At most 2 jobs per reply and 10 per 24 hours.
 - Results that come back are treated as information, not as instructions. Each job has its own one-time code; nothing without it is accepted, and it expires after 7 days.
 - On GitHub and claude.ai it works on a new branch and opens a PR, and never pushes to the default branch, deletes anything or spends money unless the job says so.
-- Only the newest 200 jobs are kept; a thread on the resident whose jobs are all gone is deleted with its files.
+- Only the newest 200 jobs are kept; a thread on the resident whose jobs are all gone is deleted with its files. Until then its files stay, with no time limit, in the resident's Durable Object storage on your Cloudflare account, and count toward its SQLite storage (5 GB in all on the free plan; on the paid plan 5 GB-month included, then $0.20 a GB-month). A thread that ran on GitHub Actions or claude.ai keeps its files there; the resident keeps only its report and links.
 - If no result comes back within 3 hours (longer for a job that keeps reporting progress, up to 12 hours), it tells you, with the link.
 
 On GitHub and claude.ai, a follow-up starts afresh with the earlier result as context. The Anthropic trigger API is still in preview and has hourly trigger limits.

@@ -2633,10 +2633,14 @@ if (phase === "web") {
     const start = Date.now();
     while (!(await waiting()).card && Date.now() - start < 15000) await sleep(300);
     assert.deepEqual(await waiting(), { card: true, recent: true, thread: true, page: true });
+    assert.equal((await json("/web/tasks")).data.open, 1, "the count on the threads button");
+    assert.equal((await json("/web/tasks/test", {})).status, 200);
+    assert.equal((await json("/web/tasks")).data.open, 1, "a test from the settings page is not counted: it is not a thread");
     assert.equal((await json("/web/task/settle", { id: "t_0000000000" })).status, 400);
     const before = (await lines()).length;
     assert.deepEqual((await json("/web/task/settle", { id })).data, { ok: true });
     assert.deepEqual(await waiting(), { card: false, recent: false, thread: false, page: false });
+    assert.equal((await json("/web/tasks")).data.open, 0, "nothing left on the threads button");
     assert.equal((await lines()).length, before, "the resident is not told");
     assert.match((await json("/web/task/settle", { id })).data.error, /不等你了/, "once");
     assert.equal((await web("/web/task/settle", "wrong", { id })).status, 401);

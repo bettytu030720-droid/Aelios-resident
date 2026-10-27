@@ -705,6 +705,8 @@ function resident() {
       this.lines = lines;
       this.settleOutbox();
       if (lines.length > before && !stick) this.unseen += lines.length - before;
+      // Something new was said, as when it comes back with what a thread did: the threads' count follows.
+      if (lines.length !== before && this.cloud.on) this.loadTasks().catch(function () {});
       // At the bottom before the new lines came: follow them, however tall they are.
       if (stick) this.scrollSoon(true);
     },
@@ -1112,8 +1114,10 @@ function resident() {
       return (https(task.sessionUrl) ? [{ url: task.sessionUrl, text: '打开会话' }] : [])
         .concat((task.links || []).filter(https).map(function (url) { return { url: url, text: self.linkText(url) }; }));
     },
+    // Threads at work or waiting for her, counted as 线程 lists them.
     workingTasks() {
-      return (this.cloud.tasks || []).filter(function (task) { return task.status === 'sent' || task.status === 'working' || task.waiting; }).length;
+      if (typeof this.cloud.open === 'number') return this.cloud.open;
+      return (this.cloud.tasks || []).filter(function (task) { return !task.test && (task.status === 'sent' || task.status === 'working' || task.waiting); }).length;
     },
 
     // ---- alarms: cards in the chat, and moving one ----

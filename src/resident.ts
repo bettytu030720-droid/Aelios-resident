@@ -1507,6 +1507,7 @@ export class Resident extends Think<Env> {
     today: number;
     limit: number;
     tasks: TaskCard[];
+    open: number;
   }> {
     if (origin) await this.noteOrigin(origin);
     const own = (await this.ctx.storage.get<string>("origin")) ?? "";
@@ -1519,7 +1520,11 @@ export class Resident extends Think<Env> {
       prompt: own ? routinePrompt(own) : "",
       today: this.cloudTasks().sentToday(),
       limit: TASKS_PER_DAY,
-      tasks: this.cloudTasks().recent(10).map((task) => this.cloudTasks().card(task))
+      tasks: this.cloudTasks().recent(10).map((task) => this.cloudTasks().card(task)),
+      // Threads at work or waiting for her, as 线程 lists them (tests are not threads): the count on its button.
+      open: this.cloudTasks()
+        .threads()
+        .filter((thread) => thread.status === "sent" || thread.status === "working" || thread.waiting).length
     };
   }
 

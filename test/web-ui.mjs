@@ -956,6 +956,26 @@ const waitingCard = () => ({ id: 't_0123456789', title: '看 PR', status: 'needs
 aside.lines = [{ id: 'a1', role: 'assistant', kind: 'chat', text: '派了', tasks: [waitingCard()] }, { id: 'a2', role: 'assistant', kind: 'chat', text: '它在等你', tasks: [waitingCard()] }];
 aside.cloud = { ...aside.cloud, tasks: [waitingCard(), { ...waitingCard(), id: 't_1111111111', status: 'working', waiting: false }] };
 assert.equal(aside.workingTasks(), 2, 'one at work, one waiting for her');
+aside.cloud.tasks.push({ ...waitingCard(), id: 't_2222222222', status: 'sent', waiting: false, test: true });
+assert.equal(aside.workingTasks(), 2, 'a test from the settings page is not a thread');
+aside.cloud.open = 0;
+assert.equal(aside.workingTasks(), 0, 'the count the resident gives, as 线程 lists them');
+delete aside.cloud.open;
+// When something new is said (it comes back with what a thread did), the count is read again.
+const counted = [];
+const recount = vm.runInContext('testPage()', context);
+recount.authed = true;
+recount.cloud = { ...recount.cloud, on: true };
+recount.loadTasks = async () => { counted.push('tasks'); };
+let spoken = [{ id: 'x1', role: 'assistant', kind: 'chat', text: '在', at: 1 }];
+recount.api = async () => ({ data: spoken });
+await recount.refresh();
+assert.equal(counted.length, 1);
+await recount.refresh();
+assert.equal(counted.length, 1, 'not on every look');
+spoken = [...spoken, { id: 'x2', role: 'assistant', kind: 'chat', text: '线程交差了', at: 2 }];
+await recount.refresh();
+assert.equal(counted.length, 2);
 assert.equal(aside.taskStatusText(aside.stateOf(aside.lines[0].tasks[0])), '等你拍板');
 aside.api = async (path, options) => { asideCalls.push([path, options.body]); return { ok: true }; };
 await aside.settle(aside.lines[0].tasks[0]);
