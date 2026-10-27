@@ -24,6 +24,8 @@
 //   web      the web page's own ways to talk: pictures, a quote, a voice message recorded there and replies said back,
 //            a sticker, the command buttons, a model change in the chat, its name and avatar, notifications, moving an
 //            alarm, answering a thread that needs her
+//   stall    a model that goes quiet: the turn is cut and run again, and the messages after it are answered
+//            (start wrangler with --var CHAT_STALL_SECONDS:2)
 //   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
 //            --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:): connected, the resident started again, the Mini App
 //            and commands with that token, connecting again, a token Telegram refuses, taking it off
@@ -37,7 +39,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200 }[phase] ?? 900;
+let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -2411,6 +2413,25 @@ if (phase === "telegram") {
     assert.equal((await post("在吗", { secret })).status, 401);
     assert.equal((await fetch(`${WORKER}/web/check`, { headers: { "x-telegram-init-data": initData(TOKEN) } })).status, 401);
     assert.equal((await web("/web/telegram/connect", KEY, {})).status, 400);
+  });
+}
+
+if (phase === "stall") {
+  await fetch(`${MOCK}/__reset`);
+  await step("a turn whose model goes quiet is cut and run again, and she gets the reply", async () => {
+    const before = (await sent()).length;
+    const started = Date.now();
+    assert.equal((await post("卡住测试")).status, 200);
+    const out = await waitForSends(before, 1, 30000);
+    assert.ok(out.some((text) => text.includes("刚才卡住了，现在好了。")), JSON.stringify(out));
+    // Cut after CHAT_STALL_SECONDS (2), not held until the connection drops.
+    assert.ok(Date.now() - started < 25000);
+  });
+  await step("a message after it is answered as usual", async () => {
+    const before = (await sent()).length;
+    await post("你好");
+    const out = await waitForSends(before, 1, 20000);
+    assert.ok(out.length >= 1, JSON.stringify(out));
   });
 }
 
