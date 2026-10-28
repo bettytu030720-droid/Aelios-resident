@@ -330,19 +330,13 @@ await test("a GitHub Actions address is not a trigger any more: it says to fill 
   assert.equal(calls.length, 0);
 });
 
-await test("cloud_task's description offers only the places that are set up, and says which is usual", () => {
-  const plain = t.taskDescription({ linux: false, external: false });
-  assert.match(plain, /It runs in local:/);
-  assert.ok(!/execution|linux|external/.test(plain), "no choice when there is only one place");
-  const claude = t.taskDescription({ linux: false, external: true });
-  assert.match(claude, /- external:/);
-  assert.match(claude, /- local:/);
-  assert.ok(!/- linux:/.test(claude));
-  assert.match(claude, /Leave execution out for external/);
-  const actions = t.taskDescription({ linux: true, external: false });
-  assert.match(actions, /- linux:/);
-  assert.match(actions, /Leave execution out for local/);
-  assert.equal(t.taskDescription({ linux: true, external: false }), actions, "the same settings give the same words (prompt cache)");
+await test("cloud_task's description is the same whatever is set up, and says where a job goes", () => {
+  // The tools come first in the prompt cache: turning a place on or off on the settings page must not change them.
+  const text = t.TASK_DESCRIPTION;
+  for (const place of ["- local:", "- external:", "- linux:"]) assert.ok(text.includes(place), place);
+  assert.match(text, /Leave execution out and it goes where they want jobs to go: claude\.ai when it is set up, otherwise a thread here/);
+  assert.match(text, /pick external or linux: it goes to whichever of the two is set up/);
+  assert.ok(!/\$\{|undefined/.test(text));
 });
 
 await test("a thread here reads a brief without the code; their own words say so", () => {
