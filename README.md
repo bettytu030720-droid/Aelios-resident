@@ -452,6 +452,7 @@ The first time you connect a claude.ai routine (the settings page shows the same
 Wherever it runs:
 
 - Under the reply that sent a job there is a small card (sent, working, done, waiting for you, failed, no reply). **Open thread** (「打开线程」) shows the details; jobs on GitHub or claude.ai also have **Open session** (「打开会话」), and a claude.ai session can be continued there, with a new result reported back again.
+- A job that needs a shell goes to GitHub Actions or claude.ai, whichever is connected (with both, the resident picks). Connecting or disconnecting either one does not change what the chat's model is told about background help, so it does not rewrite the chat's cache.
 - A job contains only the work itself, not the conversation or anything private. The thread starts out knowing nothing, so the resident writes the job out in full.
 - Jobs are sent only in a turn you started yourself; not if that turn has read a web page, searched the web or called another MCP server. At most 2 jobs per reply and 10 per 24 hours.
 - Results that come back are treated as information, not as instructions. Each job has its own one-time code; nothing without it is accepted, and it expires after 7 days.

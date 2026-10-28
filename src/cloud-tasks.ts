@@ -360,33 +360,27 @@ export function taskOfNote(text: string): string | null {
 export type TaskRoutes = { linux: boolean; external: boolean };
 
 /**
- * cloud_task's description for these settings. It changes only when the settings do, so the prompt cache holds.
- * With claude.ai set up, jobs go there by default (their subscription); local is for light reading and writing.
+ * cloud_task's description. It is the same whatever is set up, so turning a place on or off on the settings page
+ * does not rewrite the prompt cache (the tools come first in it): the resident picks the place, and says where the
+ * job went (sendTask).
  */
-export function taskDescription(routes: TaskRoutes): string {
-  const lead =
-    "Hand a piece of real work to one of your threads, your hands, when they ask for such work: research, writing, " +
-    "making a page or a document, changes in their repositories. You stay in the chat. Write the whole job for a " +
-    "thread that knows nothing of this chat: what to do, where, what done looks like and what to hand back. Only the " +
-    "job: never the chat itself, nor anything private or intimate. The result comes back to you later as a note, and " +
-    "you tell them. To carry on with an earlier task, pass its id as follow_up_of: its result goes along, and a local " +
-    "thread carries on with its own files and what it did before.";
-  const local =
-    "local: a thread of yours here, with web search, web pages, memory, the notebook and files " +
-    "they can open on the web page; no shell, so it cannot install, run or test anything.";
-  const linux =
-    "linux: a GitHub Actions run on their GitHub account, with a shell: installing, building, running tests, opening " +
-    "pull requests; name the repository to change in repo.";
-  const external =
-    "external: a cloud Claude Code session on their claude.ai plan, with a shell and their repositories; they can open " +
-    "it and talk to it.";
-  if (!routes.linux && !routes.external) return `${lead}\nIt runs in ${local}`;
-  const choices = [routes.external ? external : null, local, routes.linux ? linux : null].filter(Boolean).join("\n- ");
-  const usual = routes.external
-    ? "Leave execution out for external, which is the usual one. Pick local only for reading and writing that needs no repository."
-    : "Leave execution out for local, which is the usual one. Pick linux only when the job needs a shell.";
-  return `${lead}\nWhere it runs (execution):\n- ${choices}\n${usual}`;
-}
+export const TASK_DESCRIPTION =
+  "Hand a piece of real work to one of your threads, your hands, when they ask for such work: research, writing, " +
+  "making a page or a document, changes in their repositories. You stay in the chat. Write the whole job for a " +
+  "thread that knows nothing of this chat: what to do, where, what done looks like and what to hand back. Only the " +
+  "job: never the chat itself, nor anything private or intimate. The result comes back to you later as a note, and " +
+  "you tell them. To carry on with an earlier task, pass its id as follow_up_of: its result goes along, and a local " +
+  "thread carries on with its own files and what it did before.\n" +
+  "Where it runs (execution), as far as they have set it up on their settings page:\n" +
+  "- local: a thread of yours here, with web search, web pages, memory, the notebook and files they can open on the " +
+  "web page; no shell, so it cannot install, run or test anything. Always there.\n" +
+  "- external: a cloud Claude Code session on their claude.ai plan, with a shell and their repositories; they can " +
+  "open it and talk to it.\n" +
+  "- linux: a GitHub Actions run on their GitHub account, with a shell: installing, building, running tests, opening " +
+  "pull requests; name the repository to change in repo.\n" +
+  "Leave execution out and it goes where they want jobs to go: claude.ai when it is set up, otherwise a thread here. " +
+  "Pick local for reading and writing that needs no repository. When the job needs a shell, pick external or linux: " +
+  "it goes to whichever of the two is set up. The answer says where it went, or which places are set up.";
 
 // ---- the tasks, in the resident's own SQLite ----
 

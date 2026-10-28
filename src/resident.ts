@@ -125,7 +125,7 @@ import {
   quietNote,
   resultNote,
   routinePrompt,
-  taskDescription,
+  TASK_DESCRIPTION,
   taskOfNote,
   threadName,
   isFireUrl,
@@ -1261,26 +1261,38 @@ export class Resident extends Think<Env> {
     return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true, thinking: false }) : this.modelFor(name)) };
   }
 
-  /** cloud_task, once CLOUD_TASKS is on. It offers only the places that are set up. */
+  /**
+   * cloud_task, once CLOUD_TASKS is on. Its words and its choices are the same whatever is set up, so the prompt
+   * cache holds when a place is turned on or off (TASK_DESCRIPTION); sendTask picks the place.
+   */
   private taskTools(): ToolSet {
     if (!this.cloudTasksOn()) return {};
-    const routes = this.taskRoutes();
-    const places = ["local", ...(routes.external ? ["external"] : []), ...(routes.linux ? ["linux"] : [])] as [TaskExecution, ...TaskExecution[]];
-    const execution =
-      places.length > 1 ? { execution: z.enum(places).optional().describe("Where it runs, from the description. Leave it out for the usual one.") } : {};
     return {
       cloud_task: tool({
-        description: taskDescription(routes),
+        description: TASK_DESCRIPTION,
         inputSchema: z.object({
           title: z.string().describe("A few words in their language, for the task's card."),
           job: z.string().describe("The whole job, for a thread that knows nothing else."),
           repo: z.string().optional().describe("owner/name of the GitHub repository to work in, if there is one."),
-          ...execution,
+          execution: z.enum(["local", "external", "linux"]).optional().describe("Where it runs, from the description. Leave it out for the usual place."),
           follow_up_of: z.string().optional().describe("The id (t_…) of an earlier task this one continues.")
         }),
         execute: async (input) => this.sendTask(input as TaskInput)
       })
     };
+  }
+
+  /**
+   * The place a job asked for in cloud_task goes to: a place with a shell that is not set up gives way to the other
+   * one that is; otherwise the place, or what is set up.
+   */
+  private placeFor(asked: TaskExecution | undefined): TaskExecution | undefined | { error: string } {
+    if (!asked || asked === "local") return asked;
+    const routes = this.taskRoutes();
+    if (routes[asked]) return asked;
+    const other = asked === "linux" ? "external" : "linux";
+    if (routes[other]) return other;
+    return { error: `Not sent: ${asked} is not set up on their settings page; only local is. Send it to local if a thread without a shell can do it, or tell them.` };
   }
 
   /** Why no task can be sent in this turn; null when one can. */
@@ -1301,9 +1313,11 @@ export class Resident extends Think<Env> {
     const earlier = input.follow_up_of?.trim() ?? "";
     const follows = earlier ? this.cloudTasks().get(earlier) : null;
     if (earlier && !follows) return { error: `No task ${earlier}.` };
+    const execution = this.placeFor(input.execution);
+    if (typeof execution === "object") return execution;
     const id = this.activeTurn!.requestId;
     this.#turnTasks.set(id, (this.#turnTasks.get(id) ?? 0) + 1);
-    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution: input.execution }, follows);
+    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution }, follows);
     if ("error" in task) return { error: task.error };
     return { task: task.id, title: task.title, runs: task.runs, session_url: task.sessionUrl, note: "Sent. Its result comes back to you later as a note." };
   }
