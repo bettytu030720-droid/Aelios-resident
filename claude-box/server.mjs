@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { replyStream, transcript, turnEntries } from "./transcript.mjs";
+import { lastLine, replyStream, transcript } from "./transcript.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
 // Claude Code keys a transcript by its working directory, so it is the same on every turn.
@@ -112,9 +112,7 @@ async function turn(body, write, signal) {
   } finally {
     await rm(config, { recursive: true, force: true }).catch(() => {});
   }
-  const streamed = stream.end();
-  if (!failure && !streamed) failure = "Claude Code answered nothing";
-  write(failure ? { error: failure } : { done: turnEntries(appended) });
+  write(lastLine(stream, failure, appended));
 }
 
 export const server = http.createServer(async (request, response) => {

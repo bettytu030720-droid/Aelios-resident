@@ -107,3 +107,13 @@ export function replyStream(send) {
     }
   };
 }
+
+/**
+ * The last line of a turn. A failed turn ends with its error and the reply left open: no message_stop says it
+ * finished, so what streamed before reads as cut off. A turn that answered closes the reply, then sends what it wrote.
+ */
+export function lastLine(stream, failure, appended) {
+  if (failure) return { error: failure };
+  if (!stream.end()) return { error: "Claude Code answered nothing" };
+  return { done: turnEntries(appended) };
+}

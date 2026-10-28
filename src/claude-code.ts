@@ -201,9 +201,15 @@ function refusal(status: number, message: string): Response {
   return Response.json({ type: "error", error: { type: status === 401 ? "authentication_error" : "api_error", message } }, { status });
 }
 
-/** Lines of an NDJSON stream as they come. */
-async function* lines(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+/**
+ * Lines of an NDJSON stream as they come. When `stop` aborts, or the lines are no longer read, the stream is
+ * cancelled: the connection to the box closes, and the box stops the turn.
+ */
+async function* lines(body: ReadableStream<Uint8Array>, stop: AbortSignal): AsyncGenerator<Record<string, unknown>> {
   const reader = body.pipeThrough(new TextDecoderStream()).getReader();
+  const cancel = () => void reader.cancel(stop.reason).catch(() => {});
+  if (stop.aborted) cancel();
+  else stop.addEventListener("abort", cancel, { once: true });
   let buffer = "";
   try {
     for (;;) {
@@ -219,7 +225,9 @@ async function* lines(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<s
     }
     if (buffer.trim()) yield JSON.parse(buffer) as Record<string, unknown>;
   } finally {
-    reader.releaseLock();
+    stop.removeEventListener("abort", cancel);
+    // Nothing once it has all been read; otherwise the box is told to stop.
+    await reader.cancel().catch(() => {});
   }
 }
 
@@ -268,10 +276,15 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       history,
       prompt
     };
+    // Aborted: as fetch does, the call fails with the reason it was aborted for.
+    const abandon = () => {
+      throw init.signal?.reason ?? new DOMException("The call was aborted", "AbortError");
+    };
     let response: Response;
     try {
       response = await turn.send(JSON.stringify(request), init.signal ?? undefined);
     } catch (error) {
+      if (init.signal?.aborted) abandon();
       return refusal(503, `Claude 容器没连上：${error instanceof Error ? error.message : String(error)}`);
     }
     if (!response.ok || !response.body) {
@@ -285,13 +298,22 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       // Deployed without the container (501) is not worth trying again; a container still starting is.
       return refusal(response.status >= 500 && response.status !== 501 ? 503 : 400, `Claude 容器没接这一轮（${response.status}）：${reason.slice(0, 300)}`);
     }
-    const stream = lines(response.body);
+    // Stops reading the box's answer: the call was aborted, or what was streamed is no longer read.
+    const stop = new AbortController();
+    init.signal?.addEventListener("abort", () => stop.abort(init.signal?.reason), { once: true });
+    if (init.signal?.aborted) stop.abort(init.signal.reason);
+    const stream = lines(response.body, stop.signal);
     // A turn the box turned down before saying anything is a refused call, so a model switch says why.
     let first: IteratorResult<Record<string, unknown>>;
     try {
       first = await stream.next();
     } catch (error) {
+      if (init.signal?.aborted) abandon();
       return refusal(503, `Claude 容器断了：${String(error)}`);
+    }
+    if (init.signal?.aborted) {
+      await stream.return(undefined);
+      abandon();
     }
     if (first.done) return refusal(503, "Claude 容器什么都没回");
     if (typeof first.value.error === "string") {
@@ -299,6 +321,9 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       return refusal(status, message);
     }
     let reply = "";
+    // The box ends every turn it finished with a done line; an answer that stops without one was cut off.
+    let finished = false;
+    const CUT_OFF = "Claude 容器半路断了，这一轮没回完";
     /** One line of the box's answer: the event to pass on, or the error that ends it; the turn kept when done. */
     const take = async (line: Record<string, unknown>): Promise<{ event?: StreamEvent; error?: string }> => {
       const event = line.e as StreamEvent | undefined;
@@ -309,6 +334,7 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       if (typeof line.error === "string") return { error: boxError(line.error).message };
       const done = line.done as { prompt?: unknown; reply?: unknown } | undefined;
       if (!done) return {};
+      finished = true;
       if (turn.segments && Array.isArray(done.prompt) && Array.isArray(done.reply)) {
         try {
           turn.segments.save([
@@ -331,31 +357,48 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
           const { event, error } = await take(line.value);
           if (error) return refusal(400, error);
           if (event) events.push(event);
+          if (finished) break;
         }
       } catch (error) {
-        return refusal(503, `Claude 容器断了：${String(error)}`);
+        if (!init.signal?.aborted) return refusal(503, `Claude 容器断了：${String(error)}`);
+      } finally {
+        await stream.return(undefined);
       }
+      if (init.signal?.aborted) abandon();
+      if (!finished) return refusal(503, CUT_OFF);
       return Response.json(messageOf(events));
     }
     return new Response(
       new ReadableStream<Uint8Array>({
         async start(controller) {
+          let failed = false;
+          const fail = (message: string) => {
+            failed = true;
+            controller.enqueue(sse({ type: "error", error: { type: "api_error", message } }));
+          };
           try {
             for (let line: IteratorResult<Record<string, unknown>> = first; !line.done; line = await stream.next()) {
               const { event, error } = await take(line.value);
               if (event) controller.enqueue(sse(event));
               if (error) {
-                controller.enqueue(sse({ type: "error", error: { type: "api_error", message: error } }));
+                fail(error);
                 break;
               }
+              if (finished) break;
             }
+            if (!finished && !failed && !stop.signal.aborted) fail(CUT_OFF);
           } catch (error) {
-            controller.enqueue(sse({ type: "error", error: { type: "api_error", message: `Claude 容器断了：${String(error)}` } }));
+            if (!stop.signal.aborted) fail(`Claude 容器断了：${String(error)}`);
           }
-          controller.close();
-        },
-        async cancel() {
           await stream.return(undefined);
+          try {
+            controller.close();
+          } catch {
+            // Already cancelled by the reader.
+          }
+        },
+        cancel(reason) {
+          stop.abort(reason);
         }
       }),
       { headers: { "content-type": "text/event-stream" } }

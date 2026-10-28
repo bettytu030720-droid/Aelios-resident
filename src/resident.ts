@@ -698,11 +698,15 @@ export class Resident extends Think<Env> {
     );
   }
 
-  /** A turn to the Claude box: its Durable Object and container, or in local tests a box at CLAUDE_BOX_URL. */
+  /**
+   * A turn to the Claude box: its Durable Object and container, or in local tests a box at CLAUDE_BOX_URL. Aborted,
+   * the call is cancelled on both: the container's answer is passed on as it comes (claude-box.ts), so the
+   * connection to it closes too and the box stops the turn.
+   */
   private toClaudeBox(body: string, signal?: AbortSignal): Promise<Response> {
-    const init = { method: "POST", headers: { "content-type": "application/json" }, body };
+    const init = { method: "POST", headers: { "content-type": "application/json" }, body, signal };
     const local = this.env.CLAUDE_BOX_URL?.trim().replace(/\/+$/, "");
-    if (local) return fetch(`${local}/turn`, { ...init, signal });
+    if (local) return fetch(`${local}/turn`, init);
     const box = this.env.CLAUDE_BOX;
     if (!box) return Promise.resolve(Response.json({ error: "这份 wrangler 配置里没有 CLAUDE_BOX" }, { status: 501 }));
     return box.get(box.idFromName("default")).fetch("https://claude-box/turn", init);

@@ -29,6 +29,9 @@ export class ClaudeBox extends DurableObject<Env> {
     } catch (error) {
       return Response.json({ error: `Claude 容器没起来：${error instanceof Error ? error.message : String(error)}` }, { status: 503 });
     }
+    // The container's answer goes back as it comes, not read here: when the resident cancels the call (stopped,
+    // stalled, aborted), that cancels this stream, the connection to the container closes, and the box stops
+    // Claude Code. request.signal would need the enable_request_signal flag for the whole Worker.
     return container.getTcpPort(PORT).fetch("http://box/turn", {
       method: "POST",
       headers: { "content-type": "application/json" },

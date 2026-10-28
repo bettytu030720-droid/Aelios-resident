@@ -255,6 +255,88 @@ await step("the reply as one stream, even if Claude Code makes a second request"
   assert.equal(box.replyStream(() => {}).end(), false, "nothing streamed");
 });
 
+await step("a failed turn ends with its error alone: no message_stop says the reply finished", async () => {
+  const sent = [];
+  const stream = box.replyStream((e) => sent.push(e));
+  stream.event({ type: "message_start", message: { id: "1" } });
+  stream.event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  stream.event({ type: "message_delta", usage: { output_tokens: 1 } });
+  assert.deepEqual(box.lastLine(stream, "API Error: 529 overloaded", []), { error: "API Error: 529 overloaded" });
+  assert.deepEqual(sent.map((e) => e.type), ["message_start", "content_block_start"], "the reply left open");
+  assert.deepEqual(box.lastLine(box.replyStream(() => {}), null, []), { error: "Claude Code answered nothing" });
+  const done = box.lastLine(stream, null, [{ type: "user", uuid: "u", message: { role: "user", content: "hi" } }, { type: "assistant", uuid: "a" }]);
+  assert.deepEqual(sent.slice(-2).map((e) => e.type), ["message_delta", "message_stop"], "a turn that answered closes the reply first");
+  assert.deepEqual(done.done.reply.map((e) => e.uuid), ["a"]);
+});
+
+/** A box answer that sends these lines and then stays open until it is cancelled; `cancelled` says whether it was. */
+function openAnswer(...l) {
+  const state = { cancelled: false };
+  const body = new ReadableStream({
+    start(controller) {
+      for (const x of l) controller.enqueue(new TextEncoder().encode(`${JSON.stringify(x)}\n`));
+    },
+    cancel() {
+      state.cancelled = true;
+    }
+  });
+  return { state, response: new Response(body, { headers: { "content-type": "application/x-ndjson" } }) };
+}
+const started = { e: { type: "message_start", message: { id: "m", type: "message", role: "assistant", content: [], usage: { input_tokens: 1 } } } };
+const said = [{ e: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } }, { e: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "一半" } } }];
+const ask = (stream) => ({ body: JSON.stringify({ model: "claude-opus-5-5", stream, messages: [user(text("[10-28 21:00] 在吗"))] }) });
+
+await step("an answer that stops before the box says it is done is a cut-off turn, not a reply, and nothing is kept", async () => {
+  const lines = (...l) => new Response(l.map((x) => `${JSON.stringify(x)}\n`).join(""));
+  let saved = null;
+  const recorded = [];
+  const turn = { token: "t", send: async () => lines(started, ...said), segments: { load: () => [], save: (x) => (saved = x) }, record: (...a) => recorded.push(a) };
+  let response = await code.boxFetch(turn)("u", ask(false));
+  assert.equal(response.status, 503, "worth trying again");
+  assert.match((await response.json()).error.message, /半路断了/);
+  response = await code.boxFetch(turn)("u", ask(true));
+  const sse = await response.text();
+  assert.match(sse, /一半/, "what streamed is passed on");
+  assert.match(sse, /event: error\ndata: .*半路断了[^\n]*\n\n$/, "and the stream ends with an error");
+  assert.doesNotMatch(sse, /message_stop/);
+  assert.equal(saved, null);
+  assert.deepEqual(recorded, []);
+});
+
+await step("aborted, or no longer read, the call cancels the box's answer, so the box stops the turn", async () => {
+  // Streaming, aborted halfway: the box's answer is cancelled and the stream ends.
+  let open = openAnswer(started, ...said);
+  let controller = new AbortController();
+  let response = await code.boxFetch({ token: "t", send: async () => open.response })("u", { ...ask(true), signal: controller.signal });
+  const reader = response.body.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /message_start/);
+  controller.abort();
+  for (let r = await reader.read(); !r.done; r = await reader.read()) assert.doesNotMatch(new TextDecoder().decode(r.value), /半路断了/, "no error for a call nobody waits on");
+  assert.equal(open.state.cancelled, true);
+  // Streaming, and the reader stops reading.
+  open = openAnswer(started, ...said);
+  response = await code.boxFetch({ token: "t", send: async () => open.response })("u", ask(true));
+  const second = response.body.getReader();
+  await second.read();
+  await second.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(open.state.cancelled, true);
+  // A call that does not stream fails as fetch does, and cancels the box's answer too.
+  open = openAnswer(started, ...said);
+  controller = new AbortController();
+  const pending = code.boxFetch({ token: "t", send: async () => open.response })("u", { ...ask(false), signal: controller.signal });
+  setTimeout(() => controller.abort(), 10);
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+  assert.equal(open.state.cancelled, true);
+  // Aborted before the box said anything.
+  open = openAnswer();
+  controller = new AbortController();
+  const early = code.boxFetch({ token: "t", send: async () => open.response })("u", { ...ask(true), signal: controller.signal });
+  setTimeout(() => controller.abort(), 10);
+  await assert.rejects(early, (error) => error.name === "AbortError");
+  assert.equal(open.state.cancelled, true);
+});
+
 if (failures) {
   console.log(`${failures} failed`);
   process.exit(1);
