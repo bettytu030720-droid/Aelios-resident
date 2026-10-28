@@ -710,7 +710,8 @@ export class Resident extends Think<Env> {
     if (unsafe) return Promise.resolve(Response.json({ error: unsafe }, { status: 501 }));
     const key = this.cfg.CLAUDE_BOX_KEY?.trim();
     const headers: Record<string, string> = { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) };
-    return fetch(`${at}/turn`, { method: "POST", headers, body, signal });
+    // A redirect is not followed: it would take the token, the key and the conversation to another address.
+    return fetch(`${at}/turn`, { method: "POST", headers, body, signal, redirect: "manual" });
   }
 
   /** What the Claude box holds of the conversation, message by message (claude-code.ts). */

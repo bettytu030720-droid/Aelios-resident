@@ -2624,11 +2624,17 @@ if (phase === "claude-code") {
     assert.match(await say("接着说"), /^订阅收到：接着说（/);
   });
 
-  await step("switching to the box while it is down says why, and the model stays", async () => {
+  await step("switching to the box while it is down, or while its address redirects, says why, and the model stays", async () => {
     await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "down" }) });
     const response = await web("/web/model", KEY, { text: "claude-code/claude-sonnet-5-5" });
     assert.equal(response.status, 400);
     assert.match((await response.json()).error, /Claude 盒子没接这一轮（502）/);
+    // A box address that redirects: the turn, with the token and the box key, is not sent on.
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "redirect" }) });
+    const moved = await web("/web/model", KEY, { text: "claude-code/claude-sonnet-5-5" });
+    assert.equal(moved.status, 400);
+    assert.match((await moved.json()).error, /Claude 盒子没接这一轮（307）/);
+    assert.equal((await log()).filter((e) => e.kind === "claudebox.elsewhere").length, 0, "nothing followed the redirect");
     await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "up" }) });
     assert.equal((await (await web("/web/model", KEY)).json()).model, "claude-code/claude-opus-5-5");
   });

@@ -108,8 +108,10 @@ class Run {
     return new Promise((resolve) => {
       const reply = { write, stream: replyStream((event) => write({ e: event })), from: this.appended.length, resolve };
       this.reply = reply;
-      // The resident gave up on the reply while it streamed: the turn stops.
-      signal.addEventListener("abort", () => this.reply === reply && this.stop("cancelled"), { once: true });
+      // The resident gave up on the reply, while it streamed or before (while the turn was being set up): the turn stops.
+      const cancel = () => this.reply === reply && this.stop("cancelled");
+      if (signal.aborted) cancel();
+      else signal.addEventListener("abort", cancel, { once: true });
     });
   }
 
@@ -203,7 +205,13 @@ class Run {
     this.parked.clear();
     runs.delete(this.id);
     this.finish(this.failure);
-    if (this.config) await rm(this.config, { recursive: true, force: true }).catch(() => {});
+    if (this.config) {
+      const dir = this.config;
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      // Claude Code stopped halfway still writes a few lines (her last words among them) on its way out: removed
+      // again once it is gone.
+      setTimeout(() => void rm(dir, { recursive: true, force: true }).catch(() => {}), 10_000).unref();
+    }
   }
 
   async start(body, write, signal) {
@@ -231,6 +239,11 @@ class Run {
     };
     runs.set(this.id, this);
     const replied = this.attach(write, signal);
+    // Cancelled while it was being set up: no Claude Code at all.
+    if (this.abort.signal.aborted) {
+      void this.close();
+      return replied;
+    }
     const options = {
       ...(entries.length ? { resume: sessionId } : {}),
       sessionStore: store,

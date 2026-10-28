@@ -484,6 +484,11 @@ const server = http.createServer(async (req, res) => {
   // The Claude box (claude-box/server.mjs) for the claude-code/… models, without Claude Code: it answers with a line
   // saying how much of the history came back as its own entries, and writes entries for the turn as the box does.
   // Asked to write in the notebook, it calls memory_notebook first, and answers once the result comes back.
+  // Where a box that redirects sends the resident: nothing should ever arrive here.
+  if (url.pathname === "/claude-box-elsewhere/turn") {
+    log.push({ kind: "claudebox.elsewhere", token: json.token, auth });
+    return reply({ error: "not a box" }, 404);
+  }
   if (url.pathname === "/claude-box/turn") {
     const items = (json.history ?? []).map((item) => (Array.isArray(item.entries) ? "entries" : item.role));
     // Her words, without what memory brought up after them.
@@ -492,6 +497,7 @@ const server = http.createServer(async (req, res) => {
       system: json.system, items, prompt: json.prompt, history: json.history, tools: json.tools, auth });
     if (faults.claudeBox === "down") return reply({ error: "the box is restarting" }, 502);
     if (faults.claudeBox === "key") return reply({ error: "the box key does not match" }, 401);
+    if (faults.claudeBox === "redirect") return reply({ error: "moved" }, 307, { location: "http://127.0.0.1:9999/claude-box-elsewhere/turn" });
     res.writeHead(200, { "content-type": "application/x-ndjson" });
     const line = (obj) => res.write(`${JSON.stringify(obj)}\n`);
     if (String(json.token).includes("revoked")) {

@@ -50,10 +50,10 @@ conf=/etc/claude-box
 if [ "$uninstall" = 1 ]; then
   systemctl disable --now claude-box claude-box-tunnel 2>/dev/null || true
   rm -f "$box_unit" "$tunnel_unit"
-  rm -rf /opt/claude-box /var/lib/claude-box "$conf"
+  rm -rf /opt/claude-box /opt/claude-box-node /var/lib/claude-box "$conf"
   userdel claude-box 2>/dev/null || true
   systemctl daemon-reload
-  say "removed (Node.js, cloudflared and the swap file, if they were added, are left in place)"
+  say "removed (cloudflared and the swap file, if they were added, are left in place)"
   exit 0
 fi
 
@@ -81,11 +81,21 @@ ref="${BOX_REF:-main}"
 token="${TUNNEL_TOKEN:-}"
 given_key=""
 if [ "$gcp" = 1 ]; then
+  # The key and the token gcp.sh gave. The metadata server can be slow right after boot; without them nothing is made
+  # up, since a key of the box's own would not be the one gcp.sh hands out.
+  for _ in $(seq 1 20); do
+    given_key="$(metadata box-key || true)"
+    token="$(metadata tunnel-token || true)"
+    [ -n "$given_key" ] && [ -n "$token" ] && break
+    sleep 3
+  done
+  if [ -z "$given_key" ] || [ -z "$token" ]; then
+    echo "claude-box: no box-key or tunnel-token in this machine's metadata: run gcp.sh again" >&2
+    exit 1
+  fi
   repo="$(metadata box-repo || echo "$repo")"
   ref="$(metadata box-ref || echo "$ref")"
-  given_key="$(metadata box-key || true)"
-  token="$(metadata tunnel-token || true)"
-  [ -n "$token" ] && tunnel=1
+  tunnel=1
 elif [ "$tunnel" = 1 ] && [ -z "$token" ]; then
   if [ -t 0 ]; then
     read -rsp "tunnel token (it does not show): " token
@@ -108,12 +118,12 @@ if [ "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" -lt 1600000 ] && [ "$(awk 'N
   say "added 2 GB of swap"
 fi
 
-# Node.js 22 or newer: the one on the machine, or the newest 22 from nodejs.org in /opt/node.
+# Node.js 22 or newer: the one on the machine, or the newest 22 from nodejs.org in a folder of the box's own.
 node_ok() { "$1" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; }
 node="$(command -v node || true)"
 if [ -z "$node" ] || ! node_ok "$node"; then
-  if [ -x /opt/node/bin/node ] && node_ok /opt/node/bin/node; then
-    node=/opt/node/bin/node
+  if [ -x /opt/claude-box-node/bin/node ] && node_ok /opt/claude-box-node/bin/node; then
+    node=/opt/claude-box-node/bin/node
   else
     case "$(uname -m)" in
       x86_64) arch=x64 ;;
@@ -128,10 +138,10 @@ if [ -z "$node" ] || ! node_ok "$node"; then
     tmp="$(mktemp -d)"
     curl -fsSL -o "$tmp/$file" "$dist/$file"
     (cd "$tmp" && printf '%s\n' "$sums" | grep "  $file\$" | sha256sum -c --quiet -)
-    rm -rf /opt/node && mkdir -p /opt/node
-    tar -xJf "$tmp/$file" -C /opt/node --strip-components=1
+    rm -rf /opt/claude-box-node && mkdir -p /opt/claude-box-node
+    tar -xJf "$tmp/$file" -C /opt/claude-box-node --strip-components=1
     rm -rf "$tmp"
-    node=/opt/node/bin/node
+    node=/opt/claude-box-node/bin/node
     say "installed Node.js $("$node" -v)"
   fi
 fi

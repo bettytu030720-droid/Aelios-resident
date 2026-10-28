@@ -43,7 +43,7 @@ bash gcp.sh --hostname claude-box.<你的域名> --show-key
 
 - 开一个只用 IPv6 的网络，和一台 `us-west1-b` 的 e2-micro（30 GB 标准盘，Debian 12）。
 - 机器每次开机都从 GitHub 拿最新的 `install.sh`，装 Node.js 22、盒子和 Tunnel，小机器再加 2 GB swap。
-- 等盒子在 `https://claude-box.<你的域名>/health` 答话（第一次开机要装东西，大约 5 分钟），最后打印**盒子钥匙**。等了 10 分钟还不答话就报错退出，不给钥匙：照它打印的命令看机器在干什么，答话了再跑一次同样的命令（不加 `--new-key`，问 token 时直接回车），它不改机器，只把剩下的做完。
+- 等盒子在 `https://claude-box.<你的域名>` 答话、而且认这把钥匙（第一次开机要装东西，大约 5 分钟），最后打印**盒子钥匙**。等了 10 分钟还不答话、或者答话的不认这把钥匙，就报错退出，不给钥匙：照它打印的命令看机器在干什么，答话了再跑一次同样的命令（不加 `--new-key`，问 token 时直接回车），它不改机器，只把剩下的做完。
 
 它只动自己建的东西：机器带一个标签，网络带一段说明。项目里已经有同名的机器或网络、又不是它建的，它就停下，请你用 `--name` 换个名字；`--delete` 也只删它建的。
 
@@ -107,7 +107,7 @@ sudo ./install.sh --tunnel --show-key     # 会问 Tunnel token
 - **别让用户把 setup token、Tunnel token、盒子钥匙贴进对话。** setup token 和盒子钥匙由用户填进设置页；Tunnel token 由用户在自己的终端里输（`gcp.sh` 和 `install.sh --tunnel` 会问，输入不显示）。你自己生成的钥匙只经管道存进 Worker Secret，不打印、不写文件。
 - **第 1 步只能用户自己点**（Cloudflare 后台）。你问用户要的只有网址 `claude-box.<域名>`，它不是秘密。
 - `gcp.sh` 要在登录了 gcloud 的地方跑。用户开着 Cloud Shell 的，请用户把第 2 步的命令贴进去；用户电脑上装了 gcloud、wrangler 也登录着的，在住户的文件夹里请用户跑 `bash claude-box/gcp.sh --hostname <网址> --key-to-worker`（token 那步要用户自己输，所以请用户在自己的终端里跑）。
-- `gcp.sh` 退出码不是 0 就是没装好，别接着往下走：看它打印的原因（多半是盒子还没答话，或者撞了同名的机器），照着办。
+- `gcp.sh` 退出码不是 0 就是没装好，别接着往下走：看它打印的原因（多半是盒子还没答话、答话的不认钥匙，或者撞了同名的机器、查不了项目），照着办。
 - 装完先自己验：`curl -s https://<网址>/health` 回 `ok` 就通了；不带钥匙 `curl -s -X POST https://<网址>/turn` 应该是 `{"error":"the box key does not match"}`。
 - 盒子地址用设置接口填（`setup-with-ai.md` 第 5 步的写法）：`{"key":"CLAUDE_BOX_URL","text":"https://<网址>"}`。钥匙用了 `--key-to-worker` 就已经在 Worker 里；没用的请用户自己在设置页填。
 - 换模型用 `POST /web/model`，`{"text":"claude-code/claude-opus-5-5"}`；回 400 时把错误原文告诉用户（多半是 setup token 没填，或盒子还没起来）。
