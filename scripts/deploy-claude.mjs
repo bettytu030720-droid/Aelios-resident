@@ -41,10 +41,10 @@ export function withClaudeBox(config) {
     containers: [
       {
         class_name: "ClaudeBox",
-        image: "./claude-box/Dockerfile",
-        // 1/4 vCPU and 1 GiB: enough for one Claude Code at a time; an hour running costs about a cent.
-        instance_type: "basic",
-        max_instances: 1
+        // Accounts now create containers whose Durable Object picks the image and size when it starts one
+        // (src/claude-box.ts); there is only ever the one, named "default".
+        scheduling_policy: "durable_object",
+        images: { box: { dockerfile: "./claude-box/Dockerfile" } }
       }
     ]
   };

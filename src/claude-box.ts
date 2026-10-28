@@ -7,6 +7,12 @@
 import { DurableObject } from "cloudflare:workers";
 
 const PORT = 8080;
+// The image `npm run deploy:claude` builds (scripts/deploy-claude.mjs): this object starts it itself, since accounts
+// now create Durable Object-managed containers.
+const IMAGE = "box";
+// Half a vCPU and 4 GiB, the smallest size these containers take that Claude Code starts in quickly: on lite
+// (1/16 vCPU) one turn took about a minute.
+const INSTANCE = "standard-1";
 // How long the container keeps running once turns stop: a conversation's pauses, without paying for idle hours.
 const IDLE_MS = 20 * 60_000;
 // The first start after a deploy pulls the image; later starts take a few seconds.
@@ -23,9 +29,10 @@ export class ClaudeBox extends DurableObject<Env> {
 
   override async fetch(request: Request): Promise<Response> {
     const container = this.ctx.container;
-    if (!container) return Response.json({ error: NO_CONTAINER }, { status: 501 });
+    const image = container?.images?.[IMAGE];
+    if (!container || !image) return Response.json({ error: NO_CONTAINER }, { status: 501 });
     try {
-      await this.ready(container);
+      await this.ready(container, image);
     } catch (error) {
       return Response.json({ error: `Claude 容器没起来：${error instanceof Error ? error.message : String(error)}` }, { status: 503 });
     }
@@ -40,12 +47,16 @@ export class ClaudeBox extends DurableObject<Env> {
   }
 
   /** Starts the container if it is not running and waits until it answers. */
-  private async ready(container: Container): Promise<void> {
+  private async ready(container: Container, image: string): Promise<void> {
+    // A deploy does not restart a running container: one still on the image before it is stopped and started anew
+    // (an empty image means it is still starting).
+    const running = container.running ? await container.inspect() : null;
+    if (running?.image && running.image !== image) await container.destroy();
     const deadline = Date.now() + READY_MS;
     let last = "";
     while (Date.now() < deadline) {
       if (!container.running) {
-        container.start({ enableInternet: true });
+        container.start({ image, instance: INSTANCE, enableInternet: true });
         await container.setInactivityTimeout(IDLE_MS);
       }
       try {
