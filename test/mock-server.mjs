@@ -481,6 +481,54 @@ const server = http.createServer(async (req, res) => {
   const thinkingCount = () => json.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "thinking").length;
   const cached = () => (Boolean(json.cache_control) || JSON.stringify(json).includes('"cache_control"') ? "有" : "无");
 
+  // The Claude box (claude-box/server.mjs) for the claude-code/… models, without Claude Code: it answers with a line
+  // saying how much of the history came back as its own entries, and writes entries for the turn as the box does.
+  if (url.pathname === "/claude-box/turn") {
+    const items = (json.history ?? []).map((item) => (Array.isArray(item.entries) ? "entries" : item.role));
+    // Her words, without what memory brought up after them.
+    const promptText = (json.prompt ?? []).filter((b) => b.type === "text" && !b.text.startsWith("[Aelios 记忆]")).map((b) => b.text).join("\n");
+    log.push({ kind: "claudebox.turn", token: json.token, model: json.model, effort: json.effort, thinking: json.thinking,
+      system: json.system, items, prompt: json.prompt, history: json.history });
+    if (faults.claudeBox === "down") return reply({ error: "Claude 容器没起来：test" }, 503);
+    res.writeHead(200, { "content-type": "application/x-ndjson" });
+    const line = (obj) => res.write(`${JSON.stringify(obj)}\n`);
+    if (String(json.token).includes("revoked")) {
+      line({ error: "Claude Code returned an error result: Failed to authenticate. API Error: 401 OAuth access token is invalid." });
+      return res.end();
+    }
+    const reused = items.filter((kind) => kind === "entries").length;
+    const said = promptText.split("\n").at(-1).replace(/^\[[^\]]+\]\s*/, "");
+    const text = `订阅收到：${said}（接着 ${reused} 条，重写 ${items.length - reused} 条）`;
+    const usage = { input_tokens: 4, output_tokens: 0, cache_read_input_tokens: reused * 100, cache_creation_input_tokens: 50,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 50 } };
+    const id = `msg_box_${log.length}`;
+    line({ e: { type: "message_start", message: { id, type: "message", role: "assistant", model: json.model, content: [], stop_reason: null, stop_sequence: null, usage } } });
+    if (json.thinking) {
+      line({ e: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } } });
+      line({ e: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "订阅里想一想。" } } });
+      line({ e: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-box" } } });
+      line({ e: { type: "content_block_stop", index: 0 } });
+    }
+    const index = json.thinking ? 1 : 0;
+    line({ e: { type: "content_block_start", index, content_block: { type: "text", text: "" } } });
+    // In two pieces, as a stream comes.
+    const half = Math.ceil(text.length / 2);
+    line({ e: { type: "content_block_delta", index, delta: { type: "text_delta", text: text.slice(0, half) } } });
+    line({ e: { type: "content_block_delta", index, delta: { type: "text_delta", text: text.slice(half) } } });
+    if (said.includes("半路断")) {
+      line({ error: "Claude Code returned an error result: API Error: 529 overloaded" });
+      return res.end();
+    }
+    line({ e: { type: "content_block_stop", index } });
+    line({ e: { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { ...usage, output_tokens: 9 } } });
+    line({ e: { type: "message_stop" } });
+    const uuid = () => crypto.randomUUID();
+    line({ done: {
+      prompt: [{ type: "user", uuid: uuid(), message: { role: "user", content: json.prompt } }, { type: "attachment", uuid: uuid(), attachment: { type: "date", date: "2026-10-28" } }],
+      reply: [{ type: "assistant", uuid: uuid(), message: { id, type: "message", role: "assistant", model: json.model, content: [{ type: "text", text }] } }]
+    } });
+    return res.end();
+  }
   if (url.pathname === "/custom/v1/chat/completions") {
     log.push({ kind: "custom.chat", auth: req.headers.authorization, body: json });
     return chat(`自己的供应商（OpenAI 格式）收到：${said()}`);

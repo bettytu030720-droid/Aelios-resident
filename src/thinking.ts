@@ -31,6 +31,12 @@ function thinksByDefault({ family, version }: Claude): boolean {
   return family === "fable" || family === "mythos" || version >= 5;
 }
 
+/** Whether a Claude model by this name thinks on every turn, so its thinking can be asked to be shown. */
+export function thinksUnasked(name: string): boolean {
+  const claude = claudeOf(name);
+  return claude ? thinksByDefault(claude) : false;
+}
+
 function takesEffort({ family, version }: Claude): boolean {
   if (family === "fable" || family === "mythos") return true;
   if (family === "opus") return version >= 4.5;

@@ -194,7 +194,9 @@ function resident() {
         help: '搜网、语音，和没接 Aelios 时的模型都走这个 Gateway，Provider Keys 里存的 key 也只在它里面找。留空就是 default。' },
       { key: 'CUSTOM_BASE_URL', label: '中转地址', help: '没接 Aelios 时，模型填 custom/模型名 就走这个地址，中转、OpenRouter 都行。写到 /v1 为止。', placeholder: 'https://…/v1' },
       { key: 'CUSTOM_API_KEY', label: '中转 key' },
-      { key: 'CUSTOM_FORMAT', label: '中转格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } }
+      { key: 'CUSTOM_FORMAT', label: '中转格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } },
+      { key: 'CLAUDE_CODE_OAUTH_TOKEN', label: 'Claude 订阅的 setup token',
+        help: '模型填 claude-code/模型名（比如 claude-code/claude-opus-5-5）就用你自己的 Claude 订阅聊。在电脑上跑 claude setup-token，把出来那串填这里。要用 npm run deploy:claude 部署（Workers Paid）。这一版只聊天，不调工具。' }
     ] },
     { id: 'push', title: '通知', fields: [
       { key: 'WEB_PUSH', label: '推什么', def: 'on', labels: { on: '没发到别处的', always: '都推', off: '不推' },

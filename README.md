@@ -198,7 +198,7 @@ Tap the line under its name at the top of the web door (it shows the model in us
 - With no model chosen, it uses `@cf/zai-org/glm-4.7-flash`, which works on the free plan.
 - A purple dot runs on Workers AI itself, an orange dot uses AI Gateway credit, and a hollow dot goes through a relay.
 - Write Claude models like `anthropic/claude-opus-5.5`. Every turn carries a cache marker, and the cache is kept for 1 hour by default (`CACHE_TTL`). Claude 5 and later think on every turn; a summary of the thinking shows under 「想了一下」. Set how long it thinks under **Thinking & letters** (「思考和交接信」).
-- With Aelios connected, every model goes through Aelios, using the keys configured there.
+- With Aelios connected, every model goes through Aelios, using the keys configured there. The exception is `claude-code/…`, which runs on your own Claude subscription (see [Your Claude subscription](#your-claude-subscription-claude-code)).
 
 ### Persona
 
@@ -470,6 +470,16 @@ With Aelios connected, the chat's models and keys are configured in the Aelios a
 - **Your own Anthropic key**: store one in this Gateway → Provider Keys with the alias `default`, and `anthropic/…` models use it instead of Cloudflare's unified billing.
 - **A relay** (OpenRouter, Nous and the like): enter the relay's address (up to `/v1`) and key, and write the model as `custom/` plus that service's own model name, such as `custom/anthropic/claude-sonnet-5.5`. It calls in OpenAI's format by default; if the service speaks Anthropic's Messages format, choose `anthropic` as the format and cache markers are sent too. This path does not go through AI Gateway, so it does not show in the Gateway's logs.
 
+### Your Claude subscription (`claude-code/…`)
+
+The chat can run on your own Claude Pro or Max plan instead of an API key: write the model as `claude-code/` plus the Claude model's id, such as `claude-code/claude-opus-5-5`. Each turn then goes to a small container (`claude-box/`) that runs the official Claude Agent SDK, signed in with your `claude setup-token`. Everything else stays the resident's own: the conversation, persona, letters, heartbeats and channels.
+
+- **Deploy with `npm run deploy:claude`** instead of `npm run deploy`; it needs Workers Paid and Docker. With Workers Builds, set the deploy command under Settings → Build to `npm run deploy:claude`. Plain `npm run deploy` leaves the container out and works on the free plan as before; a `claude-code/…` model is then refused at the trial call, saying why.
+- **Sign in**: on your computer, with Claude Code installed, run `claude setup-token` and paste the `sk-ant-oat…` it prints on the settings page under **Providers** (「供应商」). It is never shown again; clear it there to sign out.
+- **Chat only, for now**: on this path the model has no tools, so no search, stickers, alarms or background help. With Aelios connected, long-term memory still works: the resident recalls for each of your messages and records each exchange in Aelios itself. These turns do not go through Aelios' model endpoint, so Aelios' model list does not apply to them.
+- **The container keeps nothing**: it stops after 20 minutes without turns and starts again on the next one, which takes a few seconds (longer for the first start after a deploy). Each turn carries the whole conversation; what the container answered before goes back as Claude Code's own record of it, kept in the Durable Object, so the prompt cache keeps hitting from turn to turn.
+- It is your plan and your account: one setup token is for one person's own resident.
+
 ## All settings
 
 Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secret) and `TG_BOT_USERNAME` and `DEBOUNCE_SECONDS`, which are set in Cloudflare if at all.
@@ -520,6 +530,7 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `AI_GATEWAY_ID` | empty (`default`) | Which AI Gateway search, voice and, without Aelios, the models go through |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | empty | The relay's address (up to `/v1`) and key; used for `custom/…` models |
 | `CUSTOM_FORMAT` | `openai` | The relay's format: `openai` or `anthropic` (with caching) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | empty | The setup token from `claude setup-token`, for `claude-code/…` models; needs `npm run deploy:claude` |
 
 ## What it costs
 
@@ -533,6 +544,7 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 - **Stickers and other MCP servers**: each adds some description to every turn; the settings page shows roughly how many tokens each pack and each server costs.
 - **Heartbeats and alarms**: each is one turn of its own. A heartbeat asks while the cache is still warm, so it costs about as much as one of your messages. An alarm that rings after you have been quiet for over an hour finds the cache cold and rewrites the whole conversation (a 1-hour cache write costs twice the input price, a read a tenth or less), which is about as much input as 20-odd ordinary messages. That is why alarms are off by default and capped when on.
 - **Cloud Claude Code**: each job is a full cloud session that uses your plan's allowance, like one you open yourself; on the resident's side it is only one more request and one reply.
+- **Your Claude subscription** (`claude-code/…`): the chat uses your plan's allowance, not API credit. The container is billed on Workers Paid while it runs: Workers Paid includes 25 GiB-hours of memory a month, which is about 25 hours of this container running, and after that it costs about a cent an hour (official price checked on Oct 28). Each turn starts Claude Code afresh, so a reply takes a few seconds longer than through the API.
 
 **Note the order in which AI Gateway picks a key**: a key in the request (entered on the settings page) is used first; otherwise the Gateway's key with the alias `default`; with neither, the request goes to Cloudflare's unified billing and is paid from the Gateway's prepaid credit (if the account has credit and that provider is supported). To prevent that, turn on Require provider credentials in the Gateway's settings.
 

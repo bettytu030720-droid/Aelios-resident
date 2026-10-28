@@ -35,6 +35,8 @@ interface Env {
   // A provider of your own (custom.ts): its address up to /v1, and openai (default) or anthropic.
   CUSTOM_BASE_URL?: string;
   CUSTOM_FORMAT?: string;
+  // Local tests only: a Claude box (claude-box/server.mjs or the fake one) reached here instead of the container.
+  CLAUDE_BOX_URL?: string;
   CHECKIN_SCHEDULE?: string;
   // When the quiet time ends but an automatic letter is not due yet, ask whether to reach out, up to this many times
   // in one quiet time: 3 by default, 0 or off never, at most 10.
@@ -91,6 +93,8 @@ interface Env {
   BRAVE_API_KEY?: string;
   PERPLEXITY_API_KEY?: string;
   CUSTOM_API_KEY?: string;
+  // `claude setup-token`, for the `claude-code/…` models that run on her own Claude subscription (claude-code.ts).
+  CLAUDE_CODE_OAUTH_TOKEN?: string;
   // Empty: AI Gateway uses the key stored on the gateway for the voice provider (BYOK).
   VOICE_API_KEY?: string;
   WEB_KEY?: string;

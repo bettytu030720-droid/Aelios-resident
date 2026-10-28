@@ -20,10 +20,18 @@
     "run_worker_first": ["/messengers/*", "/tg/*", "/web/*", "/mcp/*", "/stickers/*", "/tasks/*", "/avatar/*", "/manifest.webmanifest"]
   },
   "durable_objects": {
-    "bindings": [{ "name": "RESIDENT", "class_name": "Resident" }]
+    "bindings": [
+      { "name": "RESIDENT", "class_name": "Resident" },
+      // The Claude box for the claude-code/… models. Its container comes only with `npm run deploy:claude`
+      // (Workers Paid); deployed without it, the class is here and does nothing.
+      { "name": "CLAUDE_BOX", "class_name": "ClaudeBox" }
+    ]
   },
   // SQLite-backed Durable Objects are the kind the Workers Free plan allows.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Resident"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Resident"] },
+    { "tag": "v2", "new_sqlite_classes": ["ClaudeBox"] }
+  ],
   "observability": { "enabled": true }
   // No "vars" here on purpose: a value written in this file would overwrite what you set in the
   // Dashboard on every push. Every setting has a default in the code; set the ones you need in

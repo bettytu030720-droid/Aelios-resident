@@ -49,6 +49,7 @@ export const FIELDS: readonly Field[] = [
   { key: "CUSTOM_BASE_URL", kind: "text", check: address },
   { key: "CUSTOM_API_KEY", kind: "secret" },
   { key: "CUSTOM_FORMAT", kind: "choice", choices: ["openai", "anthropic"] },
+  { key: "CLAUDE_CODE_OAUTH_TOKEN", kind: "secret", check: (value) => (/^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value) ? null : "setup token 是 sk-ant-oat 开头的一串，在电脑上跑 claude setup-token 拿") },
   { key: "AI_GATEWAY_ID", kind: "text" },
   { key: "AELIOS_URL", kind: "text", check: address },
   { key: "AELIOS_API_KEY", kind: "secret" },
