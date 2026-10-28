@@ -196,7 +196,7 @@ Telegram（选装）──▶ Worker（验 secret、白名单、命令）──�
 - 没选时用免费档能用的 `@cf/zai-org/glm-4.7-flash`。
 - 紫点是 Workers AI 自己跑的，橙点走 AI Gateway 的额度，空心点走中转。
 - Claude 填 `anthropic/claude-opus-5.5` 这种写法。每轮都带缓存标记，缓存默认留 1 小时（`CACHE_TTL`）。Claude 5 以后的模型每轮都会想，想的内容以摘要形式显示在「想了一下」里；想多久在设置页「思考和交接信」里调。
-- 接了 Aelios 时，选的模型都从 Aelios 过，用 Aelios 那边配好的 key。
+- 接了 Aelios 时，选的模型都从 Aelios 过，用 Aelios 那边配好的 key。只有 `claude-code/…` 例外，它用你自己的 Claude 订阅（见[用自己的 Claude 订阅](#用自己的-claude-订阅claude-code)）。
 
 ### 人设
 
@@ -468,6 +468,16 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 - **用自己的 Anthropic key**：在这个 Gateway → Provider Keys 里存一把，别名留 `default`，`anthropic/…` 就用这把，不走 Cloudflare 的统一计费。
 - **接中转**（OpenRouter、Nous 这类）：填中转地址（写到 `/v1` 为止）和 key，模型填 `custom/` 加那家自己的模型名，比如 `custom/anthropic/claude-sonnet-5.5`。默认按 OpenAI 的格式调；那家用 Anthropic 的 Messages 格式的话，把格式选成 `anthropic`，缓存标记照带。这条路不经过 AI Gateway，Gateway 日志里看不到。
 
+### 用自己的 Claude 订阅（`claude-code/…`）
+
+聊天可以不用 API key，改用你自己的 Claude Pro 或 Max 订阅：模型填 `claude-code/` 加 Claude 的模型 id，比如 `claude-code/claude-opus-5-5`。这样每一轮都交给一个小容器（`claude-box/`），里面跑官方的 Claude Agent SDK，用你 `claude setup-token` 拿到的那串登录。别的都还是住户自己的：对话、人设、交接信、心跳、各个渠道。
+
+- **部署改用 `npm run deploy:claude`**，不用 `npm run deploy`；要 Workers Paid 和 Docker。用 Workers Builds 的话，在 Settings → Build 里把部署命令改成 `npm run deploy:claude`。照旧 `npm run deploy` 就不带容器，免费档跟以前一样能用；这时选 `claude-code/…` 会在试调时被拦下，并说明原因。
+- **登录**：在装了 Claude Code 的电脑上跑 `claude setup-token`，把出来的 `sk-ant-oat…` 填进设置页「供应商」。填了就不再显示；想退出就在那里清空。
+- **这一版只聊天**：走这条路时模型没有工具，所以不搜网、不发表情包、不定闹钟、不派后台的活。接了 Aelios 的话长期记忆照样有：住户每句先替你去 Aelios 想起来，回完再把这一来一回记进 Aelios。这些轮次不经过 Aelios 的模型接口，所以 Aelios 的模型清单管不到它们。
+- **容器里什么都不存**：20 分钟没有新的一轮它就停，下一轮来了再起，要几秒（部署后第一次起会久一点）。每一轮都带上整段对话；容器回过的话，按 Claude Code 自己记的样子送回去（存在 Durable Object 里），所以每一轮都接得上提示缓存。
+- 这是你自己的订阅、你自己的账号：一串 setup token 只给一个人自己的住户用。
+
 ## 设置一览
 
 都在网页设置页里改。不在设置页的只有 `WEB_KEY`（Cloudflare 的 Secret），和 `TG_BOT_USERNAME`、`DEBOUNCE_SECONDS`（要改就在 Cloudflare 里填）。
@@ -518,6 +528,7 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 | `AI_GATEWAY_ID` | 空（用 `default`） | 搜网、语音、没接 Aelios 时的模型走哪个 AI Gateway |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | 空 | 中转的地址（写到 `/v1`）和 key；模型填 `custom/…` 时用 |
 | `CUSTOM_FORMAT` | `openai` | 中转用哪种格式：`openai` 或 `anthropic`（带缓存） |
+| `CLAUDE_CODE_OAUTH_TOKEN` | 空 | `claude setup-token` 拿到的那串，给 `claude-code/…` 用；要 `npm run deploy:claude` 部署 |
 
 ## 花钱吗
 
@@ -531,6 +542,7 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 - **表情包、别的 MCP**：每轮多带一些说明；设置页上每个包、每个服务旁边写着大约多少 token。
 - **心跳、闹钟**：每次都是它的一轮。心跳趁缓存还热的时候问，跟你发一条差不多。闹钟如果在你一小时以上没说话之后才响，缓存已经凉了，整段对话要重写一遍（1 小时缓存的写入是输入价的 2 倍，读最多 1/10），这一下大约顶平时 20 多条消息的输入。所以闹钟默认关，开了也有上限。
 - **云端 Claude Code**：每单是一个完整的云端会话，跟你自己开一个一样用订阅的额度；住户这边只多一次请求和一轮回复。
+- **用自己的 Claude 订阅**（`claude-code/…`）：聊天用订阅的额度，不花 API 的钱。容器开着的时候按 Workers Paid 计费：每月含 25 GiB-小时内存，大约够这个容器开 25 个小时，超出后一小时大约一美分（10 月 28 日查的官方价）。每一轮都重新起一次 Claude Code，所以回得比走 API 慢几秒。
 
 **注意 AI Gateway 认 key 的顺序**：请求里带了 key（设置页填的）就用它；没带就用 Gateway 里别名 `default` 的那把；都没有就走 Cloudflare 的统一计费，从 Gateway 预付额度里扣（前提是账户里有额度、那一家也支持）。不想被这样扣，就在 Gateway 设置里打开 Require provider credentials。
 

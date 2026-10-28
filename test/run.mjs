@@ -26,6 +26,8 @@
 //            alarm, answering a thread that needs her
 //   stall    a model that goes quiet: the turn is cut and run again, and the messages after it are answered
 //            (start wrangler with --var CHAT_STALL_SECONDS:2)
+//   claude-code  claude-code/… models on her own subscription, through the fake Claude box: the token, the trial
+//            call, the conversation carried turn to turn, memory recalled and recorded, a letter, pictures, failures
 //   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
 //            --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:): connected, the resident started again, the Mini App
 //            and commands with that token, connecting again, a token Telegram refuses, taking it off
@@ -39,7 +41,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
+let nextId = { "claude-code": 2400, main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -2445,6 +2447,149 @@ if (phase === "stall") {
     await post("你好");
     const out = await waitForSends(before, 1, 20000);
     assert.ok(out.length >= 1, JSON.stringify(out));
+  });
+}
+
+if (phase === "claude-code") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const turns = async () => (await log()).filter((e) => e.kind === "claudebox.turn");
+  const say = async (text, options) => {
+    const before = (await sent()).length;
+    await post(text, options);
+    return (await waitForSends(before, 1, 30000))[0];
+  };
+  const counts = (reply) => {
+    const m = reply.match(/（接着 (\d+) 条，重写 (\d+) 条）$/);
+    assert.ok(m, reply);
+    return { reused: Number(m[1]), written: Number(m[2]) };
+  };
+
+  await step("the setup token is filled in, never shown, and one Claude refuses is reported when switching", async () => {
+    assert.equal((await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "not-a-token" })).status, 400);
+    let response = await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "sk-ant-oat01-revoked-0123456789abcdefghij" });
+    assert.equal(response.status, 200);
+    const field = (await response.json()).fields.find((f) => f.key === "CLAUDE_CODE_OAUTH_TOKEN");
+    assert.ok(field, "the field is listed");
+    assert.doesNotMatch(JSON.stringify(field), /revoked/);
+    response = await web("/web/model", KEY, { text: "claude-code/claude-opus-5-5" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /setup token 不对或过期/);
+    assert.equal((await (await web("/web/model", KEY)).json()).model, "", "nothing switched");
+    // Cleared on the page, the Worker's own one applies again.
+    await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "" });
+    response = await web("/web/model", KEY, { text: "claude-code/claude-opus-5-5" });
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    const trial = (await turns()).at(-1);
+    assert.equal(trial.token, "sk-ant-oat01-test-token-for-the-fake-box");
+    assert.equal(trial.model, "claude-opus-5-5");
+    assert.deepEqual(trial.items, [], "the trial call is one call on its own");
+    assert.equal(trial.thinking, "summarized", "the trial call is shaped like the chat");
+    assert.equal(trial.system, "You are a test assistant.");
+  });
+
+  let written = 0;
+  await step("her turns go to the box with the whole conversation, and what the box wrote comes back on the next one", async () => {
+    await fetch(`${MOCK}/__reset`);
+    const first = await say("第一句");
+    assert.match(first, /^订阅收到：第一句（/);
+    ({ written } = counts(first));
+    assert.equal(counts(first).reused, 0);
+    const turn = (await turns()).at(-1);
+    assert.match(turn.system, /chat app/, "the resident's own system prompt");
+    assert.equal(turn.thinking, "summarized", "Opus 5.5's thinking is asked to be shown");
+    assert.equal(turn.effort, null, "auto: the model's own effort");
+    assert.equal(await say("第二句"), `订阅收到：第二句（接着 2 条，重写 ${written} 条）`);
+    assert.equal(await say("第三句"), `订阅收到：第三句（接着 4 条，重写 ${written} 条）`);
+    // Nothing goes out through Aelios' model endpoint: the resident recalls and records her turns itself.
+    const all = await log();
+    assert.equal(all.filter((e) => e.kind === "aelios.messages" || e.kind === "aelios.chat").length, 0);
+    const recalls = all.filter((e) => e.kind === "aelios.recall");
+    assert.equal(recalls.length, 3);
+    assert.equal(recalls.at(-1).body.query, "第三句", "her words without the time stamp");
+    const ingests = all.filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident");
+    assert.equal(ingests.length, 3);
+    assert.deepEqual(ingests.at(-1).body.messages.map((m) => m.role), ["user", "assistant"]);
+    assert.match(ingests.at(-1).body.messages[0].content, /^\[[^\]]+\] 第三句$/);
+    assert.equal(ingests.at(-1).body.messages[1].content, `订阅收到：第三句（接着 4 条，重写 ${written} 条）`);
+    // What the box reported reached /status and the web page: read from the cache, written to it.
+    const model = await (await web("/web/model", KEY)).json();
+    assert.equal(model.lastUsage.cacheRead, 400);
+    assert.equal(model.lastUsage.cacheWrite, 50);
+    assert.equal(model.memoryOff, false);
+  });
+
+  await step("what memory brings up goes after her words, and the box is told it has no tools", async () => {
+    const reply = await say("我生日是哪天？");
+    assert.match(reply, /^订阅收到：我生日是哪天？/);
+    const turn = (await turns()).at(-1);
+    assert.match(turn.prompt[0].text, /我生日是哪天？$/);
+    assert.equal(turn.prompt.at(-1).type, "text");
+    assert.match(turn.prompt.at(-1).text, /^\[Aelios 记忆\]\n- 她的生日在春天$/);
+    assert.match(turn.system, /you have no tools[^\n]*\[Aelios 记忆\] block\.$/);
+    // The next turn carries her words as the box wrote them, memory and all, so the cache still matches.
+    assert.equal(counts(await say("好的")).reused, 8);
+    assert.match(JSON.stringify((await turns()).at(-1).history.at(-2)), /她的生日在春天/);
+  });
+
+  await step("Claude thinks as long as the settings page says", async () => {
+    await web("/web/config", KEY, { key: "THINKING_EFFORT", text: "high" });
+    await say("想深一点");
+    assert.equal((await turns()).at(-1).effort, "high");
+    await web("/web/config", KEY, { key: "THINKING_EFFORT", text: "" });
+    await say("回到默认");
+    assert.equal((await turns()).at(-1).effort, null);
+  });
+
+  await step("a picture she sends goes to the box as a picture", async () => {
+    const reply = await say("看图", { photo: "photo-box" });
+    assert.match(reply, /^订阅收到：/);
+    const prompt = (await turns()).at(-1).prompt;
+    assert.ok(prompt.some((b) => b.type === "image" && b.source?.type === "base64"), JSON.stringify(prompt).slice(0, 300));
+    assert.equal(counts(await say("看到了吗")).written, written, "the picture comes back as the box wrote it");
+  });
+
+  await step("a letter folds the old chat: the box gets the letter as it is, then carries on with its own entries", async () => {
+    await fillChat();
+    const before = (await sent()).length;
+    await post("/handoff");
+    const [out] = await waitForSends(before, 1, 30000);
+    assert.match(out, /^交接信写好了/);
+    const letterTurn = (await turns()).at(-1);
+    assert.match(JSON.stringify(letterTurn.prompt), /time to write a handoff letter/);
+    assert.doesNotMatch(JSON.stringify(letterTurn.prompt), /Aelios 记忆\]/, "a note is not recalled for");
+    const after = counts(await say("写完信之后"));
+    assert.ok(after.written >= 1, JSON.stringify(after));
+    const next = counts(await say("再来一句"));
+    assert.equal(next.written, after.written, "the letter and what was kept go as they are");
+    assert.equal(next.reused, after.reused + 2);
+  });
+
+  await step("a turn cut off halfway: she is told, and the conversation goes on", async () => {
+    const before = (await sent()).length;
+    await post("半路断");
+    const got = await waitForSends(before, 1, 30000);
+    assert.ok(got.some((t) => /断了|出错了|订阅收到：半路断/.test(t)), JSON.stringify(got));
+    assert.match(await say("接着说"), /^订阅收到：接着说（/);
+  });
+
+  await step("switching to the box while it is down says why, and the model stays", async () => {
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "down" }) });
+    const response = await web("/web/model", KEY, { text: "claude-code/claude-sonnet-5-5" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /Claude 容器/);
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "up" }) });
+    assert.equal((await (await web("/web/model", KEY)).json()).model, "claude-code/claude-opus-5-5");
+  });
+
+  await step("on another model and back: what was said there goes to the box as it is", async () => {
+    assert.equal((await web("/web/model", KEY, { text: "fake" })).status, 200);
+    await say("换到别的模型说一句");
+    assert.equal((await web("/web/model", KEY, { text: "claude-code/claude-opus-5-5" })).status, 200);
+    const back = counts(await say("回来了"));
+    const again = counts(await say("还在吗"));
+    assert.equal(again.reused, back.reused + 2);
+    assert.equal(again.written, back.written);
   });
 }
 

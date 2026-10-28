@@ -37,7 +37,8 @@ import type { Adapter } from "chat";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { asSchema, generateText, tool, type JSONSchema7, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
-import { aeliosConfig, fetchBoot, ingest, memoryTools, pin } from "./aelios";
+import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig } from "./aelios";
+import { claudeCodeModel, isClaudeCode, type Segment } from "./claude-code";
 import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
 import { historyAnchor, historyCutoff, historyForWindow } from "./cache-history";
 import { EffectiveHistoryError, installEffectiveHistory } from "./effective-history";
@@ -656,6 +657,8 @@ export class Resident extends Think<Env> {
   private chatModel(id: string, { auxiliary = false, thinking: asked = true } = {}): ThinkModel {
     if (id === "fake" && this.env.FAKE_MODEL === "true") return fakeModel();
     const thinking: Thinking | undefined = asked ? { effort: effortOf(this.cfg.THINKING_EFFORT) } : undefined;
+    // Claude on her own subscription goes to the Claude box, with or without Aelios (claude-code.ts).
+    if (isClaudeCode(id)) return this.claudeCode(id, { auxiliary, thinking });
     const memory = aeliosConfig(this.cfg);
     if (!memory) return this.modelFor(id, thinking);
     // What Aelios did about memory on her turn, kept so the web page and /status can say when it is off.
@@ -663,6 +666,88 @@ export class Resident extends Think<Env> {
       this.ctx.waitUntil(this.ctx.storage.put("aelios_memory", { status, model: id, at: Date.now() }));
     };
     return aeliosModel(memory, id, { auxiliary, report, thinking });
+  }
+
+  /**
+   * `claude-code/<model>`: the turn goes to the Claude box, signed in with her setup token. The conversation keeps
+   * what the box wrote for it (res_claude_code), and with Aelios connected the resident recalls and records her
+   * turns itself, since they do not pass through Aelios. Work outside the conversation is one call, nothing kept.
+   */
+  private claudeCode(id: string, { auxiliary, thinking }: { auxiliary: boolean; thinking?: Thinking }): ThinkModel {
+    const memory = aeliosConfig(this.cfg);
+    return claudeCodeModel(
+      id,
+      {
+        token: this.cfg.CLAUDE_CODE_OAUTH_TOKEN?.trim() ?? "",
+        send: (body, signal) => this.toClaudeBox(body, signal),
+        ...(auxiliary ? {} : { segments: { load: () => this.claudeCodeHeld(), save: (segments) => this.holdClaudeCode(segments) } }),
+        ...(memory && !auxiliary
+          ? {
+              recall: (said) => this.recallFor(memory, said),
+              record: (said, reply) => {
+                this.ctx.waitUntil(
+                  ingest(memory, [{ role: "user", content: said }, { role: "assistant", content: reply }], "aelios-resident").then((kept) =>
+                    this.ctx.storage.put("aelios_memory", { status: kept ? "on" : "off", model: id, at: Date.now() })
+                  )
+                );
+              }
+            }
+          : {})
+      },
+      thinking
+    );
+  }
+
+  /**
+   * A turn to the Claude box: its Durable Object and container, or in local tests a box at CLAUDE_BOX_URL. Aborted,
+   * the call is cancelled on both: the container's answer is passed on as it comes (claude-box.ts), so the
+   * connection to it closes too and the box stops the turn.
+   */
+  private toClaudeBox(body: string, signal?: AbortSignal): Promise<Response> {
+    const init = { method: "POST", headers: { "content-type": "application/json" }, body, signal };
+    const local = this.env.CLAUDE_BOX_URL?.trim().replace(/\/+$/, "");
+    if (local) return fetch(`${local}/turn`, init);
+    const box = this.env.CLAUDE_BOX;
+    if (!box) return Promise.resolve(Response.json({ error: "这份 wrangler 配置里没有 CLAUDE_BOX" }, { status: 501 }));
+    return box.get(box.idFromName("default")).fetch("https://claude-box/turn", init);
+  }
+
+  /** What the Claude box holds of the conversation, message by message (claude-code.ts). */
+  private claudeCodeHeld(): Segment[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_claude_code (pos INTEGER PRIMARY KEY, fp TEXT NOT NULL, entries TEXT)`;
+    return this.sql<{ fp: string; entries: string | null }>`SELECT fp, entries FROM res_claude_code ORDER BY pos`.map((row) => ({
+      fp: row.fp,
+      entries: row.entries ? (JSON.parse(row.entries) as unknown[]) : null
+    }));
+  }
+
+  /** Keeps what the box holds after a turn, rewriting only from the first message that changed. */
+  private holdClaudeCode(segments: Segment[]): void {
+    this.sql`CREATE TABLE IF NOT EXISTS res_claude_code (pos INTEGER PRIMARY KEY, fp TEXT NOT NULL, entries TEXT)`;
+    const old = this.sql<{ fp: string; empty: number }>`SELECT fp, entries IS NULL AS empty FROM res_claude_code ORDER BY pos`;
+    let from = 0;
+    while (from < segments.length && from < old.length && old[from].fp === segments[from].fp && Boolean(old[from].empty) === !segments[from].entries) from += 1;
+    this.ctx.storage.transactionSync(() => {
+      this.sql`DELETE FROM res_claude_code WHERE pos >= ${from}`;
+      for (let pos = from; pos < segments.length; pos += 1) {
+        const { fp, entries } = segments[pos];
+        this.sql`INSERT INTO res_claude_code (pos, fp, entries) VALUES (${pos}, ${fp}, ${entries ? JSON.stringify(entries) : null})`;
+      }
+    });
+  }
+
+  /** What Aelios brings up for her words, as a note put before them; "" when nothing, or Aelios cannot be asked. */
+  private async recallFor(memory: AeliosConfig, said: string): Promise<string> {
+    // Her words without the time stamp every message of hers starts with.
+    const query = said.replace(/^\[[^\]]*\]\s*/, "").slice(0, 2000);
+    if (!query.trim()) return "";
+    try {
+      const hits = await recall(memory, query, 5, AbortSignal.timeout(5_000));
+      return hits.length ? `[Aelios 记忆]\n${hits.map((hit) => `- ${hit.content}`).join("\n")}` : "";
+    } catch (error) {
+      console.error("claude-code: recall failed", { error: String(error) });
+      return "";
+    }
   }
 
   /** Whether Aelios kept no memory on her latest turn with the model now in use. */
@@ -675,6 +760,8 @@ export class Resident extends Think<Env> {
   /** A model id as Think takes it, called from here: your own provider's `custom/…` is built here (custom.ts). */
   private modelFor(id: string, thinking?: Thinking): ThinkModel {
     if (isCustom(id)) return customModel(this.cfg, id, thinking);
+    // Called here only for work outside the conversation (the conversation's own model is chatModel's).
+    if (isClaudeCode(id)) return this.claudeCode(id, { auxiliary: true, thinking });
     return id === "fake" && this.env.FAKE_MODEL === "true" ? fakeModel() : id;
   }
 

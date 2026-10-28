@@ -23,10 +23,10 @@
 ## 给 AI：先守这几条
 
 - 用用户的语言跟用户说话。每一步先用一句话说你要做什么。
-- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Cloudflare 的令牌、GitHub 的令牌、企业微信应用的 Secret、转发机的钥匙都不行。bot token 由用户自己填进网页设置页（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
+- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Claude 的 setup token、Cloudflare 的令牌、GitHub 的令牌、企业微信应用的 Secret、转发机的钥匙都不行。bot token 由用户自己填进网页设置页（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
 - **你手上已经有用户的 key 的**（在环境变量里，或者在你自己的配置里，比如搜索、语音那几家的），用户同意用在住户上，就照第 10 步的写法从那里直接填，别把值打印出来、别写进文件。没有的就请用户自己在网页设置页填。
 - **没经用户同意，别删、别换已有的东西**：已经在跑的住户 Worker 和它的 Secret（聊天记录、人设、表情包都存在 Worker 里）、Aelios 里已配好的身份、AI Gateway、存好的厂商 key 都不行。换 `WEB_KEY` 也要先问，换了以后旧钥匙就进不去了。
-- 部署只用 `npm run deploy`。**别改 `wrangler.jsonc` 的 `name`，别往里加 `vars`**：写在文件里的值每次部署都会冲掉网页上的设置。设置一律用第 5 步的接口填。
+- 部署只用 `npm run deploy`（用户想用自己的 Claude 订阅跑 `claude-code/…` 时才用 `npm run deploy:claude`，要 Workers Paid，见 README「用自己的 Claude 订阅」）。**别改 `wrangler.jsonc` 的 `name`，别往里加 `vars`**：写在文件里的值每次部署都会冲掉网页上的设置。设置一律用第 5 步的接口填。
 - 卡住了别换着法子硬试。把报错原文和你的判断告诉用户，问下一步。
 
 下面的命令里：
