@@ -28,6 +28,21 @@ const address = (value: string) => {
   }
 };
 
+/**
+ * Why the Claude box address cannot be used, or null. The box key, the setup token and the whole conversation go to
+ * it, so only https, except to this machine itself (local tests).
+ */
+export const boxAddress = (value: string) => {
+  try {
+    const { protocol, hostname } = new URL(value);
+    if (protocol === "https:") return null;
+    if (protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(hostname)) return null;
+    return "盒子地址要以 https:// 开头：盒子钥匙、setup token 和对话都经它送过去";
+  } catch {
+    return "不是一个网址";
+  }
+};
+
 const timeZone = (value: string) => {
   try {
     new Intl.DateTimeFormat("en", { timeZone: value });
@@ -51,7 +66,7 @@ export const FIELDS: readonly Field[] = [
   { key: "CUSTOM_FORMAT", kind: "choice", choices: ["openai", "anthropic"] },
   { key: "CLAUDE_CODE_OAUTH_TOKEN", kind: "secret", check: (value) => (/^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value) ? null : "setup token 是 sk-ant-oat 开头的一串，在电脑上跑 claude setup-token 拿") },
   // The Claude box on a machine of her own (claude-box/, docs/claude-box.md) and the key it checks.
-  { key: "CLAUDE_BOX_URL", kind: "text", check: address },
+  { key: "CLAUDE_BOX_URL", kind: "text", check: boxAddress },
   { key: "CLAUDE_BOX_KEY", kind: "secret", check: (value) => (value.length >= 32 ? null : "盒子钥匙至少 32 位，用装盒子时生成的那把") },
   { key: "AI_GATEWAY_ID", kind: "text" },
   { key: "AELIOS_URL", kind: "text", check: address },

@@ -2470,6 +2470,10 @@ if (phase === "claude-code") {
     // An address that is not one is not saved.
     const where = await web("/web/config", KEY, { key: "CLAUDE_BOX_URL", text: "not an address" });
     assert.equal(where.status, 400);
+    // Plain http only to this machine: the box key, the token and the conversation would go out in the clear.
+    const plain = await web("/web/config", KEY, { key: "CLAUDE_BOX_URL", text: "http://claude-box.example.com" });
+    assert.equal(plain.status, 400);
+    assert.match(JSON.stringify(await plain.json()), /https:\/\//);
     assert.equal((await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "not-a-token" })).status, 400);
     let response = await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "sk-ant-oat01-revoked-0123456789abcdefghij" });
     assert.equal(response.status, 200);

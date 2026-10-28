@@ -65,7 +65,7 @@ import {
   type AlarmInput
 } from "./alarms";
 import { claudeOnRunPath } from "./claude-run";
-import { cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
+import { boxAddress, cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
 import { customModel, isCustom } from "./custom";
 import { LETTER_KEEP_TOKENS, chatTokens, foldIntoLetter, letterTokenThreshold, reachesLetterThreshold } from "./fold";
 import { resumeLetterCompaction } from "./letter-recovery";
@@ -705,6 +705,9 @@ export class Resident extends Think<Env> {
   private toClaudeBox(body: string, signal?: AbortSignal): Promise<Response> {
     const at = this.cfg.CLAUDE_BOX_URL?.trim().replace(/\/+$/, "");
     if (!at) return Promise.resolve(Response.json({ error: NO_BOX }, { status: 501 }));
+    // The settings page checks it too; this also covers an address set as a Worker variable.
+    const unsafe = boxAddress(at);
+    if (unsafe) return Promise.resolve(Response.json({ error: unsafe }, { status: 501 }));
     const key = this.cfg.CLAUDE_BOX_KEY?.trim();
     const headers: Record<string, string> = { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) };
     return fetch(`${at}/turn`, { method: "POST", headers, body, signal });

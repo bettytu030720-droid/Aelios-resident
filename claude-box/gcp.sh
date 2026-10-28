@@ -14,7 +14,10 @@
 #   bash gcp.sh --update                            restart the machine, which brings the box up to date
 #   bash gcp.sh --delete                            delete the machine and its network
 #
-# Run it again to change the tunnel token; the key stays unless --new-key.
+# Run it again to change the tunnel token; the key stays unless --new-key. It only touches what it made itself (the
+# machine carries a label, the network and subnet a description): one of the same name made otherwise is left alone.
+# The machine has no Google service account, and should run nothing but the box and its tunnel: its metadata holds
+# the box key and the tunnel token, and every program on it can read that.
 set -euo pipefail
 
 project=""
@@ -42,7 +45,7 @@ while [ $# -gt 0 ]; do
     --new-key) new_key=1 ;;
     --update) update=1 ;;
     --delete) delete=1 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 1 ;;
   esac
   shift
@@ -60,26 +63,46 @@ esac
 hostname="${hostname#https://}"
 hostname="${hostname%%/*}"
 g() { gcloud --project "$project" --quiet "$@"; }
-# exists <group> [flags]: whether $name is there, e.g. exists "networks subnets" --region us-west1
-exists() {
-  local group="$1"
+# What gcp.sh puts on what it makes: a label on the machine, a description on the network and the subnet.
+label="aelios-claude-box"
+description="Made by Aelios-resident claude-box/gcp.sh"
+# whose <group> [flags]: "none", "ours" (gcp.sh made it) or "other" for $name, e.g. whose "networks subnets" --region us-west1
+whose() {
+  local group="$1" field="description" want="$description" mark
   shift
+  if [ "$group" = instances ]; then field="labels.made-by"; want="$label"; fi
   # shellcheck disable=SC2086
-  g compute $group describe "$name" "$@" --format='value(name)' >/dev/null 2>&1
+  mark="$(g compute $group describe "$name" "$@" --format="value($field)" 2>/dev/null)" || { echo none; return; }
+  if [ "$mark" = "$want" ]; then echo ours; else echo other; fi
 }
+not_ours() { echo "a $1 named $name is already in project $project, and gcp.sh did not make it: left alone. Pick another name with --name" >&2; exit 1; }
 new_key() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
 health() { [ -n "$hostname" ] && [ "$(curl -fsS -m 5 "https://$hostname/health" 2>/dev/null || true)" = ok ]; }
 
 if [ "$delete" = 1 ]; then
-  if exists instances --zone "$zone"; then g compute instances delete "$name" --zone "$zone"; fi
-  if exists "networks subnets" --region "$region"; then g compute networks subnets delete "$name" --region "$region"; fi
-  if exists networks; then g compute networks delete "$name"; fi
-  say "deleted (the tunnel stays in Cloudflare: delete it there if you no longer need it)"
+  left=""
+  case "$(whose instances --zone "$zone")" in
+    ours) g compute instances delete "$name" --zone "$zone" ;;
+    other) left="$left machine" ;;
+  esac
+  case "$(whose "networks subnets" --region "$region")" in
+    ours) g compute networks subnets delete "$name" --region "$region" ;;
+    other) left="$left subnet" ;;
+  esac
+  case "$(whose networks)" in
+    ours) g compute networks delete "$name" ;;
+    other) left="$left network" ;;
+  esac
+  [ -z "$left" ] || say "left alone, gcp.sh did not make them:$left named $name"
+  say "deleted what gcp.sh made (the tunnel stays in Cloudflare: delete it there if you no longer need it)"
   exit 0
 fi
 
 if [ "$update" = 1 ]; then
-  exists instances --zone "$zone" || { echo "no machine $name in $zone yet" >&2; exit 1; }
+  case "$(whose instances --zone "$zone")" in
+    none) echo "no machine $name in $zone yet" >&2; exit 1 ;;
+    other) not_ours machine ;;
+  esac
   g compute instances reset "$name" --zone "$zone"
   say "restarted: it installs the newest box as it boots, back in a few minutes"
   exit 0
@@ -109,12 +132,20 @@ say "project $project, zone $zone"
 # Compute Engine needs billing on, free tier or not; turning it on takes a minute the first time.
 g services enable compute.googleapis.com
 
-exists networks || g compute networks create "$name" --subnet-mode=custom
-exists "networks subnets" --region "$region" ||
-  g compute networks subnets create "$name" --network "$name" --region "$region" --stack-type=IPV6_ONLY --ipv6-access-type=EXTERNAL
+case "$(whose networks)" in
+  none) g compute networks create "$name" --subnet-mode=custom --description="$description" ;;
+  other) not_ours network ;;
+esac
+case "$(whose "networks subnets" --region "$region")" in
+  none) g compute networks subnets create "$name" --network "$name" --region "$region" --description="$description" \
+    --stack-type=IPV6_ONLY --ipv6-access-type=EXTERNAL ;;
+  other) not_ours subnet ;;
+esac
 
 key=""
-if ! exists instances --zone "$zone"; then
+machine="$(whose instances --zone "$zone")"
+[ "$machine" != other ] || not_ours machine
+if [ "$machine" = none ]; then
   [ -n "$token" ] || { echo "a new machine needs the tunnel token" >&2; exit 1; }
   key="$(new_key)"
   # The key and the token go straight into the machine's metadata (only this project sees it), never onto a disk here.
@@ -123,6 +154,7 @@ if ! exists instances --zone "$zone"; then
     --network-interface="subnet=$name,stack-type=IPV6_ONLY,ipv6-network-tier=PREMIUM" \
     --image-family=debian-12 --image-project=debian-cloud \
     --boot-disk-size=30GB --boot-disk-type=pd-standard \
+    --labels="made-by=$label" --no-service-account --no-scopes \
     --metadata "box-repo=$repo,box-ref=$ref" \
     --metadata-from-file startup-script="$startup",box-key=<(printf %s "$key"),tunnel-token=<(printf %s "$token")
 else
@@ -148,12 +180,13 @@ fi
 if [ -n "$hostname" ]; then
   say "waiting for https://$hostname/health (the first boot installs Node.js and Claude Code: about 5 minutes)"
   for _ in $(seq 1 60); do health && break; sleep 10; done
-  if health; then
-    say "the box answers at https://$hostname"
-  else
-    say "no answer yet. What the machine is doing:"
-    echo "  gcloud compute instances get-serial-port-output $name --zone $zone --project $project | grep -E 'startup-script|claude-box' | tail -30"
+  if ! health; then
+    echo "claude-box: no answer from https://$hostname yet, so the key is not given out. What the machine is doing:" >&2
+    echo "  gcloud compute instances get-serial-port-output $name --zone $zone --project $project | grep -E 'startup-script|claude-box' | tail -30" >&2
+    echo "Once it answers, run this again without --new-key (Enter at the token question): it changes nothing on the machine and does the rest." >&2
+    exit 1
   fi
+  say "the box answers at https://$hostname"
 fi
 
 if [ "$key_to_worker" = 1 ]; then
