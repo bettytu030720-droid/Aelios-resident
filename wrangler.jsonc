@@ -21,13 +21,11 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "RESIDENT", "class_name": "Resident" },
-      // The Claude box for the claude-code/… models. Its container comes only with `npm run deploy:claude`
-      // (Workers Paid); deployed without it, the class is here and does nothing.
-      { "name": "CLAUDE_BOX", "class_name": "ClaudeBox" }
+      { "name": "RESIDENT", "class_name": "Resident" }
     ]
   },
-  // SQLite-backed Durable Objects are the kind the Workers Free plan allows.
+  // SQLite-backed Durable Objects are the kind the Workers Free plan allows. ClaudeBox (v2) is left from when the
+  // Claude box ran in a Cloudflare container; it holds nothing.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Resident"] },
     { "tag": "v2", "new_sqlite_classes": ["ClaudeBox"] }

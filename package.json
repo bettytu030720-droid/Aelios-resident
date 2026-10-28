@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "deploy:claude": "node scripts/deploy-claude.mjs",
+    "deploy:claude": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "node test/run.mjs"
   },

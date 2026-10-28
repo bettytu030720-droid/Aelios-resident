@@ -1,5 +1,6 @@
 # The Claude box (server.mjs): the official Claude Agent SDK behind a small HTTP server, for the resident's
-# `claude-code/…` models. Built and pushed by `npm run deploy:claude` (Cloudflare Containers, Workers Paid).
+# `claude-code/…` models, for a machine that runs containers. install.sh sets it up without Docker
+# (docs/claude-box.md). Run it with BOX_KEY set, reached only through a tunnel: docker run -e BOX_KEY=… -p 127.0.0.1:8790:8080
 FROM node:22-bookworm AS install
 WORKDIR /box
 COPY package.json package-lock.json ./

@@ -483,13 +483,21 @@ const server = http.createServer(async (req, res) => {
 
   // The Claude box (claude-box/server.mjs) for the claude-code/… models, without Claude Code: it answers with a line
   // saying how much of the history came back as its own entries, and writes entries for the turn as the box does.
+  // Asked to write in the notebook, it calls memory_notebook first, and answers once the result comes back.
+  // Where a box that redirects sends the resident: nothing should ever arrive here.
+  if (url.pathname === "/claude-box-elsewhere/turn") {
+    log.push({ kind: "claudebox.elsewhere", token: json.token, auth });
+    return reply({ error: "not a box" }, 404);
+  }
   if (url.pathname === "/claude-box/turn") {
     const items = (json.history ?? []).map((item) => (Array.isArray(item.entries) ? "entries" : item.role));
     // Her words, without what memory brought up after them.
     const promptText = (json.prompt ?? []).filter((b) => b.type === "text" && !b.text.startsWith("[Aelios 记忆]")).map((b) => b.text).join("\n");
     log.push({ kind: "claudebox.turn", token: json.token, model: json.model, effort: json.effort, thinking: json.thinking,
-      system: json.system, items, prompt: json.prompt, history: json.history });
-    if (faults.claudeBox === "down") return reply({ error: "Claude 容器没起来：test" }, 503);
+      system: json.system, items, prompt: json.prompt, history: json.history, tools: json.tools, auth });
+    if (faults.claudeBox === "down") return reply({ error: "the box is restarting" }, 502);
+    if (faults.claudeBox === "key") return reply({ error: "the box key does not match" }, 401);
+    if (faults.claudeBox === "redirect") return reply({ error: "moved" }, 307, { location: "http://127.0.0.1:9999/claude-box-elsewhere/turn" });
     res.writeHead(200, { "content-type": "application/x-ndjson" });
     const line = (obj) => res.write(`${JSON.stringify(obj)}\n`);
     if (String(json.token).includes("revoked")) {
@@ -498,7 +506,13 @@ const server = http.createServer(async (req, res) => {
     }
     const reused = items.filter((kind) => kind === "entries").length;
     const said = promptText.split("\n").at(-1).replace(/^\[[^\]]+\]\s*/, "");
-    const text = `订阅收到：${said}（接着 ${reused} 条，重写 ${items.length - reused} 条）`;
+    const result = (json.prompt ?? []).find((b) => b.type === "tool_result");
+    const calls = !result && said.includes("记小本本") && (json.tools ?? []).some((t) => t.name === "memory_notebook");
+    const text = calls
+      ? "我记一下。"
+      : result
+        ? `小本本记好了：${(result.content ?? []).map((b) => b.text).join("")}（接着 ${reused} 条，重写 ${items.length - reused} 条）`
+        : `订阅收到：${said}（接着 ${reused} 条，重写 ${items.length - reused} 条）`;
     const usage = { input_tokens: 4, output_tokens: 0, cache_read_input_tokens: reused * 100, cache_creation_input_tokens: 50,
       cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 50 } };
     const id = `msg_box_${log.length}`;
@@ -520,12 +534,24 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     line({ e: { type: "content_block_stop", index } });
-    line({ e: { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { ...usage, output_tokens: 9 } } });
+    const content = [{ type: "text", text }];
+    if (calls) {
+      const use = { type: "tool_use", id: `toolu_box_${log.length}`, name: "memory_notebook", input: {} };
+      const input = { action: "append", name: "测试", content: "今天学完第 30 章" };
+      line({ e: { type: "content_block_start", index: index + 1, content_block: { ...use, caller: { type: "direct" } } } });
+      // The input in pieces of JSON, as a stream brings it.
+      const pieces = JSON.stringify(input);
+      line({ e: { type: "content_block_delta", index: index + 1, delta: { type: "input_json_delta", partial_json: pieces.slice(0, 10) } } });
+      line({ e: { type: "content_block_delta", index: index + 1, delta: { type: "input_json_delta", partial_json: pieces.slice(10) } } });
+      line({ e: { type: "content_block_stop", index: index + 1 } });
+      content.push({ ...use, name: "mcp__resident__memory_notebook", input });
+    }
+    line({ e: { type: "message_delta", delta: { stop_reason: calls ? "tool_use" : "end_turn", stop_sequence: null }, usage: { ...usage, output_tokens: 9 } } });
     line({ e: { type: "message_stop" } });
     const uuid = () => crypto.randomUUID();
     line({ done: {
       prompt: [{ type: "user", uuid: uuid(), message: { role: "user", content: json.prompt } }, { type: "attachment", uuid: uuid(), attachment: { type: "date", date: "2026-10-28" } }],
-      reply: [{ type: "assistant", uuid: uuid(), message: { id, type: "message", role: "assistant", model: json.model, content: [{ type: "text", text }] } }]
+      reply: content.map((block) => ({ type: "assistant", uuid: uuid(), message: { id, type: "message", role: "assistant", model: json.model, content: [block] } }))
     } });
     return res.end();
   }

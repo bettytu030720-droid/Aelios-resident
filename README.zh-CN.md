@@ -470,12 +470,12 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 
 ### 用自己的 Claude 订阅（`claude-code/…`）
 
-聊天可以不用 API key，改用你自己的 Claude Pro 或 Max 订阅：模型填 `claude-code/` 加 Claude 的模型 id，比如 `claude-code/claude-opus-5-5`。这样每一轮都交给一个小容器（`claude-box/`），里面跑官方的 Claude Agent SDK，用你 `claude setup-token` 拿到的那串登录。别的都还是住户自己的：对话、人设、交接信、心跳、各个渠道。
+聊天可以不用 API key，改用你自己的 Claude Pro 或 Max 订阅：模型填 `claude-code/` 加 Claude 的模型 id，比如 `claude-code/claude-opus-5-5`。这样每一轮都交给 Claude 盒子（`claude-box/`）：一个小服务，里面跑官方的 Claude Agent SDK，用你 `claude setup-token` 拿到的那串登录，放在你自己的一台机器上，经 Cloudflare Tunnel 让住户连过去。别的都还是住户自己的：对话、人设、交接信、心跳、各个渠道和工具。
 
-- **部署改用 `npm run deploy:claude`**，不用 `npm run deploy`；要 Workers Paid 和 Docker。用 Workers Builds 的话，在 Settings → Build 里把部署命令改成 `npm run deploy:claude`。照旧 `npm run deploy` 就不带容器，免费档跟以前一样能用；这时选 `claude-code/…` 会在试调时被拦下，并说明原因。
-- **登录**：在装了 Claude Code 的电脑上跑 `claude setup-token`，把出来的 `sk-ant-oat…` 填进设置页「供应商」。填了就不再显示；想退出就在那里清空。
-- **这一版只聊天**：走这条路时模型没有工具，所以不搜网、不发表情包、不定闹钟、不派后台的活。接了 Aelios 的话长期记忆照样有：住户每句先替你去 Aelios 想起来，回完再把这一来一回记进 Aelios。这些轮次不经过 Aelios 的模型接口，所以 Aelios 的模型清单管不到它们。
-- **容器里什么都不存**：20 分钟没有新的一轮它就停，下一轮来了再起，要几秒（部署后第一次起会久一点）。每一轮都带上整段对话；容器回过的话，按 Claude Code 自己记的样子送回去（存在 Durable Object 里），所以每一轮都接得上提示缓存。
+- **给盒子一台机器**：Google Cloud 免费的 e2-micro 就够。在 Cloud Shell 里跑 `bash claude-box/gcp.sh --hostname claude-box.<你的域名>`，它开一台只用 IPv6 的机器（不用付 IPv4 地址的钱），把盒子和 Tunnel 装好；别的装了 systemd 的 Linux 机器上跑 `sudo claude-box/install.sh --tunnel`。机器要连得上 `api.anthropic.com`，大陆和香港的不行。一步一步怎么做（也能直接丢给 AI 照着做）：[docs/claude-box.md](docs/claude-box.md)。
+- **填进设置页「供应商」**：电脑上 `claude setup-token` 出来的 `sk-ant-oat…`、盒子地址（Tunnel 的网址）、装的时候生成的盒子钥匙。钥匙和 token 填了就不再显示；想退出就在那里清空。
+- **工具跟别的模型一样能用**：Claude Code 调住户的工具，那条回复停在那里，住户跑完工具，盒子里同一个 Claude Code 拿着结果接着说。Claude Code 自己的工具（跑命令、读写文件、上网）一律关着。接了 Aelios 的话，住户还会每句先替你去 Aelios 想起来，回完再把这一来一回记进 Aelios，因为这些轮次不经过 Aelios 的模型接口（Aelios 的模型清单也就管不到它们）。
+- **盒子里什么都不存**：每一轮都带上整段对话；盒子回过的话，按 Claude Code 自己记的样子送回去（存在 Durable Object 里），所以每一轮都接得上提示缓存，盒子重启过也接着聊。
 - 这是你自己的订阅、你自己的账号：一串 setup token 只给一个人自己的住户用。
 
 ## 设置一览
@@ -528,7 +528,8 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 | `AI_GATEWAY_ID` | 空（用 `default`） | 搜网、语音、没接 Aelios 时的模型走哪个 AI Gateway |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | 空 | 中转的地址（写到 `/v1`）和 key；模型填 `custom/…` 时用 |
 | `CUSTOM_FORMAT` | `openai` | 中转用哪种格式：`openai` 或 `anthropic`（带缓存） |
-| `CLAUDE_CODE_OAUTH_TOKEN` | 空 | `claude setup-token` 拿到的那串，给 `claude-code/…` 用；要 `npm run deploy:claude` 部署 |
+| `CLAUDE_CODE_OAUTH_TOKEN` | 空 | `claude setup-token` 拿到的那串，给 `claude-code/…` 用 |
+| `CLAUDE_BOX_URL` / `CLAUDE_BOX_KEY` | 空 | [Claude 盒子](docs/claude-box.md)经 Cloudflare Tunnel 出来的网址，和它的钥匙（至少 32 位） |
 
 ## 花钱吗
 
@@ -542,7 +543,7 @@ GitHub 和 claude.ai 那边接着做时，每次都是新开的，上一单的�
 - **表情包、别的 MCP**：每轮多带一些说明；设置页上每个包、每个服务旁边写着大约多少 token。
 - **心跳、闹钟**：每次都是它的一轮。心跳趁缓存还热的时候问，跟你发一条差不多。闹钟如果在你一小时以上没说话之后才响，缓存已经凉了，整段对话要重写一遍（1 小时缓存的写入是输入价的 2 倍，读最多 1/10），这一下大约顶平时 20 多条消息的输入。所以闹钟默认关，开了也有上限。
 - **云端 Claude Code**：每单是一个完整的云端会话，跟你自己开一个一样用订阅的额度；住户这边只多一次请求和一轮回复。
-- **用自己的 Claude 订阅**（`claude-code/…`）：聊天用订阅的额度，不花 API 的钱。容器（半核、4 GiB，Claude Code 起得快的最小一档）开着的时候按 Workers Paid 计费：每月含 25 GiB-小时内存，大约够这个容器开 6 个小时，超出后一小时大约 4 美分（10 月 28 日查的官方价）。最后一轮过后 20 分钟它就停。每一轮都重新起一次 Claude Code，所以回得比走 API 慢几秒。
+- **用自己的 Claude 订阅**（`claude-code/…`）：聊天用订阅的额度，不花 API 的钱。盒子那台机器用 Google Cloud 的免费额度不花钱（us-west1、us-central1、us-east1 里一台 e2-micro 加 30 GB 标准盘；每月送 1 GB 出站流量，超出大约 0.12 美元一 GB；只用 IPv6 就没有 IPv4 地址的钱；10 月 28 日查的官方价）。每一轮都重新起一次 Claude Code，所以回得比走 API 慢几秒。
 
 **注意 AI Gateway 认 key 的顺序**：请求里带了 key（设置页填的）就用它；没带就用 Gateway 里别名 `default` 的那把；都没有就走 Cloudflare 的统一计费，从 Gateway 预付额度里扣（前提是账户里有额度、那一家也支持）。不想被这样扣，就在 Gateway 设置里打开 Require provider credentials。
 

@@ -27,7 +27,8 @@
 //   stall    a model that goes quiet: the turn is cut and run again, and the messages after it are answered
 //            (start wrangler with --var CHAT_STALL_SECONDS:2)
 //   claude-code  claude-code/… models on her own subscription, through the fake Claude box: the token, the trial
-//            call, the conversation carried turn to turn, memory recalled and recorded, a letter, pictures, failures
+//            call, the conversation carried turn to turn, memory recalled and recorded, a tool call and its result,
+//            the box key, a letter, pictures, failures
 //   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
 //            --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:): connected, the resident started again, the Mini App
 //            and commands with that token, connecting again, a token Telegram refuses, taking it off
@@ -2466,6 +2467,13 @@ if (phase === "claude-code") {
   };
 
   await step("the setup token is filled in, never shown, and one Claude refuses is reported when switching", async () => {
+    // An address that is not one is not saved.
+    const where = await web("/web/config", KEY, { key: "CLAUDE_BOX_URL", text: "not an address" });
+    assert.equal(where.status, 400);
+    // Plain http only to this machine: the box key, the token and the conversation would go out in the clear.
+    const plain = await web("/web/config", KEY, { key: "CLAUDE_BOX_URL", text: "http://claude-box.example.com" });
+    assert.equal(plain.status, 400);
+    assert.match(JSON.stringify(await plain.json()), /https:\/\//);
     assert.equal((await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "not-a-token" })).status, 400);
     let response = await web("/web/config", KEY, { key: "CLAUDE_CODE_OAUTH_TOKEN", text: "sk-ant-oat01-revoked-0123456789abcdefghij" });
     assert.equal(response.status, 200);
@@ -2519,17 +2527,60 @@ if (phase === "claude-code") {
     assert.equal(model.memoryOff, false);
   });
 
-  await step("what memory brings up goes after her words, and the box is told it has no tools", async () => {
+  await step("what memory brings up goes after her words, and the box gets the resident's tools", async () => {
     const reply = await say("我生日是哪天？");
     assert.match(reply, /^订阅收到：我生日是哪天？/);
     const turn = (await turns()).at(-1);
     assert.match(turn.prompt[0].text, /我生日是哪天？$/);
     assert.equal(turn.prompt.at(-1).type, "text");
     assert.match(turn.prompt.at(-1).text, /^\[Aelios 记忆\]\n- 她的生日在春天$/);
-    assert.match(turn.system, /you have no tools[^\n]*\[Aelios 记忆\] block\.$/);
+    assert.doesNotMatch(turn.system, /no tools/);
+    const notebook = turn.tools.find((tool) => tool.name === "memory_notebook");
+    assert.ok(notebook?.input_schema?.properties?.action, JSON.stringify(turn.tools.map((tool) => tool.name)));
+    assert.ok(turn.tools.every((tool) => !tool.cache_control && !tool.type), "her own tools, without cache marks");
     // The next turn carries her words as the box wrote them, memory and all, so the cache still matches.
     assert.equal(counts(await say("好的")).reused, 8);
     assert.match(JSON.stringify((await turns()).at(-1).history.at(-2)), /她的生日在春天/);
+  });
+
+  await step("Claude in the box calls a tool: the resident runs it, the result goes back, and the turn is recorded once", async () => {
+    const before = await log();
+    const reply = await say("帮我记小本本：今天学完第 30 章");
+    assert.match(reply, /小本本记好了：\{"data":\{"id":"mem-new","created":true\}\}/);
+    const all = (await log()).slice(before.length);
+    const [ask, answer] = all.filter((e) => e.kind === "claudebox.turn");
+    assert.ok(ask && answer, "two calls to the box");
+    assert.equal(all.filter((e) => e.kind === "claudebox.turn").length, 2);
+    const call = all.find((e) => e.kind === "aelios.mcp" && e.body.params?.name === "notebook");
+    assert.deepEqual({ ...call.body.params.arguments, namespace: undefined }, { action: "append", name: "测试", content: "今天学完第 30 章", namespace: undefined });
+    assert.equal(answer.prompt.length, 1);
+    assert.equal(answer.prompt[0].type, "tool_result");
+    assert.match(answer.prompt[0].tool_use_id, /^toolu_box_/);
+    assert.match(JSON.stringify(answer.prompt[0].content), /mem-new/);
+    // The call came back as the box wrote it, so the box goes on from its own entries.
+    assert.equal(answer.items.at(-1), "entries");
+    assert.equal(all.filter((e) => e.kind === "aelios.recall").length, 1, "recalled once, for her words");
+    const ingests = all.filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident");
+    assert.equal(ingests.length, 1, "recorded once, when answered");
+    assert.match(ingests[0].body.messages[0].content, /帮我记小本本/);
+    assert.match(ingests[0].body.messages[1].content, /^我记一下。小本本记好了：/);
+    // And the whole round comes back as the box's own entries on the next turn.
+    const next = counts(await say("记好了吗"));
+    assert.equal(next.written, written);
+  });
+
+  await step("the box key on the settings page goes with every turn; one the box does not take is reported", async () => {
+    assert.equal((await web("/web/config", KEY, { key: "CLAUDE_BOX_KEY", text: "short" })).status, 400);
+    const boxKey = "k".repeat(40);
+    assert.equal((await web("/web/config", KEY, { key: "CLAUDE_BOX_KEY", text: boxKey })).status, 200);
+    await say("带钥匙");
+    assert.equal((await turns()).at(-1).auth, `Bearer ${boxKey}`);
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "key" }) });
+    const response = await web("/web/model", KEY, { text: "claude-code/claude-sonnet-5-5" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /不认这把钥匙/);
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "up" }) });
+    await web("/web/config", KEY, { key: "CLAUDE_BOX_KEY", text: "" });
   });
 
   await step("Claude thinks as long as the settings page says", async () => {
@@ -2573,11 +2624,17 @@ if (phase === "claude-code") {
     assert.match(await say("接着说"), /^订阅收到：接着说（/);
   });
 
-  await step("switching to the box while it is down says why, and the model stays", async () => {
+  await step("switching to the box while it is down, or while its address redirects, says why, and the model stays", async () => {
     await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "down" }) });
     const response = await web("/web/model", KEY, { text: "claude-code/claude-sonnet-5-5" });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /Claude 容器/);
+    assert.match((await response.json()).error, /Claude 盒子没接这一轮（502）/);
+    // A box address that redirects: the turn, with the token and the box key, is not sent on.
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "redirect" }) });
+    const moved = await web("/web/model", KEY, { text: "claude-code/claude-sonnet-5-5" });
+    assert.equal(moved.status, 400);
+    assert.match((await moved.json()).error, /Claude 盒子没接这一轮（307）/);
+    assert.equal((await log()).filter((e) => e.kind === "claudebox.elsewhere").length, 0, "nothing followed the redirect");
     await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ claudeBox: "up" }) });
     assert.equal((await (await web("/web/model", KEY)).json()).model, "claude-code/claude-opus-5-5");
   });
