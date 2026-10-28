@@ -94,7 +94,7 @@ sudo ./install.sh --tunnel --show-key     # 会问 Tunnel token
 
 - **Claude 订阅的 setup token**：电脑上跑 `claude setup-token`，把出来的 `sk-ant-oat…` 填这里。
 - **Claude 盒子地址**：`https://claude-box.<你的域名>`（只收 `https://`：钥匙、setup token 和对话都经它送过去）
-- **Claude 盒子钥匙**：上一步打印的那串（用了 `--key-to-worker` 的不用填）。
+- **Claude 盒子钥匙**：上一步打印的那串（用了 `--key-to-worker` 且设置页没有保存过钥匙的不用填）。设置页保存的地址和钥匙优先于 Worker 绑定；换钥匙后如果页上仍存着旧钥匙，要在设置页更新或清除旧值。
 
 然后把模型换成 `claude-code/claude-opus-5-5`（或 `claude-code/claude-sonnet-5-5`、`claude-code/claude-haiku-5-5`）。换的时候住户会先试调一次，不通会说为什么。
 
@@ -102,20 +102,43 @@ sudo ./install.sh --tunnel --show-key     # 会问 Tunnel token
 
 ## 给 AI：怎么帮用户装
 
-用户要你帮忙装的话，照上面三步走，另外守这几条：
+先检查可用的登录和工具，再决定哪些步骤能自己做。`cf` 和 `wrangler` 的登录彼此独立：wrangler 过期不代表已登录的 `cf` 不能管理 Tunnel、DNS 或 Worker。CLI 的命令和输出可能变化，先看对应命令的 `--help`，确认账号和权限。
 
-- **别让用户把 setup token、Tunnel token、盒子钥匙贴进对话。** setup token 和盒子钥匙由用户填进设置页；Tunnel token 由用户在自己的终端里输（`gcp.sh` 和 `install.sh --tunnel` 会问，输入不显示）。你自己生成的钥匙只经管道存进 Worker Secret，不打印、不写文件。
-- **第 1 步只能用户自己点**（Cloudflare 后台）。你问用户要的只有网址 `claude-box.<域名>`，它不是秘密。
-- `gcp.sh` 要在登录了 gcloud 的地方跑。用户开着 Cloud Shell 的，请用户把第 2 步的命令贴进去；用户电脑上装了 gcloud、wrangler 也登录着的，在住户的文件夹里请用户跑 `bash claude-box/gcp.sh --hostname <网址> --key-to-worker`（token 那步要用户自己输，所以请用户在自己的终端里跑）。
-- `gcp.sh` 退出码不是 0 就是没装好，别接着往下走：看它打印的原因（多半是盒子还没答话、答话的不认钥匙，或者撞了同名的机器、查不了项目），照着办。
-- 装完先自己验：`curl -s https://<网址>/health` 回 `ok` 就通了；不带钥匙 `curl -s -X POST https://<网址>/turn` 应该是 `{"error":"the box key does not match"}`。
-- 盒子地址用设置接口填（`setup-with-ai.md` 第 5 步的写法）：`{"key":"CLAUDE_BOX_URL","text":"https://<网址>"}`。钥匙用了 `--key-to-worker` 就已经在 Worker 里；没用的请用户自己在设置页填。
-- 换模型用 `POST /web/model`，`{"text":"claude-code/claude-opus-5-5"}`；回 400 时把错误原文告诉用户（多半是 setup token 没填，或盒子还没起来）。
-- 卡住了先看机器在干什么，别换着法子硬试：
+1. **保护凭证**：不要让用户把 setup token、Tunnel token 或盒子钥匙发到对话；不打印、不写入仓库、不放在命令参数里。创建 Tunnel 的 API 或 CLI 响应本身可能包含 token 和 secret，先在进程内解析并过滤输出，不要直接展示原始响应；意外显示了就轮换，再确认使用新凭证。不要读取、测试或修改用户本机已有的 Claude 登录凭证，除非用户明确允许。用户自己准备 setup token，并在设置页填写；已有 token 的不要重新生成。
+2. **确认目标**：只读检查 Cloudflare 账号、域名和 DNS、GCP 项目、结算和已有同名资源；多个项目或域名无法确定时先问用户。说明 VM、磁盘和流量可能计费，核对当前免费额度和使用情况。新建独立 Tunnel 和机器，别复用或修改不相关的资源。
+3. **建 Tunnel**：有适当权限时可用已登录的 Cloudflare CLI 或官方 API 创建远程管理的 Tunnel，添加指向 `http://127.0.0.1:8790` 的公开主机名和代理 CNAME，并保留默认 404 规则。创建前检查 DNS 名称；只修改自己创建的 Tunnel。没有可用权限或安全的凭证传递方式时，才请用户按第 1 节在后台操作。
+4. **建机器**：`gcp.sh` 要在已登录 gcloud 的地方运行，明确传入项目和 hostname。有安全的进程间管道时，可将 Tunnel token 私下送到 `--tunnel-token-stdin`，让脚本生成盒子钥匙并验证就绪；不要使用 `--show-key` 把钥匙展示给 AI 或写入日志。若只能交互输入，请用户在自己的终端运行脚本并输入 token。脚本退出码非 0 就先查明原因；首次安装可能要几分钟，不要重复创建资源。
+5. **连接住户**：优先使用已有授权的住户设置接口填写盒子地址，盒子钥匙通过安全管道写入设置或 Worker Secret。`--key-to-worker` 需要有效的 wrangler 登录；如果只有 `cf` 登录，使用支持安全输入的 `cf` 命令或官方 API，不要假定它能读取 wrangler 登录。设置页保存的值优先于 Worker 绑定：检查设置状态，已有同名值可能覆盖新配置，不能仅凭 Secret 已存在就说连接成功。不要替换已有 Worker、其他密钥或住户身份。
 
-  ```sh
-  gcloud compute instances get-serial-port-output claude-box --zone us-west1-b | grep -E 'startup-script|claude-box' | tail -30
-  ```
+   填地址，和把钥匙从机器的元数据直接送进设置接口（钥匙不经过屏幕、文件和命令参数）：
+
+   ```sh
+   curl -sS -X POST <住户地址>/web/config -H "x-web-key: <网页钥匙>" -H "content-type: application/json" \
+     -d '{"key":"CLAUDE_BOX_URL","text":"https://<网址>"}' | grep -o '"error":"[^"]*"' || echo 已存
+   gcloud compute instances describe claude-box --zone <区域> --project <项目> --format=json \
+     | python3 -c 'import json, sys; items = json.load(sys.stdin)["metadata"]["items"]; print(json.dumps({"key": "CLAUDE_BOX_KEY", "text": next(i["value"] for i in items if i["key"] == "box-key")}))' \
+     | curl -sS -X POST <住户地址>/web/config -H "x-web-key: <网页钥匙>" -H "content-type: application/json" -d @- \
+     | grep -o '"error":"[^"]*"' || echo 已存
+   ```
+
+   看两项现在各从哪来（`value`/`saved` 是设置页存的，`fromWorker`/`workerHas` 是 Worker 绑定；钥匙只说有没有，不显示）：
+
+   ```sh
+   curl -s <住户地址>/web/config -H "x-web-key: <网页钥匙>" \
+     | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).fields.filter(f=>f.key.startsWith('CLAUDE_BOX'))))"
+   ```
+
+6. **验证并如实报告**：先检查 `/health` 返回 `ok`，不带钥匙的 `/turn` 返回 401；再验证盒子接受正确钥匙（`gcp.sh` 退出码是 0 就是验过了），并确认住户实际使用新地址和钥匙。健康检查不等于真实 Claude 对话已成功。只有用户希望切换模型且已有可用 setup token 时，才调用 `POST /web/model` 或让用户在设置页切换；报错时保留现有模型并报告原因。没有完成真实对话测试就明确说明。
+
+   ```sh
+   curl -s https://<网址>/health                                            # ok
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<网址>/turn      # 401
+   curl -sS -X POST <住户地址>/web/model -H "x-web-key: <网页钥匙>" -H "content-type: application/json" \
+     -d '{"text":"claude-code/claude-opus-5-5"}'                            # 住户先试调一次；回 400 时把 error 原文告诉用户
+   ```
+
+   最后请用户在聊天里问一件以前的事、再让它往小本本里记一行：两样都成了才算接好。
+7. **卡住时**：检查 Tunnel 连接、VM 状态和启动日志，例如 `gcloud compute instances get-serial-port-output claude-box --zone <区域> --project <项目>`。日志和 API 响应可能含敏感信息，过滤后再展示；不要为重试删除已有资源。报告已创建的资源和下一步，而不是把超时说成成功。
 
 ## 查问题
 
