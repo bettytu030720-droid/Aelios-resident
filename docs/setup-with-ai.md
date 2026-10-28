@@ -23,10 +23,10 @@
 ## 给 AI：先守这几条
 
 - 用用户的语言跟用户说话。每一步先用一句话说你要做什么。
-- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Claude 的 setup token、Cloudflare 的令牌、GitHub 的令牌、企业微信应用的 Secret、转发机的钥匙都不行。bot token 由用户自己填进网页设置页（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
+- **别让用户把凭证贴进对话**：Telegram bot 的 token、模型厂商的 key、Claude 的 setup token、Cloudflare 的令牌和 Tunnel token、GitHub 的令牌、企业微信应用的 Secret、转发机和 Claude 盒子的钥匙都不行。bot token 由用户自己填进网页设置页（第 4 步），厂商的 key 也由用户自己存（第 7 步）。例外有两个：网页钥匙 `WEB_KEY` 是你生成、本来就要交给用户的；Aelios 的钥匙 `CHATBOX_API_KEY` 本来就要填进用户的客户端，用户愿意给你就收，不愿意就请用户自己在设置页填。
 - **你手上已经有用户的 key 的**（在环境变量里，或者在你自己的配置里，比如搜索、语音那几家的），用户同意用在住户上，就照第 10 步的写法从那里直接填，别把值打印出来、别写进文件。没有的就请用户自己在网页设置页填。
 - **没经用户同意，别删、别换已有的东西**：已经在跑的住户 Worker 和它的 Secret（聊天记录、人设、表情包都存在 Worker 里）、Aelios 里已配好的身份、AI Gateway、存好的厂商 key 都不行。换 `WEB_KEY` 也要先问，换了以后旧钥匙就进不去了。
-- 部署只用 `npm run deploy`（用户想用自己的 Claude 订阅跑 `claude-code/…` 时才用 `npm run deploy:claude`，要 Workers Paid，见 README「用自己的 Claude 订阅」）。**别改 `wrangler.jsonc` 的 `name`，别往里加 `vars`**：写在文件里的值每次部署都会冲掉网页上的设置。设置一律用第 5 步的接口填。
+- 部署只用 `npm run deploy`（`npm run deploy:claude` 现在跟它一样，留着给以前改过 Workers Builds 部署命令的）。**别改 `wrangler.jsonc` 的 `name`，别往里加 `vars`**：写在文件里的值每次部署都会冲掉网页上的设置。设置一律用第 5 步的接口填。
 - 卡住了别换着法子硬试。把报错原文和你的判断告诉用户，问下一步。
 
 下面的命令里：
@@ -53,7 +53,7 @@
    | 没接 Aelios，有 Anthropic 或别家的 API key | 用户把 key 存进 AI Gateway `default` 的 Provider Keys（第 7 步），模型选 `anthropic/claude-…` 这类 |
    | 没接 Aelios，有中转站的地址和 key | 用户在设置页「供应商」里填中转地址和 key，模型写 `custom/<那家的模型名>`（第 7 步） |
    | 什么 key 都没有 | 先用默认的 `@cf/zai-org/glm-4.7-flash`，免费档就能用，以后再换 |
-   | 只有 Claude 订阅（Pro、Max），没有 API key | 订阅变不成聊天用的 API。聊天先用免费模型或别家的 key；订阅可以给住户当手脚用（README.zh-CN.md「叫云端 Claude Code 干活」），装完再配 |
+   | 只有 Claude 订阅（Pro、Max），没有 API key | 能用订阅聊：模型写 `claude-code/claude-opus-5-5` 这类，但要一台机器装 Claude 盒子（[claude-box.md](claude-box.md)，Google Cloud 免费小机就行）。先用免费模型装好、能聊了，再照那份装盒子、换模型。订阅也可以给住户当手脚用（README.zh-CN.md「叫云端 Claude Code 干活」） |
 
 5. **要哪几扇门？** 网页门一定有。Telegram 和企业微信都是选装的：
    - 要 Telegram：问用户的 Telegram 用户名（`@` 开头），住户只回白名单里的人。用户没设用户名的话，第 9 步用日志查数字 id。

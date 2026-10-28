@@ -130,7 +130,16 @@ await step("a whole turn through boxFetch: her words with what memory brought up
   const fetcher = code.boxFetch(turn, { effort: "high" });
   const response = await fetcher("https://claude-box.invalid/v1/messages", {
     method: "POST",
-    body: JSON.stringify({ model: "claude-opus-5-5", stream: true, system: [text("人设"), text("规矩")], messages, tools: [{ name: "memory_recall" }] })
+    body: JSON.stringify({
+      model: "claude-opus-5-5",
+      stream: true,
+      system: [text("人设"), text("规矩")],
+      messages,
+      tools: [
+        { name: "memory_recall", description: "Search.", input_schema: { type: "object", properties: {} }, cache_control: { type: "ephemeral" } },
+        { type: "web_search_20250305", name: "web_search" }
+      ]
+    })
   });
   assert.equal(response.headers.get("content-type"), "text/event-stream");
   const sse = await response.text();
@@ -138,7 +147,8 @@ await step("a whole turn through boxFetch: her words with what memory brought up
   assert.equal((sse.match(/^event: /gm) ?? []).length, events.length);
   assert.equal(sent.token, "sk-ant-oat01-x");
   assert.equal(sent.model, "claude-opus-5-5");
-  assert.match(sent.system, /^人设\n\n规矩\n\nIn this conversation you have no tools: .+ comes back as the \[Aelios 记忆\] block\.$/, "the tools it was offered are not there");
+  assert.equal(sent.system, "人设\n\n规矩");
+  assert.deepEqual(sent.tools, [{ name: "memory_recall", description: "Search.", input_schema: { type: "object", properties: {} } }], "her own tools, without cache marks or the provider's");
   assert.equal(sent.effort, "high");
   assert.equal(sent.thinking, "summarized", "Opus 5.5 thinks unasked, so its thinking is asked to be shown");
   assert.deepEqual(sent.history, [{ entries: [{ type: "user", uuid: "a" }] }, { entries: [{ type: "assistant", uuid: "b" }] }]);
@@ -170,7 +180,8 @@ await step("the system's notes and work outside the conversation are not recalle
   });
   assert.equal(sent.thinking, null);
   assert.equal(sent.effort, null);
-  assert.equal(sent.system, "", "no tools offered, so nothing is said about them");
+  assert.equal(sent.system, "");
+  assert.deepEqual(sent.tools, []);
   assert.equal((await response.json()).type, "message", "a whole message for a call that does not stream");
 });
 
@@ -183,11 +194,15 @@ await step("the box turning a turn down, or not there, is a refused call with th
   response = await call({ token: "t", send: async () => lines({ error: "Failed to authenticate. API Error: 401 OAuth access token is invalid." }) });
   assert.equal(response.status, 401);
   assert.match((await response.json()).error.message, /setup token 不对或过期/);
-  response = await call({ token: "t", send: async () => Response.json({ error: "这次部署没带 Claude 容器" }, { status: 501 }) });
+  response = await call({ token: "t", send: async () => Response.json({ error: code.NO_BOX }, { status: 501 }) });
   assert.equal(response.status, 400);
-  assert.match((await response.json()).error.message, /这次部署没带 Claude 容器/);
-  response = await call({ token: "t", send: async () => Response.json({ error: "Claude 容器没起来" }, { status: 503 }) });
-  assert.equal(response.status, 503, "a box still starting can be tried again");
+  assert.equal((await response.json()).error.message, code.NO_BOX);
+  response = await call({ token: "t", send: async () => Response.json({ error: "the box key does not match" }, { status: 401 }) });
+  assert.equal(response.status, 400, "not worth trying again");
+  assert.match((await response.json()).error.message, /不认这把钥匙/);
+  response = await call({ token: "t", send: async () => new Response("Bad gateway", { status: 502 }) });
+  assert.equal(response.status, 503, "a box restarting can be tried again");
+  assert.match((await response.json()).error.message, /Claude 盒子没接这一轮（502）/);
   response = await call({ token: "t", send: async () => { throw new Error("network"); } });
   assert.equal(response.status, 503);
   // Cut off after it started: the stream ends with an error event, and nothing is kept.
@@ -267,6 +282,141 @@ await step("a failed turn ends with its error alone: no message_stop says the re
   const done = box.lastLine(stream, null, [{ type: "user", uuid: "u", message: { role: "user", content: "hi" } }, { type: "assistant", uuid: "a" }]);
   assert.deepEqual(sent.slice(-2).map((e) => e.type), ["message_delta", "message_stop"], "a turn that answered closes the reply first");
   assert.deepEqual(done.done.reply.map((e) => e.uuid), ["a"]);
+});
+
+await step("her turn as the box gets it: results as tool_result blocks, the rest as for a message it never saw", async () => {
+  assert.deepEqual(code.promptBlocks([text("看", { cache_control: { type: "ephemeral" } })]), [text("看")]);
+  assert.deepEqual(
+    code.promptBlocks([
+      { type: "tool_result", tool_use_id: "t1", content: "好了", cache_control: { type: "ephemeral" } },
+      { type: "tool_result", tool_use_id: "t2", content: [text("坏了", { cache_control: { type: "ephemeral" } })], is_error: true }
+    ]),
+    [
+      { type: "tool_result", tool_use_id: "t1", content: [text("好了")] },
+      { type: "tool_result", tool_use_id: "t2", content: [text("坏了")], is_error: true }
+    ]
+  );
+});
+
+await step("a reply that calls tools comes together with its calls' input, from the pieces of JSON", async () => {
+  const message = code.messageOf([
+    { type: "message_start", message: { id: "m", type: "message", role: "assistant", content: [] } },
+    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "memory_notebook", input: {}, caller: { type: "direct" } } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"action":"app' } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: 'end","name":"测试"}' } },
+    { type: "content_block_stop", index: 0 },
+    { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "t2", name: "list_alarms", input: {} } },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" } }
+  ]);
+  assert.deepEqual(message.content, [
+    { type: "tool_use", id: "t1", name: "memory_notebook", input: { action: "append", name: "测试" }, caller: { type: "direct" } },
+    { type: "tool_use", id: "t2", name: "list_alarms", input: {} }
+  ]);
+  assert.equal(message.stop_reason, "tool_use");
+});
+
+await step("a tool round through boxFetch: the reply stops at the call, the result goes back, her turn is recorded once", async () => {
+  const her = user(text("[10-28 21:00] 记一下小本本"));
+  const calling = [
+    { type: "message_start", message: { id: "m1", type: "message", role: "assistant", content: [], usage: { input_tokens: 1 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "我记一下。" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "memory_notebook", input: {} } },
+    { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"action":"append","name":"测试","content":"第 30 章"}' } },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 5 } },
+    { type: "message_stop" }
+  ];
+  const answering = [
+    { type: "message_start", message: { id: "m2", type: "message", role: "assistant", content: [], usage: { input_tokens: 1 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "记好了。" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } },
+    { type: "message_stop" }
+  ];
+  let held = [];
+  const sent = [];
+  const recalled = [];
+  const recorded = [];
+  let answer = calling;
+  const turn = {
+    token: "t",
+    async send(body) {
+      sent.push(JSON.parse(body));
+      const done = { prompt: [{ type: "user", uuid: `p${sent.length}` }], reply: [{ type: "assistant", uuid: `r${sent.length}` }] };
+      return new Response([...answer.map((e) => ({ e })), { done }].map((l) => `${JSON.stringify(l)}\n`).join(""));
+    },
+    segments: { load: () => held, save: (segments) => (held = segments) },
+    recall: async (said) => (recalled.push(said), ""),
+    record: (said, reply) => recorded.push([said, reply])
+  };
+  const call = async (messages) => (await code.boxFetch(turn)("u", { body: JSON.stringify({ model: "claude-opus-5-5", stream: true, messages }) })).text();
+  await call([her]);
+  assert.deepEqual(recorded, [], "not recorded while the reply waits on its call");
+  assert.equal(held.length, 2);
+  // Think sends the call back as the AI SDK writes it: its input as an object, and the thinking left as it was.
+  const asked = assistant({ type: "thinking", thinking: "", signature: "s" }, text("我记一下。"), { type: "tool_use", id: "toolu_1", name: "memory_notebook", input: { action: "append", name: "测试", content: "第 30 章" } });
+  assert.equal(held[1].fp, await code.fingerprint("assistant", asked.content), "the reply is kept by what it says and calls");
+  answer = answering;
+  const result = user({ type: "tool_result", tool_use_id: "toolu_1", content: '{"ok":true}' });
+  await call([her, asked, result]);
+  assert.deepEqual(sent[1].history, [{ entries: [{ type: "user", uuid: "p1" }] }, { entries: [{ type: "assistant", uuid: "r1" }] }]);
+  assert.deepEqual(sent[1].prompt, [{ type: "tool_result", tool_use_id: "toolu_1", content: [text('{"ok":true}')] }]);
+  assert.deepEqual(recalled, ["[10-28 21:00] 记一下小本本"], "recalled once, when her turn began");
+  assert.deepEqual(recorded, [["[10-28 21:00] 记一下小本本", "我记一下。记好了。"]]);
+  assert.equal(held.length, 4);
+  assert.equal(held[2].fp, await code.fingerprint("user", result.content));
+  assert.deepEqual(held[3].entries, [{ type: "assistant", uuid: "r2" }]);
+});
+
+await step("in the box: a call no turn can answer any more, and its result, are told as text", async () => {
+  const entries = [
+    { type: "user", uuid: "u1", message: { role: "user", content: [text("记一下")] } },
+    { type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "mcp__resident__memory_notebook", input: { action: "list" } }] } },
+    { type: "user", uuid: "u2", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [text("[]")] }] } },
+    { type: "assistant", uuid: "a2", message: { role: "assistant", content: [text("好"), { type: "tool_use", id: "t2", name: "mcp__resident__set_alarm", input: { at: "8:00" } }] } }
+  ];
+  const { entries: settled, prompt } = box.settle(entries, [{ type: "tool_result", tool_use_id: "t2", content: "设好了", is_error: true }, text("对了")]);
+  assert.deepEqual(settled.slice(0, 3), entries.slice(0, 3), "an answered call stays a call");
+  assert.deepEqual(settled[3].message.content, [text("好"), text('[用了工具 set_alarm：{"at":"8:00"}]')]);
+  assert.equal(entries[3].message.content[1].type, "tool_use", "the entries sent are not changed");
+  assert.deepEqual(prompt, [text("[工具的结果（出错）]\n设好了"), text("对了")]);
+});
+
+await step("in the box: the resident's result as the MCP server answers the waiting call", async () => {
+  assert.deepEqual(box.callResult({ type: "tool_result", tool_use_id: "t", content: "好" }), { content: [text("好")] });
+  assert.deepEqual(box.callResult({ type: "tool_result", tool_use_id: "t", content: [text("坏")], is_error: true }), { content: [text("坏")], isError: true });
+  assert.deepEqual(box.callResult({ type: "tool_result", tool_use_id: "t", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA" } }] }), {
+    content: [{ type: "image", data: "AA", mimeType: "image/png" }]
+  });
+  assert.deepEqual(box.callResult({ type: "tool_result", tool_use_id: "t" }), { content: [text("")] });
+});
+
+await step("in the box: the resident's tools listed under their own names, and its calls in the reply under them too", async () => {
+  assert.deepEqual(
+    box.toolsFor([
+      { name: "memory_recall", description: "Search.", input_schema: { type: "object", properties: { query: { type: "string" } } } },
+      { name: "memory_recall" },
+      { name: "has space" },
+      { name: "x".repeat(60) },
+      { name: "list_alarms" }
+    ]),
+    [
+      { name: "memory_recall", description: "Search.", inputSchema: { type: "object", properties: { query: { type: "string" } } } },
+      { name: "list_alarms", inputSchema: { type: "object", properties: {} } }
+    ]
+  );
+  const sent = [];
+  const stream = box.replyStream((e) => sent.push(e));
+  stream.event({ type: "message_start", message: { id: "1" } });
+  stream.event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "mcp__resident__memory_recall", input: {} } });
+  stream.event({ type: "message_delta", delta: { stop_reason: "tool_use" } });
+  assert.equal(sent[1].content_block.name, "memory_recall");
+  assert.deepEqual(stream.uses, [{ id: "t1", name: "memory_recall" }]);
+  assert.equal(stream.calls, true);
 });
 
 /** A box answer that sends these lines and then stays open until it is cancelled; `cancelled` says whether it was. */

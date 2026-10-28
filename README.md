@@ -472,12 +472,12 @@ With Aelios connected, the chat's models and keys are configured in the Aelios a
 
 ### Your Claude subscription (`claude-code/…`)
 
-The chat can run on your own Claude Pro or Max plan instead of an API key: write the model as `claude-code/` plus the Claude model's id, such as `claude-code/claude-opus-5-5`. Each turn then goes to a small container (`claude-box/`) that runs the official Claude Agent SDK, signed in with your `claude setup-token`. Everything else stays the resident's own: the conversation, persona, letters, heartbeats and channels.
+The chat can run on your own Claude Pro or Max plan instead of an API key: write the model as `claude-code/` plus the Claude model's id, such as `claude-code/claude-opus-5-5`. Each turn then goes to the Claude box (`claude-box/`), a small server that runs the official Claude Agent SDK signed in with your `claude setup-token`, on a machine of your own behind a Cloudflare Tunnel. Everything else stays the resident's own: the conversation, persona, letters, heartbeats, channels and tools.
 
-- **Deploy with `npm run deploy:claude`** instead of `npm run deploy`; it needs Workers Paid and Docker. With Workers Builds, set the deploy command under Settings → Build to `npm run deploy:claude`. Plain `npm run deploy` leaves the container out and works on the free plan as before; a `claude-code/…` model is then refused at the trial call, saying why.
-- **Sign in**: on your computer, with Claude Code installed, run `claude setup-token` and paste the `sk-ant-oat…` it prints on the settings page under **Providers** (「供应商」). It is never shown again; clear it there to sign out.
-- **Chat only, for now**: on this path the model has no tools, so no search, stickers, alarms or background help. With Aelios connected, long-term memory still works: the resident recalls for each of your messages and records each exchange in Aelios itself. These turns do not go through Aelios' model endpoint, so Aelios' model list does not apply to them.
-- **The container keeps nothing**: it stops after 20 minutes without turns and starts again on the next one, which takes a few seconds (longer for the first start after a deploy). Each turn carries the whole conversation; what the container answered before goes back as Claude Code's own record of it, kept in the Durable Object, so the prompt cache keeps hitting from turn to turn.
+- **A machine for the box**: Google Cloud's free e2-micro is enough. In Cloud Shell, `bash claude-box/gcp.sh --hostname claude-box.<your domain>` makes one with IPv6 only (no IPv4 address to pay for) and installs the box and its tunnel; on any other Linux machine with systemd, `sudo claude-box/install.sh --tunnel`. The machine has to reach `api.anthropic.com`, so not one in mainland China or Hong Kong. Step by step, also for an AI to follow: [docs/claude-box.md](docs/claude-box.md) (in Chinese).
+- **On the settings page**, under **Providers** (「供应商」): the `sk-ant-oat…` that `claude setup-token` prints on your computer, the box's address (the tunnel's hostname) and the box key the install made. Secrets are never shown again; clear them there to sign out.
+- **Tools work as on any model**: Claude Code calls the resident's tools, the reply stops there, the resident runs them, and the same Claude Code in the box goes on with the results. Claude Code's own tools (commands, files, the web) stay off. With Aelios connected, the resident also recalls for each of your messages and records each exchange in Aelios itself, since these turns do not go through Aelios' model endpoint (so Aelios' model list does not apply to them).
+- **The box keeps nothing**: each turn carries the whole conversation; what the box answered before goes back as Claude Code's own record of it, kept in the Durable Object, so the prompt cache keeps hitting from turn to turn, and a box that restarted carries on.
 - It is your plan and your account: one setup token is for one person's own resident.
 
 ## All settings
@@ -530,7 +530,8 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `AI_GATEWAY_ID` | empty (`default`) | Which AI Gateway search, voice and, without Aelios, the models go through |
 | `CUSTOM_BASE_URL` / `CUSTOM_API_KEY` | empty | The relay's address (up to `/v1`) and key; used for `custom/…` models |
 | `CUSTOM_FORMAT` | `openai` | The relay's format: `openai` or `anthropic` (with caching) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | empty | The setup token from `claude setup-token`, for `claude-code/…` models; needs `npm run deploy:claude` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | empty | The setup token from `claude setup-token`, for `claude-code/…` models |
+| `CLAUDE_BOX_URL` / `CLAUDE_BOX_KEY` | empty | The [Claude box](docs/claude-box.md)'s address through its Cloudflare Tunnel, and its key (at least 32 characters) |
 
 ## What it costs
 
@@ -544,7 +545,7 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 - **Stickers and other MCP servers**: each adds some description to every turn; the settings page shows roughly how many tokens each pack and each server costs.
 - **Heartbeats and alarms**: each is one turn of its own. A heartbeat asks while the cache is still warm, so it costs about as much as one of your messages. An alarm that rings after you have been quiet for over an hour finds the cache cold and rewrites the whole conversation (a 1-hour cache write costs twice the input price, a read a tenth or less), which is about as much input as 20-odd ordinary messages. That is why alarms are off by default and capped when on.
 - **Cloud Claude Code**: each job is a full cloud session that uses your plan's allowance, like one you open yourself; on the resident's side it is only one more request and one reply.
-- **Your Claude subscription** (`claude-code/…`): the chat uses your plan's allowance, not API credit. The container (half a vCPU and 4 GiB, the smallest size in which Claude Code starts quickly) is billed on Workers Paid while it runs: Workers Paid includes 25 GiB-hours of memory a month, which is about 6 hours of this container running, and after that it costs about 4 cents an hour (official price checked on Oct 28). It stops 20 minutes after the last turn. Each turn starts Claude Code afresh, so a reply takes a few seconds longer than through the API.
+- **Your Claude subscription** (`claude-code/…`): the chat uses your plan's allowance, not API credit. The box's machine is free on Google Cloud's free tier (one e2-micro in us-west1, us-central1 or us-east1 with a 30 GB standard disk; 1 GB of traffic out a month, about 12 cents a GB after that; with IPv6 only there is no IPv4 address to pay for; official prices checked on Oct 28). Each turn starts Claude Code afresh, so a reply takes a few seconds longer than through the API.
 
 **Note the order in which AI Gateway picks a key**: a key in the request (entered on the settings page) is used first; otherwise the Gateway's key with the alias `default`; with neither, the request goes to Cloudflare's unified billing and is paid from the Gateway's prepaid credit (if the account has credit and that provider is supported). To prevent that, turn on Require provider credentials in the Gateway's settings.
 

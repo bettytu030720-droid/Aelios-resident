@@ -196,7 +196,9 @@ function resident() {
       { key: 'CUSTOM_API_KEY', label: '中转 key' },
       { key: 'CUSTOM_FORMAT', label: '中转格式', def: 'openai', labels: { openai: 'OpenAI', anthropic: 'Anthropic（带缓存）' } },
       { key: 'CLAUDE_CODE_OAUTH_TOKEN', label: 'Claude 订阅的 setup token',
-        help: '模型填 claude-code/模型名（比如 claude-code/claude-opus-5-5）就用你自己的 Claude 订阅聊。在电脑上跑 claude setup-token，把出来那串填这里。要用 npm run deploy:claude 部署（Workers Paid）。这一版只聊天，不调工具。' }
+        help: '模型填 claude-code/模型名（比如 claude-code/claude-opus-5-5）就用你自己的 Claude 订阅聊，工具照常能用。在电脑上跑 claude setup-token，把出来那串填这里。还要一台装了 Claude 盒子的机器，见 docs/claude-box.md（Google Cloud 的免费小机就行）。' },
+      { key: 'CLAUDE_BOX_URL', label: 'Claude 盒子地址', help: '装了 claude-box 的那台机器经 Cloudflare Tunnel 出来的网址。', placeholder: 'https://claude-box.…' },
+      { key: 'CLAUDE_BOX_KEY', label: 'Claude 盒子钥匙', help: '装盒子时生成的那串：Google Cloud 上跑 bash gcp.sh --show-key 看，自己的机器上跑 sudo sed -n \'s/^BOX_KEY=//p\' /etc/claude-box/env 看。别发在聊天里。' }
     ] },
     { id: 'push', title: '通知', fields: [
       { key: 'WEB_PUSH', label: '推什么', def: 'on', labels: { on: '没发到别处的', always: '都推', off: '不推' },

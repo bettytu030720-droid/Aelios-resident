@@ -1,18 +1,21 @@
 // Claude on your own subscription: `claude-code/<model>` (claude-code/claude-opus-5-5 and so on). The turn goes to
-// the Claude box, a Cloudflare container running the official Claude Agent SDK signed in with the owner's
-// `claude setup-token` (claude-box/server.mjs), instead of to an API. Everything else stays the resident's: Think
-// keeps the conversation, the persona, the letters and the heartbeat; only the call to the model goes to the box.
+// the Claude box, the official Claude Agent SDK signed in with the owner's `claude setup-token`, running on a small
+// machine of the owner's behind a Cloudflare Tunnel (claude-box/server.mjs, docs/claude-box.md), instead of to an
+// API. Everything else stays the resident's: Think keeps the conversation, the persona, the letters, the heartbeat
+// and the tools; only the call to the model goes to the box.
 //
-// To the AI SDK this is an Anthropic model whose requests never leave the Worker: the request body is read here
-// and the box's stream is handed back as the Messages API's own events. The box keeps nothing between turns, so
-// each turn carries the whole conversation. A message the box answered or was sent before goes back as the
-// transcript entries Claude Code wrote for it (kept in the resident's storage), which keeps the requests Claude
-// Code makes the same from turn to turn and the prompt cache hitting; a message it never saw (an older turn on
-// another model, a handoff letter) goes as it is. From the first message that differs from what the box holds,
-// the rest goes as it is, and the box's entries take over again from the next reply.
+// To the AI SDK this is an Anthropic model whose requests never leave the Worker but for the box: the request body
+// is read here and the box's stream is handed back as the Messages API's own events. Each turn carries the whole
+// conversation. A message the box answered or was sent before goes back as the transcript entries Claude Code wrote
+// for it (kept in the resident's storage), which keeps the requests Claude Code makes the same from turn to turn and
+// the prompt cache hitting; a message it never saw (an older turn on another model, a handoff letter) goes as it is.
+// From the first message that differs from what the box holds, the rest goes as it is, and the box's entries take
+// over again from the next reply.
 //
-// No tools in this first version: the box only talks. With Aelios connected the resident recalls for her message
-// before the turn and records the exchange after it, which Aelios does itself on the other routes.
+// The resident's tools go along. Claude Code calls them, the reply stops there as any model's does, Think runs them,
+// and the next call brings their results, which the same Claude Code in the box goes on from. With Aelios connected
+// the resident recalls for her message before the turn and records the exchange after it, which Aelios does itself
+// on the other routes.
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
@@ -70,8 +73,8 @@ function textOfResult(content: unknown): string {
 
 /**
  * A message as the box gets it when it has not seen it: text, pictures and documents as they are, without cache
- * marks; the tool calls and results of a turn on another model as a line of text (the box has no tools); the
- * thinking of earlier turns left out, as on every route.
+ * marks; the tool calls and results of a turn on another model as a line of text (Claude Code only takes calls it
+ * made itself back); the thinking of earlier turns left out, as on every route.
  */
 export function plainBlocks(role: "user" | "assistant", content: unknown): Block[] {
   const out: Block[] = [];
@@ -97,6 +100,39 @@ export function plainBlocks(role: "user" | "assistant", content: unknown): Block
     }
   }
   return out.length ? out : [{ type: "text", text: "…" }];
+}
+
+/** Why a turn cannot go to the box: there is none on the settings page. */
+export const NO_BOX = "还没填 Claude 盒子的地址：照 docs/claude-box.md 装好盒子，把地址和钥匙填进设置页「供应商」";
+
+/**
+ * Her turn as the box gets it: text, pictures and documents as they are, without cache marks; the results of the
+ * calls the reply before stopped at as tool_result blocks, which the box hands to the calls waiting there.
+ */
+export function promptBlocks(content: unknown): Block[] {
+  const out: Block[] = [];
+  for (const block of blocksOf(content)) {
+    if (block.type !== "tool_result") {
+      out.push(...plainBlocks("user", [block]).filter((part) => part.text !== "…"));
+      continue;
+    }
+    const parts = typeof block.content === "string" ? [{ type: "text", text: block.content }] : blocksOf(block.content);
+    out.push({
+      type: "tool_result",
+      tool_use_id: String(block.tool_use_id ?? ""),
+      content: parts.map((part) => (part.type === "text" || part.type === "image" ? (({ cache_control: _cache, ...rest }) => rest)(part) : { type: "text", text: JSON.stringify(part) })),
+      ...(block.is_error ? { is_error: true } : {})
+    });
+  }
+  return out.length ? out : [{ type: "text", text: "…" }];
+}
+
+/** The resident's own tools in a request (not the provider's server tools), as the box lists them to Claude Code. */
+function ownTools(tools: unknown): Block[] {
+  if (!Array.isArray(tools)) return [];
+  return tools
+    .filter((tool): tool is Block => Boolean(tool) && typeof tool === "object" && (tool.type === undefined || tool.type === "custom"))
+    .map(({ cache_control: _cache, ...tool }) => tool);
 }
 
 /** What a message says, the same however Think splits it into blocks or marks it for the cache. */
@@ -153,11 +189,6 @@ function systemText(system: unknown): string {
     .filter(Boolean)
     .join("\n\n");
 }
-
-// The resident's rules describe its tools (memory_recall, memory_remember and the rest); the box has none.
-const NO_TOOLS = "In this conversation you have no tools: don't try to call any, and never write out a tool call.";
-const MEMORY_ON_ITS_OWN =
-  "Long-term memory works without them: what they say is kept on its own, and what fits their latest message comes back as the [Aelios 记忆] block.";
 
 /** The text she said in her turn (the newest user message), as Aelios recalls and records it. */
 export function saidIn(content: unknown): string {
@@ -253,11 +284,17 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
     const cut = messages.findLastIndex((message) => message.role === "assistant") + 1;
     const fresh = messages.slice(cut);
     if (!fresh.length || fresh.some((message) => message.role !== "user")) return refusal(400, "Claude 订阅这一轮没有新的话可回");
-    const content = fresh.flatMap((message) => plainBlocks("user", message.content));
-    const said = fresh.map((message) => saidIn(message.content)).filter(Boolean).join("\n");
+    const content = fresh.flatMap((message) => promptBlocks(message.content));
+    // The results of the calls the reply before stopped at: the same turn of hers goes on.
+    const goesOn = content.every((block) => block.type === "tool_result");
+    // Her turn began with her last message that was not only results; what was replied since is part of the reply.
+    const start = goesOn ? messages.findLastIndex((message, i) => i < cut && message.role === "user" && blocksOf(message.content).some((block) => block.type !== "tool_result")) : cut;
+    const said = (start < 0 ? [] : goesOn ? [messages[start]] : fresh).map((message) => saidIn(message.content)).filter(Boolean).join("\n");
+    const before = goesOn && start >= 0 ? messages.slice(start + 1, cut).filter((message) => message.role === "assistant").map((message) => saidIn(message.content)).join("") : "";
     // Her own turns only: a check-in, a heartbeat or a letter answers one of the system's notes.
     const hers = Boolean(said) && !isNote(said.trimStart());
-    const memory = hers && turn.recall ? await turn.recall(said).catch(() => "") : "";
+    // Recalled once, when her turn begins.
+    const memory = hers && !goesOn && turn.recall ? await turn.recall(said).catch(() => "") : "";
     // After her words, as the resident's rules describe it (prompts.ts).
     const prompt = memory ? [...content, { type: "text", text: memory }] : content;
     const { history, kept } = await historyFor(messages.slice(0, cut), turn.segments?.load() ?? []);
@@ -265,14 +302,10 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
     const request = {
       token: turn.token,
       model,
-      system: [
-        systemText(body.system),
-        ...(Array.isArray(body.tools) && body.tools.length ? [turn.recall ? `${NO_TOOLS} ${MEMORY_ON_ITS_OWN}` : NO_TOOLS] : [])
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
+      system: systemText(body.system),
       effort: thinking?.effort ?? null,
       thinking: thinking && thinksUnasked(model) ? "summarized" : null,
+      tools: ownTools(body.tools),
       history,
       prompt
     };
@@ -285,7 +318,7 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       response = await turn.send(JSON.stringify(request), init.signal ?? undefined);
     } catch (error) {
       if (init.signal?.aborted) abandon();
-      return refusal(503, `Claude 容器没连上：${error instanceof Error ? error.message : String(error)}`);
+      return refusal(503, `Claude 盒子没连上：${error instanceof Error ? error.message : String(error)}`);
     }
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => "");
@@ -295,8 +328,10 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       } catch {
         // Not JSON: the text as it is.
       }
-      // Deployed without the container (501) is not worth trying again; a container still starting is.
-      return refusal(response.status >= 500 && response.status !== 501 ? 503 : 400, `Claude 容器没接这一轮（${response.status}）：${reason.slice(0, 300)}`);
+      // No box on the settings page (501), or the wrong key, is not worth trying again; a box restarting is.
+      if (response.status === 501) return refusal(400, reason || NO_BOX);
+      if (response.status === 401) return refusal(400, "Claude 盒子不认这把钥匙：设置页「供应商」里的盒子钥匙要和装盒子时生成的那把一样");
+      return refusal(response.status >= 500 ? 503 : 400, `Claude 盒子没接这一轮（${response.status}）：${reason.slice(0, 300)}`);
     }
     // Stops reading the box's answer: the call was aborted, or what was streamed is no longer read.
     const stop = new AbortController();
@@ -309,58 +344,60 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
       first = await stream.next();
     } catch (error) {
       if (init.signal?.aborted) abandon();
-      return refusal(503, `Claude 容器断了：${String(error)}`);
+      return refusal(503, `Claude 盒子断了：${String(error)}`);
     }
     if (init.signal?.aborted) {
       await stream.return(undefined);
       abandon();
     }
-    if (first.done) return refusal(503, "Claude 容器什么都没回");
+    if (first.done) return refusal(503, "Claude 盒子什么都没回");
     if (typeof first.value.error === "string") {
       const { status, message } = boxError(first.value.error);
       return refusal(status, message);
     }
-    let reply = "";
+    // Every event of the reply, for the message it makes up.
+    const events: StreamEvent[] = [];
     // The box ends every turn it finished with a done line; an answer that stops without one was cut off.
     let finished = false;
-    const CUT_OFF = "Claude 容器半路断了，这一轮没回完";
+    const CUT_OFF = "Claude 盒子半路断了，这一轮没回完";
     /** One line of the box's answer: the event to pass on, or the error that ends it; the turn kept when done. */
     const take = async (line: Record<string, unknown>): Promise<{ event?: StreamEvent; error?: string }> => {
       const event = line.e as StreamEvent | undefined;
       if (event) {
-        if (event.type === "content_block_delta" && event.delta?.type === "text_delta") reply += String(event.delta.text ?? "");
+        events.push(event);
         return { event };
       }
       if (typeof line.error === "string") return { error: boxError(line.error).message };
       const done = line.done as { prompt?: unknown; reply?: unknown } | undefined;
       if (!done) return {};
       finished = true;
+      const message = messageOf(events);
       if (turn.segments && Array.isArray(done.prompt) && Array.isArray(done.reply)) {
         try {
           turn.segments.save([
             ...kept,
             { fp: freshFp, entries: sized(done.prompt) },
-            { fp: await fingerprint("assistant", reply), entries: sized(done.reply) }
+            { fp: await fingerprint("assistant", message.content), entries: sized(done.reply) }
           ]);
         } catch (error) {
           console.error("claude-code: transcript not kept", { error: String(error) });
         }
       }
-      if (hers && turn.record && reply) turn.record(said, reply);
+      // Recorded once her turn is answered: a reply that stopped at calls goes on in the next one.
+      const reply = `${before}${saidIn(message.content)}`;
+      if (hers && turn.record && reply && message.stop_reason !== "tool_use") turn.record(said, reply);
       return {};
     };
     // A call that does not stream (a model switch's trial call, shrinking a page) gets the whole message at once.
     if (body.stream !== true) {
-      const events: StreamEvent[] = [];
       try {
         for (let line: IteratorResult<Record<string, unknown>> = first; !line.done; line = await stream.next()) {
-          const { event, error } = await take(line.value);
+          const { error } = await take(line.value);
           if (error) return refusal(400, error);
-          if (event) events.push(event);
           if (finished) break;
         }
       } catch (error) {
-        if (!init.signal?.aborted) return refusal(503, `Claude 容器断了：${String(error)}`);
+        if (!init.signal?.aborted) return refusal(503, `Claude 盒子断了：${String(error)}`);
       } finally {
         await stream.return(undefined);
       }
@@ -388,7 +425,7 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
             }
             if (!finished && !failed && !stop.signal.aborted) fail(CUT_OFF);
           } catch (error) {
-            if (!stop.signal.aborted) fail(`Claude 容器断了：${String(error)}`);
+            if (!stop.signal.aborted) fail(`Claude 盒子断了：${String(error)}`);
           }
           await stream.return(undefined);
           try {
@@ -429,11 +466,21 @@ export function messageOf(events: StreamEvent[]): Record<string, unknown> {
       if (delta.type === "text_delta") block.text = `${String(block.text ?? "")}${String(delta.text ?? "")}`;
       else if (delta.type === "thinking_delta") block.thinking = `${String(block.thinking ?? "")}${String(delta.thinking ?? "")}`;
       else if (delta.type === "signature_delta") block.signature = delta.signature;
+      else if (delta.type === "input_json_delta") block.partial = `${String(block.partial ?? "")}${String(delta.partial_json ?? "")}`;
     } else if (event.type === "message_delta") {
       message = { ...message, ...(event.delta ?? {}), usage: { ...(message.usage as object | undefined), ...(event.usage ?? {}) } };
     }
   }
-  return { ...message, content: blocks.filter(Boolean) };
+  // A call's input comes as pieces of JSON.
+  const content = blocks.filter(Boolean).map(({ partial, ...block }) => {
+    if (block.type !== "tool_use" || typeof partial !== "string") return block;
+    try {
+      return { ...block, input: partial.trim() ? JSON.parse(partial) : {} };
+    } catch {
+      return block;
+    }
+  });
+  return { ...message, content };
 }
 
 /** `claude-code/<model>` as a model whose every call is a turn in the box. */

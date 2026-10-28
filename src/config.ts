@@ -50,6 +50,9 @@ export const FIELDS: readonly Field[] = [
   { key: "CUSTOM_API_KEY", kind: "secret" },
   { key: "CUSTOM_FORMAT", kind: "choice", choices: ["openai", "anthropic"] },
   { key: "CLAUDE_CODE_OAUTH_TOKEN", kind: "secret", check: (value) => (/^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value) ? null : "setup token 是 sk-ant-oat 开头的一串，在电脑上跑 claude setup-token 拿") },
+  // The Claude box on a machine of her own (claude-box/, docs/claude-box.md) and the key it checks.
+  { key: "CLAUDE_BOX_URL", kind: "text", check: address },
+  { key: "CLAUDE_BOX_KEY", kind: "secret", check: (value) => (value.length >= 32 ? null : "盒子钥匙至少 32 位，用装盒子时生成的那把") },
   { key: "AI_GATEWAY_ID", kind: "text" },
   { key: "AELIOS_URL", kind: "text", check: address },
   { key: "AELIOS_API_KEY", kind: "secret" },
