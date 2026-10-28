@@ -60,8 +60,8 @@ gcloud billing projects link <项目 id> --billing-account <上面那串>
 | --- | --- |
 | `--hostname claude-box.<域名>` | 第 1 步那个网址，装完它会等盒子在这里答话 |
 | `--show-key` | 最后打印盒子钥匙；以后想再看，再跑一次 `bash gcp.sh --show-key`，问 token 时直接回车 |
-| `--key-to-worker` | 不打印，直接存进住户 Worker 的 `CLAUDE_BOX_KEY`（要在住户的文件夹里、wrangler 登录着） |
-| `--new-key` | 换一把钥匙（换完住户那边也要换） |
+| `--key-to-worker` | 不打印，直接存进住户 Worker 的 `CLAUDE_BOX_KEY`（要在住户的文件夹里、wrangler 登录着；要带 `--hostname`，盒子认了这把钥匙才存） |
+| `--new-key` | 换一把钥匙（换完住户那边也要换；要带 `--hostname`） |
 | `--zone us-central1-a` | 换地方；免费的只有 `us-west1`、`us-central1`、`us-east1` |
 | `--update` | 重启机器，开机时装上最新的盒子 |
 | `--delete` | 删掉它建的机器和网络（Tunnel 在 Cloudflare 那边自己删） |
@@ -86,7 +86,7 @@ sudo ./install.sh --tunnel --show-key     # 会问 Tunnel token
 | `--new-key` | 换一把钥匙 |
 | `--uninstall` | 全部删掉，钥匙也删 |
 
-`git pull` 之后再跑一次 `sudo ./install.sh` 就是更新，钥匙不变。用 Docker 的话有 `claude-box/Dockerfile`，跑的时候带上 `BOX_KEY`，只开在本机：`-p 127.0.0.1:8790:8080`。
+`git pull` 之后再跑一次 `sudo ./install.sh` 就是更新，钥匙不变；上次装到一半断了的，这次会从头装依赖。它只动自己装的东西：机器上已经有别的程序叫 `claude-box`（服务、文件夹或用户）的，安装和 `--uninstall` 都会停下，什么都不改。用 Docker 的话有 `claude-box/Dockerfile`，跑的时候带上 `BOX_KEY`，只开在本机：`-p 127.0.0.1:8790:8080`。
 
 ## 3. 填进住户
 

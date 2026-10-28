@@ -46,6 +46,26 @@ say() { echo "claude-box: $*"; }
 box_unit=/etc/systemd/system/claude-box.service
 tunnel_unit=/etc/systemd/system/claude-box-tunnel.service
 conf=/etc/claude-box
+mark="Made by Aelios-resident claude-box/install.sh"
+
+# Whether something named claude-box here is not this installer's: its units carry the mark, and its folders and user
+# come with the mark in /etc/claude-box. Something else of the same name is never replaced or removed.
+foreign() {
+  local unit path
+  for unit in "$box_unit" "$tunnel_unit"; do
+    if [ -e "$unit" ] && ! grep -qxF "# $mark" "$unit"; then echo "$unit"; return 0; fi
+  done
+  [ -f "$conf/made-by" ] && return 1
+  for path in /opt/claude-box /opt/claude-box-node /var/lib/claude-box "$conf"; do
+    if [ -e "$path" ]; then echo "$path"; return 0; fi
+  done
+  if id claude-box >/dev/null 2>&1; then echo "the user claude-box"; return 0; fi
+  return 1
+}
+if other="$(foreign)"; then
+  echo "claude-box: $other is already here, and this installer did not make it: left alone" >&2
+  exit 1
+fi
 
 if [ "$uninstall" = 1 ]; then
   systemctl disable --now claude-box claude-box-tunnel 2>/dev/null || true
@@ -75,6 +95,10 @@ apt_install() {
 }
 
 command -v curl >/dev/null || apt_install curl ca-certificates
+
+# From here on what is named claude-box is this installer's, even if it stops halfway.
+install -d -m 700 "$conf"
+printf '%s\n' "$mark" > "$conf/made-by"
 
 repo="${BOX_REPO:-wusaki0723/Aelios-resident}"
 ref="${BOX_REF:-main}"
@@ -157,7 +181,9 @@ else
   for f in $files; do curl -fsSL -o "$new/$f" "https://raw.githubusercontent.com/$repo/$ref/claude-box/$f"; done
 fi
 install -d -m 755 /opt/claude-box
-if ! cmp -s "$new/package-lock.json" /opt/claude-box/package-lock.json || [ ! -d /opt/claude-box/node_modules ]; then
+# The lock file of the last install that finished sits in node_modules (npm ci empties it first): one cut short, by a
+# reboot or an error, is done again on the next run.
+if ! cmp -s "$new/package-lock.json" /opt/claude-box/node_modules/.box-lock; then
   cp "$new/package.json" "$new/package-lock.json" /opt/claude-box/
   (cd /opt/claude-box && PATH="$(dirname "$node"):$PATH" "$npm" ci --omit=dev --no-audit --no-fund --loglevel=error)
   # The SDK brings Claude Code for glibc and musl alike; this machine needs one.
@@ -169,6 +195,7 @@ if ! cmp -s "$new/package-lock.json" /opt/claude-box/package-lock.json || [ ! -d
       *) [ "$musl" = 0 ] || rm -rf "$d" ;;
     esac
   done
+  cp "$new/package-lock.json" /opt/claude-box/node_modules/.box-lock
 fi
 for f in $files; do install -m 644 "$new/$f" "/opt/claude-box/$f"; done
 rm -rf "$new"
@@ -192,6 +219,7 @@ install -d -m 700 "$conf"
 )
 
 cat > "$box_unit" <<EOF
+# $mark
 [Unit]
 Description=Claude box for Aelios-resident (127.0.0.1 only)
 After=network-online.target
@@ -243,6 +271,7 @@ if [ "$tunnel" = 1 ]; then
     printf 'TUNNEL_TOKEN=%s\nTUNNEL_EDGE_IP_VERSION=%s\n' "$token" "$edge" > "$conf/tunnel"
   )
   cat > "$tunnel_unit" <<EOF
+# $mark
 [Unit]
 Description=Cloudflare Tunnel to the Claude box
 After=network-online.target claude-box.service

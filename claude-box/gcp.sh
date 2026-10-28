@@ -62,6 +62,10 @@ case "$region" in
 esac
 hostname="${hostname#https://}"
 hostname="${hostname%%/*}"
+if [ -z "$hostname" ] && [ "$delete" = 0 ] && [ "$update" = 0 ] && { [ "$key_to_worker" = 1 ] || [ "$new_key" = 1 ]; }; then
+  echo "--key-to-worker and --new-key need --hostname: the key is only given out once the box there takes it" >&2
+  exit 1
+fi
 g() { gcloud --project "$project" --quiet "$@"; }
 # What gcp.sh puts on what it makes: a label on the machine, a description on the network and the subnet.
 label="aelios-claude-box"
