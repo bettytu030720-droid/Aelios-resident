@@ -13,6 +13,8 @@ type Prompt = LanguageModelV4CallOptions["prompt"];
 let checkins = 0;
 // What the previous call sent, to check that the letter turn repeats it exactly (and so is read from cache).
 let previous: { system: string; tools: string; messages: string[] } | null = null;
+// Whether 卡住测试 has had its one quiet call.
+let stalledOnce = false;
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -224,6 +226,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const pictures = parts.filter((part) => part.type === "file" && part.mediaType?.startsWith("image/")).length;
     return { text: `看到 ${pictures} 张图${user.includes("Attachments:") ? "，还有一行附件说明" : ""}。` };
   }
+  if (said.includes("卡住测试")) return { text: "刚才卡住了，现在好了。" };
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // Fill real-sized chat windows in letter tests without echoing thousands of characters back to Telegram.
   if (said.startsWith("交接信测试材料")) return { text: "材料收到了。" };
@@ -346,6 +349,19 @@ export function fakeModel(): LanguageModelV4 {
       if (refused) {
         const body = JSON.stringify({ type: "error", error: { type: "permission_error", message: "You tried to access something that you don't have permissions for." } });
         throw Object.assign(new Error("You tried to access something that you don't have permissions for."), { statusCode: 403, responseBody: body });
+      }
+      // The first time 卡住测试 is asked the model goes quiet and stays so, as a hung provider does, until the turn
+      // is cut; the turn run again is answered.
+      if (lastOf(options.prompt, "user").includes("卡住测试") && !stalledOnce) {
+        stalledOnce = true;
+        const signal = options.abortSignal;
+        const stream = new ReadableStream<LanguageModelV4StreamPart>({
+          start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            signal?.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")));
+          }
+        });
+        return { stream };
       }
       const choice = decide(options);
       if (!options.prompt.some((m) => m.role === "system" && textOf(m.content).includes("one of the resident's threads"))) previous = shape(options);

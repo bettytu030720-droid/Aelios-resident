@@ -45,6 +45,8 @@ interface Env {
   ALARMS?: string;
   // Local tests only: how many seconds a minute of set_alarm's in_minutes lasts.
   ALARM_MINUTE_SECONDS?: string;
+  // Local tests only: seconds of silence after which a turn is cut and run again (180 by default).
+  CHAT_STALL_SECONDS?: string;
   // Voice messages (voice.ts): off (default), openrouter, elevenlabs or cartesia; the model and the voice it speaks in;
   // mirror (a voice message is answered with one, default), always, or tool (only when the resident chooses to).
   VOICE_PROVIDER?: string;

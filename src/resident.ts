@@ -485,6 +485,11 @@ export class Resident extends Think<Env> {
     debounceMs: num(this.env.DEBOUNCE_SECONDS, 3) * 1000
   };
 
+  // A turn whose model or tool has sent nothing for this long is cut and run again (Think's chat recovery), rather
+  // than holding every message after it until the connection drops by itself, which can take half an hour. Think
+  // leaves this off; the slowest tool here (web_fetch) gives up after 90 seconds. Shorter in the local tests.
+  override chatStreamStallTimeoutMs = num(this.env.CHAT_STALL_SECONDS, 180) * 1000;
+
   // When each reply started, for the web page (stored rows carry no time of their own).
   override messageMetadata: MessageMetadataCallback = ({ part }) => (part.type === "start" ? { at: Date.now() } : undefined);
 
