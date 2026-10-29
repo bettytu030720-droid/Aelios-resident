@@ -23,7 +23,7 @@
 //            through the fake relay, a relay without --media, a wrong relay key, out-of-turn messages
 //   web      the web page's own ways to talk: pictures, a quote, a voice message recorded there and replies said back,
 //            a sticker, the command buttons, a model change in the chat, its name and avatar, notifications, moving an
-//            alarm, answering a thread that needs her
+//            alarm, answering a thread that needs her, searching the conversation
 //   stall    a model that goes quiet: the turn is cut and run again, and the messages after it are answered
 //            (start wrangler with --var CHAT_STALL_SECONDS:2)
 //   claude-code  claude-code/… models on her own subscription, through the fake Claude box: the token, the trial
@@ -290,6 +290,20 @@ if (phase === "main") {
     assert.equal(asked.via, "telegram");
     assert.equal(typeof asked.at, "number");
     assert.ok(data.some((l) => l.role === "assistant" && l.text === "交接信在。" && l.via === "telegram"));
+  });
+
+  await step("the search finds what she said before the letter, folded out of the chat", async () => {
+    const { data } = await (await web("/web/messages", "test-web-key")).json();
+    assert.ok(!data.some((l) => l.role === "user" && l.text === "帮我查记忆"), "folded into the letter");
+    const response = await web(`/web/search?q=${encodeURIComponent("帮我查记忆")}`, "test-web-key");
+    assert.equal(response.status, 200);
+    const { results } = await response.json();
+    const hit = results.find((h) => h.role === "user");
+    assert.ok(hit, JSON.stringify(results));
+    assert.equal(hit.before + hit.match + hit.after, "帮我查记忆", "her words, without the time stamp");
+    const around = await (await web(`/web/search/around?id=${encodeURIComponent(hit.id)}`, "test-web-key")).json();
+    assert.equal(around.lines.find((line) => line.hit)?.id, hit.id, JSON.stringify(around));
+    assert.ok(!around.lines.some((line) => /亲爱的下一个我/.test(line.text)), "the letter is not one of the messages");
   });
 
   await step("the boot packet is fetched again only in a new cache window: after a letter, not while the cache is warm", async () => {
@@ -3010,6 +3024,55 @@ if (phase === "web") {
     assert.match((await json("/web/task/settle", { id })).data.error, /不等你了/, "once");
     assert.equal((await web("/web/task/settle", "wrong", { id })).status, 401);
   });
+
+  await step("search: any words of hers or its, newest first, a page at a time, and the messages around a hit", async () => {
+    const find = (q, before) => json(`/web/search?q=${encodeURIComponent(q)}${before ? `&before=${before}` : ""}`);
+    await say({ text: '那家店叫"蓝月亮"\n记得带 100% 的伞_明天 D:\\照片 Moonlight CAFÉ  au lait' });
+    const moon = (await find("蓝月亮")).data;
+    assert.equal(moon.next, null);
+    const mine = moon.results.find((hit) => hit.role === "user");
+    assert.ok(mine, JSON.stringify(moon));
+    assert.equal(mine.match, "蓝月亮");
+    assert.equal(mine.before, '那家店叫"');
+    assert.equal(mine.after, '" 记得带 100% 的伞_明天 D:\\照片 Moonlight CAFÉ au lait', "on one line, without the time stamp");
+    assert.equal(typeof mine.at, "number");
+    assert.ok(moon.results.some((hit) => hit.role === "assistant"), "its words too");
+    assert.equal(moon.results[0].role, "assistant", "newest first");
+    // Quotes, line breaks and backslashes are escaped in the stored JSON; % and _ are LIKE's wildcards; across a
+    // line break and a run of spaces, and a letter outside ASCII in the other case (test/chat-search.mjs has more).
+    for (const q of ['"蓝月亮"', "100%", "伞_明", "D:\\照片", "moonlight", "  蓝月亮  ", '蓝月亮" 记得', "café au lait"]) {
+      const { status, data } = await find(q);
+      assert.equal(status, 200, q);
+      assert.ok(data.results.some((hit) => hit.id === mine.id), `${q}: ${JSON.stringify(data)}`);
+    }
+    const empty = await find("   ");
+    assert.equal(empty.status, 400);
+    assert.equal(empty.data.error, "要搜什么？");
+    assert.equal((await find("长".repeat(51))).status, 400);
+    assert.deepEqual((await find("没人说过的一句话")).data, { results: [], next: null });
+    assert.equal((await web("/web/search?q=x", "wrong")).status, 401);
+
+    const around = (await json(`/web/search/around?id=${encodeURIComponent(mine.id)}`)).data;
+    const at = around.lines.findIndex((line) => line.hit);
+    assert.ok(at > 0, JSON.stringify(around));
+    assert.equal(around.lines[at].id, mine.id);
+    assert.equal(around.lines[at].text, '那家店叫"蓝月亮"\n记得带 100% 的伞_明天 D:\\照片 Moonlight CAFÉ  au lait', "as she wrote it");
+    assert.equal(around.lines[at + 1]?.role, "assistant", "its reply after it");
+    assert.ok(around.lines.length <= 9);
+    assert.equal((await json("/web/search/around?id=nope")).status, 404);
+
+    for (let i = 1; i <= 16; i += 1) await say({ text: `翻页测试 ${i}` });
+    const first = (await find("翻页测试")).data;
+    assert.equal(first.results.length, 30, "her 16 and its 16, 30 on a page");
+    assert.ok(first.next, "more to come");
+    assert.equal(first.results[0].role, "assistant");
+    assert.match(first.results[0].after, /^ 16 /);
+    const second = (await find("翻页测试", first.next)).data;
+    assert.equal(second.next, null);
+    assert.deepEqual(second.results.map((hit) => hit.role), ["assistant", "user"]);
+    assert.equal(second.results[1].after, " 1", "her first one last");
+    assert.equal(new Set([...first.results, ...second.results].map((hit) => hit.id)).size, 32);
+  });
 }
 
 if (phase === "residents") {
@@ -3089,6 +3152,9 @@ if (phase === "residents") {
     assert.deepEqual(own.map((line) => line.role), ["user", "assistant"]);
     assert.match(own[0].text, /你好麻薯/);
     assert.equal((await messages()).length, 0, "nothing on the default one");
+    const found = (await json(`/r/mochi/web/search?q=${encodeURIComponent("麻薯")}`)).data;
+    assert.ok(found.results.some((hit) => hit.role === "user"), JSON.stringify(found));
+    assert.deepEqual((await json(`/web/search?q=${encodeURIComponent("麻薯")}`)).data, { results: [], next: null }, "searched on its own conversation only");
     const list = (await json("/web/residents")).data.residents;
     assert.ok(list.find((r) => r.id === "mochi").saidAt > Date.now() - 60000);
     assert.equal(list.find((r) => r.id === "default").saidAt, 0);

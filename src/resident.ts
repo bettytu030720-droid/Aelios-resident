@@ -195,6 +195,7 @@ import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
+import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
 import { validateUrlWithDns } from "./web/validate-url";
@@ -238,6 +239,8 @@ const AVATAR_MAX_BYTES = 512 * 1024;
 const WEB_AWAY_MS = 20_000;
 // Devices that can get notifications at once.
 const PUSH_DEVICES_MAX = 10;
+// The deepest a search walks back along the conversation's branch, as the session's own path reads do.
+const PATH_MAX = 10_000;
 // A deleted resident is wiped again after this long if the first wipe did not finish (residentWipeAgain).
 const RESIDENT_WIPE_RETRY_SECONDS = 5 * 60;
 // Set while a resident is being deleted; only the wipe removes it (residentForgotten).
@@ -3475,6 +3478,108 @@ export class Resident extends Think<Env> {
     }
     this.#webSeenAt = Date.now();
     return withNotices(lines, this.notices());
+  }
+
+  /**
+   * The search on the web page: messages of hers and its on the current branch whose words contain the query,
+   * newest first, the ones a handoff letter folded away included. A page at a time; `next` continues it.
+   */
+  async webChatSearch(raw: string, before?: number): Promise<{ results: ChatHit[]; next: number | null } | { error: string }> {
+    const asked = searchQuery(raw);
+    if ("error" in asked) return asked;
+    const { query } = asked;
+    const sessionId = this.session.sessionId;
+    // Long messages keep the rest of their JSON in continuation rows: those are read whole and checked here.
+    const rows = this.sql<{ id: string; seq: number; content: string; chunks: number; created_at: number }>`
+      WITH RECURSIVE path(id, depth) AS (
+        SELECT id, 0 FROM cf_agents_session_messages WHERE session_id = ${sessionId}
+          AND seq = (SELECT MAX(seq) FROM cf_agents_session_messages WHERE session_id = ${sessionId})
+        UNION ALL
+        SELECT m.parent_id, p.depth + 1 FROM path p JOIN cf_agents_session_messages m ON m.session_id = ${sessionId} AND m.id = p.id
+        WHERE m.parent_id IS NOT NULL AND p.depth < ${PATH_MAX}
+      )
+      SELECT m.id, m.seq, m.content, m.content_chunks AS chunks, m.created_at FROM path p
+      JOIN cf_agents_session_messages m ON m.session_id = ${sessionId} AND m.id = p.id
+      WHERE m.seq < ${before ?? Number.MAX_SAFE_INTEGER} AND (m.content_chunks > 0 OR m.content LIKE ${storedLike(query)} ESCAPE '\\')
+      ORDER BY m.seq DESC LIMIT ${SEARCH_ROWS}`;
+    const results: ChatHit[] = [];
+    for (const row of rows) {
+      const message = await this.storedMessage(row);
+      const line = message && this.plainLine(message, row.created_at);
+      const hit = line && hitIn(line, line.search, query);
+      if (!hit) continue;
+      results.push(hit);
+      if (results.length === SEARCH_PAGE) return { results, next: row.seq };
+    }
+    return { results, next: rows.length === SEARCH_ROWS ? rows[rows.length - 1].seq : null };
+  }
+
+  /** A hit opened on the web page: the messages around it on the current branch, it marked. */
+  async webChatAround(id: string): Promise<{ lines: ChatLine[] } | { error: string }> {
+    const sessionId = this.session.sessionId;
+    const path = this.sql<{ id: string; depth: number }>`
+      WITH RECURSIVE path(id, depth) AS (
+        SELECT id, 0 FROM cf_agents_session_messages WHERE session_id = ${sessionId}
+          AND seq = (SELECT MAX(seq) FROM cf_agents_session_messages WHERE session_id = ${sessionId})
+        UNION ALL
+        SELECT m.parent_id, p.depth + 1 FROM path p JOIN cf_agents_session_messages m ON m.session_id = ${sessionId} AND m.id = p.id
+        WHERE m.parent_id IS NOT NULL AND p.depth < ${PATH_MAX}
+      )
+      SELECT id, depth FROM path ORDER BY depth DESC`;
+    const at = path.findIndex((row) => row.id === id);
+    if (at < 0) return { error: "这条已经不在现在的聊天里了" };
+    // Notes and empty turns are left out, so a few more are read than are shown.
+    const ids = path.slice(Math.max(0, at - 3 * AROUND), at + 3 * AROUND + 1).map((row) => row.id);
+    const rows = this.sql<{ id: string; seq: number; content: string; chunks: number; created_at: number }>`
+      SELECT id, seq, content, content_chunks AS chunks, created_at FROM cf_agents_session_messages
+      WHERE session_id = ${sessionId} AND id IN (SELECT value FROM json_each(${JSON.stringify(ids)})) ORDER BY seq`;
+    const lines: ChatLine[] = [];
+    for (const row of rows) {
+      const message = await this.storedMessage(row);
+      const line = message && this.plainLine(message, row.created_at);
+      if (line) lines.push({ id: line.id, role: line.role, text: line.text, at: line.at, ...(row.id === id ? { hit: true as const } : {}) });
+    }
+    const hit = lines.findIndex((line) => line.hit);
+    if (hit < 0) return { error: "这条没有能显示的字" };
+    return { lines: lines.slice(Math.max(0, hit - AROUND), hit + AROUND + 1).map((line) => ({ ...line, text: line.text.slice(0, 1500) })) };
+  }
+
+  /** A stored message row as the message it holds; one with continuation rows is read through the session. */
+  private async storedMessage(row: { id: string; content: string; chunks: number }): Promise<UIMessage | null> {
+    if (row.chunks > 0) return ((await this.session.getMessage(row.id).catch(() => null)) as UIMessage | null) ?? null;
+    try {
+      return JSON.parse(row.content) as UIMessage;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A message as the search shows it: her words or its, without the marks only the model reads (the time stamp,
+   * a quote, a sticker, a voice message), and the text the words are looked for in (chat-search.ts); null for the
+   * system's notes, a check-in it passed on and the letters.
+   */
+  private plainLine(message: UIMessage, createdAt: number): (ChatLine & { search: string }) | null {
+    if (message.id.startsWith("compaction_") || (message.role !== "user" && message.role !== "assistant")) return null;
+    const parts = message.parts.flatMap((part) => (part.type === "text" ? [part.text ?? ""] : []));
+    const text = parts.join("").trim();
+    const meta = message.metadata as { at?: number; messenger?: { message?: { createdAt?: string } } } | undefined;
+    const sentAt = meta?.messenger?.message?.createdAt;
+    const at = meta?.at ?? (sentAt ? new Date(sentAt).getTime() : createdAt);
+    if (message.role === "assistant") return text && text !== SKIP ? { id: message.id, role: "assistant", text, at, search: searchable(parts, []) } : null;
+    if (isNote(text) || isCheckin(text) || taskOfNote(text)) return null;
+    const said = text
+      .replace(EVICTED_PICTURE, "[图片]")
+      .replace(REFUSED_PICTURE, "[图片被退回]")
+      .trim()
+      .replace(STAMP_PREFIX, "")
+      .replace(QUOTE_MARK, "")
+      .replace(STICKER_MARK, "[表情包]")
+      .replace(VOICE_MARK, "")
+      .trim();
+    if (!said) return null;
+    const search = searchable(parts, [EVICTED_PICTURE, REFUSED_PICTURE, STAMP_PREFIX, QUOTE_MARK, STICKER_MARK, VOICE_MARK]);
+    return { id: message.id, role: "user", text: said, at, search };
   }
 
   /**
