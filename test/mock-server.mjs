@@ -483,7 +483,8 @@ const server = http.createServer(async (req, res) => {
 
   // The Claude box (claude-box/server.mjs) for the claude-code/… models, without Claude Code: it answers with a line
   // saying how much of the history came back as its own entries, and writes entries for the turn as the box does.
-  // Asked to write in the notebook, it calls memory_notebook first, and answers once the result comes back.
+  // Asked to write in the notebook, it calls memory_notebook first, and answers once the result comes back; asked
+  // "没话说" or "说两遍", what it writes then is "No response requested." or its first words again.
   // Where a box that redirects sends the resident: nothing should ever arrive here.
   if (url.pathname === "/claude-box-elsewhere/turn") {
     log.push({ kind: "claudebox.elsewhere", token: json.token, auth });
@@ -506,11 +507,17 @@ const server = http.createServer(async (req, res) => {
     }
     const reused = items.filter((kind) => kind === "entries").length;
     const said = promptText.split("\n").at(-1).replace(/^\[[^\]]+\]\s*/, "");
-    const result = (json.prompt ?? []).find((b) => b.type === "tool_result");
+    // Only results: the turn goes on from its calls. (Results with her next words follow a turn that ended at them.)
+    const prompt = json.prompt ?? [];
+    const result = prompt.length && prompt.every((b) => b.type === "tool_result") ? prompt[0] : undefined;
     const calls = !result && said.includes("记小本本") && (json.tools ?? []).some((t) => t.name === "memory_notebook");
+    // What it writes after the result, chosen when it called (the result's call id says).
+    const after = /^toolu_box_(quiet|again)_/.exec(String(result?.tool_use_id ?? ""))?.[1];
     const text = calls
       ? "我记一下。"
-      : result
+      : after
+        ? (after === "quiet" ? "No response requested." : "我记一下。")
+        : result
         ? `小本本记好了：${(result.content ?? []).map((b) => b.text).join("")}（接着 ${reused} 条，重写 ${items.length - reused} 条）`
         : `订阅收到：${said}（接着 ${reused} 条，重写 ${items.length - reused} 条）`;
     const usage = { input_tokens: 4, output_tokens: 0, cache_read_input_tokens: reused * 100, cache_creation_input_tokens: 50,
@@ -536,7 +543,8 @@ const server = http.createServer(async (req, res) => {
     line({ e: { type: "content_block_stop", index } });
     const content = [{ type: "text", text }];
     if (calls) {
-      const use = { type: "tool_use", id: `toolu_box_${log.length}`, name: "memory_notebook", input: {} };
+      const then = said.includes("没话说") ? "quiet_" : said.includes("说两遍") ? "again_" : "";
+      const use = { type: "tool_use", id: `toolu_box_${then}${log.length}`, name: "memory_notebook", input: {} };
       const input = { action: "append", name: "测试", content: "今天学完第 30 章" };
       line({ e: { type: "content_block_start", index: index + 1, content_block: { ...use, caller: { type: "direct" } } } });
       // The input in pieces of JSON, as a stream brings it.

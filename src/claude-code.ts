@@ -19,6 +19,7 @@
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
+import { addsNothing } from "./after-tools";
 import { isNote } from "./prompts";
 import { thinksUnasked } from "./thinking";
 import type { Thinking } from "./via-aelios";
@@ -384,7 +385,9 @@ export function boxFetch(turn: ClaudeCodeTurn, thinking?: Thinking): typeof fetc
         }
       }
       // Recorded once her turn is answered: a reply that stopped at calls goes on in the next one.
-      const reply = `${before}${saidIn(message.content)}`;
+      // Words after the tools that add nothing are not said (after-tools.ts), so not recorded either.
+      const last = saidIn(message.content);
+      const reply = before && addsNothing(before, last) ? before : `${before}${last}`;
       if (hers && turn.record && reply && message.stop_reason !== "tool_use") turn.record(said, reply);
       return {};
     };
