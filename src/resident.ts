@@ -195,7 +195,7 @@ import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
-import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, storedLike, type ChatHit, type ChatLine } from "./chat-search";
+import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
 import { validateUrlWithDns } from "./web/validate-url";
@@ -3506,7 +3506,7 @@ export class Resident extends Think<Env> {
     for (const row of rows) {
       const message = await this.storedMessage(row);
       const line = message && this.plainLine(message, row.created_at);
-      const hit = line && hitIn(line, query);
+      const hit = line && hitIn(line, line.search, query);
       if (!hit) continue;
       results.push(hit);
       if (results.length === SEARCH_PAGE) return { results, next: row.seq };
@@ -3537,7 +3537,7 @@ export class Resident extends Think<Env> {
     for (const row of rows) {
       const message = await this.storedMessage(row);
       const line = message && this.plainLine(message, row.created_at);
-      if (line) lines.push(row.id === id ? { ...line, hit: true } : line);
+      if (line) lines.push({ id: line.id, role: line.role, text: line.text, at: line.at, ...(row.id === id ? { hit: true as const } : {}) });
     }
     const hit = lines.findIndex((line) => line.hit);
     if (hit < 0) return { error: "这条没有能显示的字" };
@@ -3556,15 +3556,17 @@ export class Resident extends Think<Env> {
 
   /**
    * A message as the search shows it: her words or its, without the marks only the model reads (the time stamp,
-   * a quote, a sticker, a voice message); null for the system's notes, a check-in it passed on and the letters.
+   * a quote, a sticker, a voice message), and the text the words are looked for in (chat-search.ts); null for the
+   * system's notes, a check-in it passed on and the letters.
    */
-  private plainLine(message: UIMessage, createdAt: number): ChatLine | null {
+  private plainLine(message: UIMessage, createdAt: number): (ChatLine & { search: string }) | null {
     if (message.id.startsWith("compaction_") || (message.role !== "user" && message.role !== "assistant")) return null;
-    const text = textOf(message).trim();
+    const parts = message.parts.flatMap((part) => (part.type === "text" ? [part.text ?? ""] : []));
+    const text = parts.join("").trim();
     const meta = message.metadata as { at?: number; messenger?: { message?: { createdAt?: string } } } | undefined;
     const sentAt = meta?.messenger?.message?.createdAt;
     const at = meta?.at ?? (sentAt ? new Date(sentAt).getTime() : createdAt);
-    if (message.role === "assistant") return text && text !== SKIP ? { id: message.id, role: "assistant", text, at } : null;
+    if (message.role === "assistant") return text && text !== SKIP ? { id: message.id, role: "assistant", text, at, search: searchable(parts, []) } : null;
     if (isNote(text) || isCheckin(text) || taskOfNote(text)) return null;
     const said = text
       .replace(EVICTED_PICTURE, "[图片]")
@@ -3575,7 +3577,9 @@ export class Resident extends Think<Env> {
       .replace(STICKER_MARK, "[表情包]")
       .replace(VOICE_MARK, "")
       .trim();
-    return said ? { id: message.id, role: "user", text: said, at } : null;
+    if (!said) return null;
+    const search = searchable(parts, [EVICTED_PICTURE, REFUSED_PICTURE, STAMP_PREFIX, QUOTE_MARK, STICKER_MARK, VOICE_MARK]);
+    return { id: message.id, role: "user", text: said, at, search };
   }
 
   /**

@@ -256,6 +256,12 @@ function resident() {
   // last opened on this device. "default" is the first one.
   var RESIDENT_ID = /^[a-z][a-z0-9-]{0,23}$/;
   function residentFromUrl() { try { var id = new URLSearchParams(location.search).get('r') || ''; return RESIDENT_ID.test(id) ? id : ''; } catch (e) { return ''; } }
+  // Text as the search compares it (chat-search.ts): each letter lowercased on its own, the same length as the text.
+  function foldText(text) {
+    var out = '';
+    for (var c of text) { var low = c.toLowerCase(); out += c.charCodeAt(0) > 0x7f && low.charCodeAt(0) <= 0x7f ? c : low; }
+    return out;
+  }
   // The search page's state: what was asked, the hits so far, where the next page starts and the hit opened.
   function freshSearch() { return { q: '', asked: '', busy: false, done: false, error: '', results: [], next: null, open: '', around: {} }; }
   function seenOf() { try { return JSON.parse(localStorage.getItem('resident.seen') || '{}') || {}; } catch (e) { return {}; } }
@@ -1570,7 +1576,7 @@ function resident() {
     },
     async runSearch(more) {
       var search = this.search;
-      var q = more ? search.asked : search.q.trim();
+      var q = more ? search.asked : search.q.trim().replace(/\s+/g, ' ');
       if (!q || search.busy) return;
       search.busy = true;
       search.error = '';
@@ -1607,19 +1613,21 @@ function resident() {
         search.around[hit.id] = { error: error.message, lines: [] };
       }
     },
-    // The words of a line, with what was searched for marked.
+    // The words of a line, with what was searched for marked: as the search finds it, spaces and line breaks
+    // between the words count as one, and letters match in either case (foldText, as in chat-search.ts).
     markedParts(text) {
       var q = this.search.asked;
       text = String(text || '');
       if (!q) return [{ text: text }];
+      var pattern = new RegExp(foldText(q).split(' ').map(function (piece) { return piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }).join('\\s+'), 'g');
+      var folded = foldText(text);
       var parts = [];
-      var low = text.toLowerCase();
-      var needle = q.toLowerCase();
       var from = 0;
-      for (var at = low.indexOf(needle); at >= 0; at = low.indexOf(needle, at + needle.length)) {
-        if (at > from) parts.push({ text: text.slice(from, at) });
-        parts.push({ text: text.slice(at, at + q.length), hit: true });
-        from = at + q.length;
+      var found;
+      while ((found = pattern.exec(folded))) {
+        if (found.index > from) parts.push({ text: text.slice(from, found.index) });
+        parts.push({ text: text.slice(found.index, found.index + found[0].length), hit: true });
+        from = found.index + found[0].length;
       }
       if (from < text.length) parts.push({ text: text.slice(from) });
       return parts;

@@ -1,6 +1,10 @@
 // Searching the conversation from the web page (Resident.webChatSearch): every message on the current branch, the
 // ones a handoff letter folded away included, since their rows stay in the session's table. Plain substring
 // matching, so Chinese works without word splitting (the session's own full-text index does not split it).
+//
+// Two steps: a LIKE on each row's stored JSON picks the rows that may hold the words, then the words are looked for
+// in the message's text. The LIKE has to let through every message the second step would find (test/chat-search.mjs
+// checks it): runs of spaces and line breaks count as one space, and letters match in either case.
 
 /** The longest search, in characters. */
 export const SEARCH_MAX = 50;
@@ -33,21 +37,60 @@ export function searchQuery(raw: string): { query: string } | { error: string } 
 }
 
 /**
- * A LIKE pattern that finds the words inside a message's stored JSON: escaped the way JSON.stringify writes them
- * (a quote, a backslash or a line break would not match otherwise), with LIKE's own wildcards taken literally.
+ * One character as the search compares it: lowercased on its own, except the few outside ASCII whose lowercase is
+ * ASCII (the Kelvin sign, İ), which stay as they are. Every character folds to one character of the same length.
+ */
+function foldChar(c: string): string {
+  const low = c.toLowerCase();
+  return c.charCodeAt(0) > 0x7f && low.charCodeAt(0) <= 0x7f ? c : low;
+}
+
+/** Text as the search compares it, the same length as the text. */
+export function fold(text: string): string {
+  let out = "";
+  for (const c of text) out += foldChar(c);
+  return out;
+}
+
+/**
+ * A LIKE pattern that every stored message holding the words matches: the words between the spaces in order, with
+ * anything between them (a line break is stored as \n). Each is written the way JSON.stringify writes it (a quote
+ * or a backslash would not match otherwise) with LIKE's own wildcards taken literally. LIKE matches ASCII letters
+ * in either case; a letter outside ASCII that has a case is left to `_`, any one character.
  */
 export function storedLike(query: string): string {
-  return `%${JSON.stringify(query).slice(1, -1).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const pieces = query.split(" ").map((piece) => {
+    let pattern = "";
+    for (const c of piece) {
+      if (c.charCodeAt(0) > 0x7f && (c.toLowerCase() !== c || c.toUpperCase() !== c)) pattern += "_";
+      else pattern += JSON.stringify(c).slice(1, -1).replace(/[\\%_]/g, (m) => `\\${m}`);
+    }
+    return pattern;
+  });
+  return `%${pieces.join("%")}%`;
+}
+
+/**
+ * The text a message is searched in: its text parts with a line break between them, and the marks only the model
+ * reads taken out, each leaving a line break. So the words found are always words stored in one part, in order.
+ */
+export function searchable(parts: readonly string[], marks: readonly RegExp[]): string {
+  let text = parts.join("\n");
+  for (const mark of marks) text = text.trimStart().replace(mark, "\n");
+  return text;
 }
 
 /** Where the words are in a message's text, as a hit with some text on either side; null when they are not. */
-export function hitIn(line: ChatLine, query: string): ChatHit | null {
-  const flat = line.text.replace(/\s+/g, " ").trim();
-  const at = flat.toLowerCase().indexOf(query.toLowerCase());
+export function hitIn(line: ChatLine, search: string, query: string): ChatHit | null {
+  const flat = search.replace(/\s+/g, " ").trim();
+  const at = fold(flat).indexOf(fold(query));
   if (at < 0) return null;
   const end = at + query.length;
-  const from = Math.max(0, at - 40);
-  const to = Math.min(flat.length, end + 80);
+  let from = Math.max(0, at - 40);
+  let to = Math.min(flat.length, end + 80);
+  // Not half of a character outside the BMP.
+  if (from > 0 && isLowSurrogate(flat.charCodeAt(from))) from += 1;
+  if (to < flat.length && isLowSurrogate(flat.charCodeAt(to))) to -= 1;
   return {
     id: line.id,
     role: line.role,
@@ -56,4 +99,8 @@ export function hitIn(line: ChatLine, query: string): ChatHit | null {
     match: flat.slice(at, end),
     after: flat.slice(end, to) + (to < flat.length ? "…" : "")
   };
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }

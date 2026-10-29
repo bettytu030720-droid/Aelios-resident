@@ -1195,6 +1195,10 @@ assert.equal(searched.filter((path) => path.startsWith('/web/search/around')).le
 assert.deepEqual(copy(searcher.markedParts('蓝月亮和藍月亮，还有蓝月亮')), [{ text: '蓝月亮', hit: true }, { text: '和藍月亮，还有' }, { text: '蓝月亮', hit: true }]);
 searcher.search.asked = 'moon';
 assert.deepEqual(copy(searcher.markedParts('Moonlight')), [{ text: 'Moon', hit: true }, { text: 'light' }], 'letters match either case');
+searcher.search.asked = 'café au';
+assert.deepEqual(copy(searcher.markedParts('CAFÉ\n  au lait')), [{ text: 'CAFÉ\n  au', hit: true }, { text: ' lait' }], 'as the search finds it: across a line break and a run of spaces, É as é');
+searcher.search.asked = 'a.b';
+assert.deepEqual(copy(searcher.markedParts('axb a.b')), [{ text: 'axb ' }, { text: 'a.b', hit: true }], 'the words taken as they are, not as a pattern');
 searchAnswers = [{ results: [], next: null }];
 searcher.search.q = '没有的';
 await searcher.runSearch();
