@@ -3127,10 +3127,20 @@ if (phase === "residents") {
     assert.equal((await json("/web/residents")).data.residents.find((r) => r.id === "mochi").avatar, avatar);
   });
 
-  await step("one push key for the whole site, so one subscription takes every resident's pushes", async () => {
+  await step("one push key and one device list for the whole site: a device that turned it on once gets every resident's", async () => {
     const first = (await json("/web/push")).data.publicKey;
     assert.ok(first);
     assert.equal((await json("/r/mochi/web/push")).data.publicKey, first);
+    const point = crypto.createECDH("prime256v1");
+    point.generateKeys();
+    const subscription = { endpoint: "https://push.invalid/device-1", keys: { p256dh: point.getPublicKey().toString("base64url"), auth: crypto.randomBytes(16).toString("base64url") } };
+    assert.equal((await json("/web/push/subscribe", { subscription })).data.devices, 1, "turned on while the default one was open");
+    assert.equal((await json("/r/mochi/web/push")).data.devices, 1, "the other resident sees the same device");
+    const tried = (await json("/r/mochi/web/push/test", {})).data;
+    const left = (await json("/web/push")).data.devices;
+    assert.equal(tried.sent + tried.failed.length + (1 - left), 1, `the other resident pushed to it: ${JSON.stringify(tried)}`);
+    if (left) assert.equal((await json("/r/mochi/web/push/unsubscribe", { endpoint: subscription.endpoint })).data.devices, 0);
+    assert.equal((await json("/web/push")).data.devices, 0, "turned off from either page, it is off for the site");
   });
 
   await step("its task reports and MCP sign-ins come back to its own address", async () => {
@@ -3158,6 +3168,27 @@ if (phase === "residents") {
     assert.equal((await json("/r/mochi/web/config")).data.telegram.from, null);
     assert.equal((await json("/r/mochi/web/check")).data.avatar, null);
     assert.equal((await json("/web/check")).data.id, "default");
+  });
+
+  await step("while it is being deleted its id stays taken and its addresses are gone; free again once it is wiped", async () => {
+    assert.equal((await json("/r/mochi/web/config", { key: "RESIDENT_NAME", text: "旧的" })).status, 200);
+    assert.equal((await json("/r/mochi/web/config", { key: "TG_BOT_TOKEN", text: "7654321:mochi-token-abcdefghijklmnopqrstuvwxyz0123" })).status, 200);
+    await sleep(1500); // a new bot token starts the resident again a second later
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ slowDeleteWebhook: 1500 }) });
+    try {
+      const removing = json("/web/residents/remove", { id: "mochi" });
+      await sleep(400);
+      assert.match((await json("/web/residents", { id: "mochi", name: "新的" })).data.error, /还在删/);
+      assert.deepEqual(await ids(), ["default"], "off the list at once");
+      assert.equal((await web("/r/mochi/web/check", KEY)).status, 404);
+      assert.equal((await removing).status, 200);
+    } finally {
+      await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ slowDeleteWebhook: 0 }) });
+    }
+    assert.equal((await json("/web/residents", { id: "mochi", name: "新的" })).status, 200);
+    const check = await json("/r/mochi/web/check");
+    assert.equal(check.data.name, "新的", "nothing of the old one");
+    assert.equal((await json("/r/mochi/web/config")).data.telegram.from, null);
   });
 }
 

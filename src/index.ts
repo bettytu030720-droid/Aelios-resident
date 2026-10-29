@@ -194,10 +194,8 @@ async function handleResidents(request: Request, env: Env, url: URL, who: WebCal
     const id = String(body.id ?? "").trim();
     const first = await getAgentByName(env.RESIDENT, AGENT_NAME);
     if (url.pathname === "/web/residents/remove") {
-      if (!(await first.residentDrop(id))) return Response.json({ error: "没有这个住户" }, { status: 404 });
-      // Off the list it is already unreachable; then everything it keeps goes. Its isolate ends with it, so the
-      // call comes back as an error even when it went through.
-      await (await getAgentByName(env.RESIDENT, id)).residentForget().catch((error: unknown) => console.log("residents: deleted", { id, end: String(error) }));
+      const removed = await first.residentRemove(id);
+      if ("error" in removed) return Response.json({ error: removed.error }, { status: removed.status });
     } else if (url.pathname === "/web/residents") {
       const name = String(body.name ?? "").trim();
       if (name.length > 20) return Response.json({ error: "名字最多 20 个字" }, { status: 400 });

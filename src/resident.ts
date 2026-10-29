@@ -238,6 +238,10 @@ const AVATAR_MAX_BYTES = 512 * 1024;
 const WEB_AWAY_MS = 20_000;
 // Devices that can get notifications at once.
 const PUSH_DEVICES_MAX = 10;
+// A deleted resident whose wipe failed is tried again after this long (residentWipeAgain).
+const RESIDENT_WIPE_RETRY_SECONDS = 5 * 60;
+// Set while a resident is being deleted; only the wipe removes it (residentForgotten).
+const FORGETTING = "resident_forgetting";
 // How long a page web_fetch read is kept, so asking about it again costs no second fetch.
 const PAGE_KEEP_MS = 60 * 60 * 1000;
 // Claude models ("anthropic/…") go out on Anthropic's Messages API, where this asks for prompt caching:
@@ -3783,7 +3787,7 @@ export class Resident extends Think<Env> {
   private async pushKeys(): Promise<PushKeys> {
     // One key pair for the whole site, the default resident's: a device's one subscription then takes every
     // resident's pushes (residents.ts).
-    if (this.residentId !== DEFAULT_RESIDENT) return (await getAgentByName(this.env.RESIDENT, DEFAULT_RESIDENT)).pushKeysForAll();
+    if (this.residentId !== DEFAULT_RESIDENT) return (await this.pushHome()).pushKeysForAll();
     const kept = await this.ctx.storage.get<PushKeys>("push_keys");
     if (kept) return kept;
     const made = await makePushKeys();
@@ -3797,10 +3801,18 @@ export class Resident extends Think<Env> {
     return this.pushKeys();
   }
 
+  /**
+   * The devices that turned notifications on. A browser has one subscription for the whole site, so the default
+   * resident keeps the list for every resident (residents.ts): another one reads, adds and pushes through it.
+   */
   private pushTargets(): (PushTarget & { at: number })[] {
     this.sql`CREATE TABLE IF NOT EXISTS res_push_targets (endpoint TEXT PRIMARY KEY, p256dh TEXT NOT NULL, auth TEXT NOT NULL, at INTEGER NOT NULL)`;
     return this.sql<{ endpoint: string; p256dh: string; auth: string; at: number }>`SELECT endpoint, p256dh, auth, at FROM res_push_targets
       ORDER BY at DESC`.map((row) => ({ endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth }, at: row.at }));
+  }
+
+  private pushHome() {
+    return getAgentByName(this.env.RESIDENT, DEFAULT_RESIDENT);
   }
 
   private pushMode(): "on" | "always" | "off" {
@@ -3810,24 +3822,43 @@ export class Resident extends Think<Env> {
 
   /** The settings page's 通知: the key a device subscribes with, and how many devices have. */
   async webPush(): Promise<{ publicKey: string; devices: number; mode: "on" | "always" | "off" }> {
-    return { publicKey: (await this.pushKeys()).publicKey, devices: this.pushTargets().length, mode: this.pushMode() };
+    const devices = this.residentId === DEFAULT_RESIDENT ? this.pushTargets().length : await (await this.pushHome()).pushDevices();
+    return { publicKey: (await this.pushKeys()).publicKey, devices, mode: this.pushMode() };
   }
 
   /** A device that turned notifications on (its PushSubscription). The oldest goes when there are too many. */
   async webPushSubscribe(value: unknown): Promise<Awaited<ReturnType<Resident["webPush"]>> | { error: string }> {
     const target = pushTargetOf(value);
     if (!target) return { error: "这台设备给的推送地址不对" };
-    this.pushTargets();
-    this.sql`INSERT INTO res_push_targets (endpoint, p256dh, auth, at) VALUES (${target.endpoint}, ${target.keys.p256dh}, ${target.keys.auth}, ${Date.now()})
-      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, at = excluded.at`;
-    this.sql`DELETE FROM res_push_targets WHERE endpoint NOT IN (SELECT endpoint FROM res_push_targets ORDER BY at DESC LIMIT ${PUSH_DEVICES_MAX})`;
+    if (this.residentId === DEFAULT_RESIDENT) this.pushDeviceAdd(target);
+    else await (await this.pushHome()).pushDeviceAdd(target);
     return this.webPush();
   }
 
   async webPushUnsubscribe(endpoint: string): Promise<Awaited<ReturnType<Resident["webPush"]>>> {
+    if (this.residentId === DEFAULT_RESIDENT) this.pushDeviceDrop(endpoint);
+    else await (await this.pushHome()).pushDeviceDrop(endpoint);
+    return this.webPush();
+  }
+
+  /** The default resident's device list, for the others. */
+  pushDevices(): number {
+    if (this.residentId !== DEFAULT_RESIDENT) throw new Error("only the default resident keeps the devices");
+    return this.pushTargets().length;
+  }
+
+  pushDeviceAdd(target: PushTarget): void {
+    if (this.residentId !== DEFAULT_RESIDENT) throw new Error("only the default resident keeps the devices");
+    this.pushTargets();
+    this.sql`INSERT INTO res_push_targets (endpoint, p256dh, auth, at) VALUES (${target.endpoint}, ${target.keys.p256dh}, ${target.keys.auth}, ${Date.now()})
+      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, at = excluded.at`;
+    this.sql`DELETE FROM res_push_targets WHERE endpoint NOT IN (SELECT endpoint FROM res_push_targets ORDER BY at DESC LIMIT ${PUSH_DEVICES_MAX})`;
+  }
+
+  pushDeviceDrop(endpoint: string): void {
+    if (this.residentId !== DEFAULT_RESIDENT) throw new Error("only the default resident keeps the devices");
     this.pushTargets();
     this.sql`DELETE FROM res_push_targets WHERE endpoint = ${endpoint}`;
-    return this.webPush();
   }
 
   /** 「试一下」: one notification to every device. */
@@ -3847,22 +3878,33 @@ export class Resident extends Think<Env> {
     await this.push({ title: this.webIdentity().name, body: first.length > 160 ? `${first.slice(0, 160)}…` : first, tag: "chat" });
   }
 
+  /**
+   * One notification of this resident's. It opens this resident's page, the default one's too (the page would
+   * otherwise open on whichever resident was open last), and another resident's does not take the default one's
+   * place on the device.
+   */
   private async push(message: { title: string; body: string; tag: string }): Promise<{ sent: number; failed: string[] }> {
+    const own = this.residentId !== DEFAULT_RESIDENT;
+    const tag = own ? `${this.residentId}-${message.tag}` : message.tag;
+    const icon = this.webIdentity().avatar ?? "/icon-192.png";
+    const payload = JSON.stringify({ ...message, tag, icon, url: `/?r=${this.residentId}` });
+    const options = { urgency: message.tag === "chat" ? "high" : "normal", topic: tag.length <= 32 ? tag : message.tag } as const;
+    return own ? (await this.pushHome()).pushToDevices(payload, options) : this.pushToDevices(payload, options);
+  }
+
+  /** Sends a resident's notification to every device, signed with the site's key pair; the default resident only. */
+  async pushToDevices(payload: string, options: { urgency: "high" | "normal"; topic: string }): Promise<{ sent: number; failed: string[] }> {
+    if (this.residentId !== DEFAULT_RESIDENT) throw new Error("only the default resident keeps the devices");
     const targets = this.pushTargets();
     if (!targets.length) return { sent: 0, failed: [] };
     const keys = await this.pushKeys();
     const origin = (await this.ctx.storage.get<string>("origin")) ?? "";
-    // The push services want a way to reach whoever sends: the resident's own address.
+    // The push services want a way to reach whoever sends: the site's own address.
     const subject = origin.startsWith("https://") ? origin : "mailto:resident@localhost";
-    const icon = this.webIdentity().avatar ?? "/icon-192.png";
-    // Another resident's notifications open its own page, and do not take the place of the default one's.
-    const own = this.residentId !== DEFAULT_RESIDENT;
-    const tag = own ? `${this.residentId}-${message.tag}` : message.tag;
-    const payload = JSON.stringify({ ...message, tag, icon, url: own ? `/?r=${this.residentId}` : "/" });
     let sent = 0;
     const failed: string[] = [];
     for (const target of targets) {
-      const result = await sendPush(target, payload, keys, subject, { urgency: message.tag === "chat" ? "high" : "normal", topic: tag.length <= 32 ? tag : message.tag });
+      const result = await sendPush(target, payload, keys, subject, options);
       if ("ok" in result) sent += 1;
       else if ("gone" in result) this.sql`DELETE FROM res_push_targets WHERE endpoint = ${target.endpoint}`;
       else {
@@ -4187,14 +4229,15 @@ export class Resident extends Think<Env> {
 
   // ---- the other residents (residents.ts): the default resident keeps their list ----
 
-  private residentRows(): { id: string; at: number }[] {
-    this.sql`CREATE TABLE IF NOT EXISTS res_residents (id TEXT PRIMARY KEY, at INTEGER NOT NULL)`;
-    return this.sql<{ id: string; at: number }>`SELECT id, at FROM res_residents ORDER BY at, id`;
+  /** Rows being deleted keep their id (gone: since when) until everything the resident kept is wiped. */
+  private residentRows(): { id: string; at: number; gone: number }[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_residents (id TEXT PRIMARY KEY, at INTEGER NOT NULL, gone INTEGER NOT NULL DEFAULT 0)`;
+    return this.sql<{ id: string; at: number; gone: number }>`SELECT id, at, gone FROM res_residents ORDER BY at, id`;
   }
 
-  /** The other residents' ids, oldest first. Only the default resident keeps the list; another one has none. */
+  /** The other residents' ids, oldest first, not the ones being deleted. Only the default resident keeps the list. */
   residentIds(): string[] {
-    return this.residentId === DEFAULT_RESIDENT ? this.residentRows().map((row) => row.id) : [];
+    return this.residentId === DEFAULT_RESIDENT ? this.residentRows().filter((row) => !row.gone).map((row) => row.id) : [];
   }
 
   /** When it last said something (a reply, a check-in, an alarm, a task result), for the sidebar; 0 for never. */
@@ -4213,29 +4256,84 @@ export class Resident extends Think<Env> {
     const problem = residentIdProblem(id);
     if (problem) return { error: problem };
     const rows = this.residentRows();
-    if (rows.some((row) => row.id === id)) return { error: "已经有这个代号的住户了" };
-    if (rows.length >= RESIDENTS_MAX) return { error: `最多再加 ${RESIDENTS_MAX} 个住户` };
+    const same = rows.find((row) => row.id === id);
+    // Until the old one is wiped, the same id would open on what is left of it, or be wiped with it.
+    if (same) return { error: same.gone ? "这个代号的住户还在删，过一会儿再建" : "已经有这个代号的住户了" };
+    if (rows.filter((row) => !row.gone).length >= RESIDENTS_MAX) return { error: `最多再加 ${RESIDENTS_MAX} 个住户` };
     this.sql`INSERT INTO res_residents (id, at) VALUES (${id}, ${Date.now()})`;
     return { ok: true };
   }
 
-  /** A resident off the list: the Worker stops answering for it at once. Whether it was on it. */
-  residentDrop(id: string): boolean {
-    if (this.residentId !== DEFAULT_RESIDENT || !this.residentKnown(id)) return false;
-    this.sql`DELETE FROM res_residents WHERE id = ${id}`;
-    return true;
+  /**
+   * Deletes another resident. It goes off the list at once (the Worker stops answering for it) but keeps its row
+   * until everything it kept is wiped; a wipe that fails is tried again later. Whether it is all gone now.
+   */
+  async residentRemove(id: string): Promise<{ ok: true } | { error: string; status: number }> {
+    if (this.residentId !== DEFAULT_RESIDENT) return { error: "住户名单在第一个住户那里", status: 400 };
+    const row = this.residentRows().find((row) => row.id === id);
+    if (!row) return { error: "没有这个住户", status: 404 };
+    if (!row.gone) this.sql`UPDATE res_residents SET gone = ${Date.now()} WHERE id = ${id}`;
+    return (await this.residentWiping(id)) ? { ok: true } : { error: "它已经下线了，东西还没删干净，过几分钟会自己再删一次", status: 502 };
+  }
+
+  // One wipe per resident at a time, so a late one never runs after its id is free again.
+  #wiping = new Map<string, Promise<boolean>>();
+
+  private residentWiping(id: string): Promise<boolean> {
+    let wipe = this.#wiping.get(id);
+    if (!wipe) {
+      wipe = this.residentWipe(id).finally(() => this.#wiping.delete(id));
+      this.#wiping.set(id, wipe);
+    }
+    return wipe;
+  }
+
+  private async residentWipe(id: string): Promise<boolean> {
+    // A fresh stub for each call: the wipe ends the resident's isolate, and the stub with it.
+    const resident = () => getAgentByName(this.env.RESIDENT, id);
+    try {
+      await (await resident()).residentForgetting();
+      // destroy() ends its isolate, so this call can come back as an error even when it went through.
+      const ended = await (await resident()).residentForget().then(
+        () => null,
+        (error: unknown) => String(error)
+      );
+      if (!(await (await resident()).residentForgotten())) throw new Error(`its storage is still there (${ended ?? "no error"})`);
+      this.sql`DELETE FROM res_residents WHERE id = ${id} AND gone > 0`;
+      return true;
+    } catch (error) {
+      console.log("residents: not wiped yet, trying again later", { id, error: String(error) });
+      await this.schedule(RESIDENT_WIPE_RETRY_SECONDS, "residentWipeAgain", { id }, { idempotent: true }).catch(() => undefined);
+      return false;
+    }
+  }
+
+  /** The retry of a wipe that failed, unless it has been wiped since. */
+  async residentWipeAgain(payload: { id: string }): Promise<void> {
+    if (this.residentRows().some((row) => row.id === payload.id && row.gone)) await this.residentWiping(payload.id);
   }
 
   /**
-   * Another resident being deleted, after it is off the list: its bot stops sending here, then everything it keeps
-   * goes (conversation, settings, stickers, alarms). The default resident is never deleted. Ends this resident's
-   * isolate, so the caller does not wait for an answer.
+   * Another resident about to be deleted: its bot stops sending here, and it is marked. Only the wipe that follows
+   * (residentForget) removes the mark, so a resident still marked afterwards was not wiped.
    */
-  async residentForget(): Promise<void> {
+  async residentForgetting(): Promise<void> {
     if (this.residentId === DEFAULT_RESIDENT) throw new Error("the default resident is never deleted");
     const config = this.telegramConfig();
+    // Best effort: off the list, its webhook address answers 404 anyway.
     if (config.token) await deleteWebhook(config);
+    await this.ctx.storage.put(FORGETTING, true);
+  }
+
+  /** Everything it keeps goes (conversation, settings, stickers, alarms). Ends this resident's isolate. */
+  async residentForget(): Promise<void> {
+    if (this.residentId === DEFAULT_RESIDENT) throw new Error("the default resident is never deleted");
     await this.destroy();
+  }
+
+  /** Whether the wipe went through: the mark residentForgetting left is gone with everything else. */
+  async residentForgotten(): Promise<boolean> {
+    return (await this.ctx.storage.get(FORGETTING)) === undefined;
   }
 
   /** The MCP servers on the settings page: how each is doing and what its tools cost per turn. Never a key. */

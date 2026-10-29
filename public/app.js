@@ -679,6 +679,12 @@ function resident() {
         this.notify('删好了');
       } catch (error) {
         this.notify(error.message);
+        // Off the list already; what it kept is wiped a little later.
+        if (error.status === 502) {
+          delete this.residents.seen[id];
+          await this.loadResidents().catch(function () {});
+          await this.switchResident('default');
+        }
       } finally {
         this.residents.busy = false;
       }
@@ -2301,8 +2307,6 @@ function resident() {
         var registration = await navigator.serviceWorker.getRegistration('/');
         var subscription = registration && (await registration.pushManager.getSubscription());
         this.push.on = Boolean(subscription) && Notification.permission === 'granted';
-        // Notifications on for this device: every resident it opens can reach it (one key pair for the site).
-        if (this.push.on) this.push.devices = (await this.api('/web/push/subscribe', { method: 'POST', body: { subscription: subscription.toJSON() } })).devices;
       } catch (e) {
         this.push.on = false;
       }
