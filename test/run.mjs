@@ -1101,6 +1101,25 @@ if (phase === "stickers") {
     assert.deepEqual((await sent()).slice(before), []);
   });
 
+  await step("words, a sticker, then the same words again or 'No response requested.': only the first words go out and stay", async () => {
+    for (const asked of ["说完再发表情", "说完再发表情，没话说"]) {
+      const before = (await sent()).length;
+      const stickers = (await tgLog("sendSticker")).length;
+      await post(asked);
+      const out = await waitForSends(before, 1);
+      assert.equal(out[0], "抱抱你，今天辛苦啦。");
+      const start = Date.now();
+      while ((await tgLog("sendSticker")).length === stickers) {
+        if (Date.now() - start > 20000) throw new Error("no sticker");
+        await sleep(200);
+      }
+      await sleep(1500);
+      assert.deepEqual((await sent()).slice(before), ["抱抱你，今天辛苦啦。"], asked);
+      const kept = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.role === "assistant").at(-1);
+      assert.equal(kept.text, "抱抱你，今天辛苦啦。", "kept once, without the line that said nothing");
+    }
+  });
+
   await step("one sticker per reply", async () => {
     const before = (await sent()).length;
     const stickers = (await tgLog("sendSticker")).length;
@@ -2567,6 +2586,27 @@ if (phase === "claude-code") {
     // And the whole round comes back as the box's own entries on the next turn.
     const next = counts(await say("记好了吗"));
     assert.equal(next.written, written);
+  });
+
+  await step("after the tool, words that say nothing or only repeat the reply are not sent and not recorded", async () => {
+    for (const asked of ["帮我记小本本，没话说：今天学完第 30 章", "帮我记小本本，说两遍：今天学完第 30 章"]) {
+      const before = await log();
+      const sends = (await sent()).length;
+      assert.equal(await say(asked), "我记一下。");
+      await sleep(1500);
+      assert.deepEqual((await sent()).slice(sends), ["我记一下。"], asked);
+      const all = (await log()).slice(before.length);
+      assert.equal(all.filter((e) => e.kind === "claudebox.turn").length, 2, "the box went on after the tool");
+      const ingests = all.filter((e) => e.kind === "aelios.ingest" && e.body.source === "aelios-resident");
+      assert.equal(ingests.length, 1);
+      assert.equal(ingests[0].body.messages[1].content, "我记一下。");
+      const kept = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.role === "assistant").at(-1);
+      assert.equal(kept.text, "我记一下。");
+    }
+    // The turn after goes on as usual; the last call's result goes with her words (the box tells the two as text).
+    const next = await say("记好了吗");
+    assert.match(next, /^订阅收到：记好了吗（/);
+    assert.match(JSON.stringify((await turns()).at(-1).prompt), /toolu_box_again_/);
   });
 
   await step("the box key on the settings page goes with every turn; one the box does not take is reported", async () => {

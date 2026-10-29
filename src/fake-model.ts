@@ -50,7 +50,7 @@ function lastOf(prompt: Prompt, role: string): string {
 const cloudJob = (title: string) => ({ title, job: `把 README 里的「recieve」改成「receive」，开一个 PR。（${title}）` });
 
 /** What the fake model says, or a tool it calls. */
-function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown } {
+function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown; text?: string } {
   const prompt = options.prompt;
   const system = prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
   const user = lastOf(prompt, "user");
@@ -94,6 +94,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // Stickers: one alone, one after words, two asked for in one reply (the second is refused), one drawn, a still WebP.
   if (said.includes("发两张") && last?.role === "tool" && toolResultsSince(prompt) === 1) return { tool: "send_sticker", input: { sticker: "test/love" } };
   if (said.includes("只发表情") && last?.role === "tool") return { text: "" };
+  // Words, then a sticker, then once its result is back the words again or a line that says nothing (after-tools.ts).
+  if (said.includes("说完再发表情") && last?.role === "tool") return { text: said.includes("没话说") ? "No response requested." : "抱抱你，今天辛苦啦。" };
+  if (said.includes("说完再发表情")) return { text: "抱抱你，今天辛苦啦。", tool: "send_sticker", input: { sticker: "test/wave" } };
   // A voice message sent with send_voice, and nothing written after it.
   if (said.includes("发条语音") && last?.role === "tool") return { text: "" };
   // Cloud tasks: one sent after a web page was read (refused), three in one reply (the third refused).
@@ -368,6 +371,9 @@ export function fakeModel(): LanguageModelV4 {
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
       let delayMs = 0;
       if ("tool" in choice) {
+        if (choice.text) {
+          parts.push({ type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: choice.text }, { type: "text-end", id: "t" });
+        }
         parts.push({
           type: "tool-call",
           toolCallId: `call-${Date.now()}`,

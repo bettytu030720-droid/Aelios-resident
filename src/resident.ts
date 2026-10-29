@@ -38,6 +38,7 @@ import { webSearchTool } from "agents/websearch/ai-sdk";
 import { asSchema, generateText, tool, type JSONSchema7, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
 import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig } from "./aelios";
+import { quietAfterTools } from "./after-tools";
 import { claudeCodeModel, isClaudeCode, NO_BOX, type Segment } from "./claude-code";
 import { cacheTtlMs, markedForLetter, opensWindow } from "./cache-window";
 import { historyAnchor, historyCutoff, historyForWindow } from "./cache-history";
@@ -2425,6 +2426,8 @@ export class Resident extends Think<Env> {
     return {
       instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
+      // Words after tools that only repeat the reply, or say there is nothing to say, never go out (after-tools.ts).
+      experimental_transform: quietAfterTools(),
       // A letter reuses the previous breakpoint, never placing a new marker on its auxiliary prompt.
       ...(this.#letterPromptId ? { messages: markedForLetter(messages, this.letterCache()) } : { messages, providerOptions: promptCache(this.cfg) })
     };
