@@ -90,6 +90,8 @@ function resident() {
   // A look that asks "anything new since this version?" reads nothing when nothing is; the whole conversation is
   // read again at least this often all the same.
   var FULL_MS = 2 * 60 * 1000;
+  // How often the sidebar looks whether another resident said something.
+  var RESIDENTS_MS = 60 * 1000;
   var PERSONA_MAX = 30000;
   var RESULTS_MAX = 60;
   // A model list longer than this is not browsed, only searched: it is the upstream's whole catalog, not a chosen list.
@@ -250,6 +252,11 @@ function resident() {
   function writeKey(value) { try { value ? localStorage.setItem('resident.key', value) : localStorage.removeItem('resident.key'); } catch (e) {} }
   function remember(name, value) { try { localStorage.setItem(name, value); } catch (e) {} }
   function recall(name) { try { return localStorage.getItem(name) || ''; } catch (e) { return ''; } }
+  // Which resident the page is on (src/residents.ts): ?r=<id> (a notification, another bot's Mini App), else the one
+  // last opened on this device. "default" is the first one.
+  var RESIDENT_ID = /^[a-z][a-z0-9-]{0,23}$/;
+  function residentFromUrl() { try { var id = new URLSearchParams(location.search).get('r') || ''; return RESIDENT_ID.test(id) ? id : ''; } catch (e) { return ''; } }
+  function seenOf() { try { return JSON.parse(localStorage.getItem('resident.seen') || '{}') || {}; } catch (e) { return {}; } }
   // The same rule as Telegram: a blank line starts a new bubble, except inside a fenced code block.
   function bubbleTexts(text) {
     var parts = [];
@@ -273,6 +280,7 @@ function resident() {
   var telegram = null;
   var threadTimer = 0;
   var pollTimer = 0;
+  var residentsTimer = 0;
   var holdTimer = 0;
   var recorder = null;
   var player = null;
@@ -299,6 +307,9 @@ function resident() {
     loginError: '',
     aelios: false,
     identity: { name: '住户', avatar: null },
+    // the residents in the sidebar, and which one this page is on
+    resident: residentFromUrl() || 'default',
+    residents: { list: [], max: 8, open: false, seen: seenOf(), add: { open: false, id: '', name: '', busy: false, error: '' }, busy: false },
     themePref: recall('resident.theme') || 'auto',
     theme: (typeof document !== 'undefined' && document.documentElement.dataset.theme) || 'dark',
     view: 'chat',
@@ -404,8 +415,17 @@ function resident() {
       document.addEventListener('visibilitychange', function () {
         if (document.hidden || !self.authed) return;
         self.refresh(true).catch(function () {});
+        if (!self.miniApp) self.loadResidents().catch(function () {});
         // Back from an MCP sign-in in another tab: show how it went.
         if (self.view === 'config') self.loadMcp().catch(function () {});
+      });
+      // A notification tapped while this page is open: the page goes to the resident it is from.
+      if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', function (event) {
+        var open = event.data && event.data.open;
+        if (!open || self.miniApp || !self.authed) return;
+        var id = '';
+        try { id = new URL(open, location.origin).searchParams.get('r') || ''; } catch (e) {}
+        self.switchResident(RESIDENT_ID.test(id) ? id : 'default');
       });
       fetch('/models.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
         if (!data) return;
@@ -414,6 +434,8 @@ function resident() {
       }).catch(function () {});
       var miniLaunch = /(?:^#|[&#])tgWebAppData=/.test(location.hash);
       this.miniApp = miniLaunch;
+      // A Mini App is its own bot's resident; a page opened without ?r= goes back to the one last opened here.
+      if (!miniLaunch && !residentFromUrl()) this.resident = RESIDENT_ID.test(recall('resident.current')) ? recall('resident.current') : 'default';
       var readyBridge = await Promise.race([window.telegramReady, new Promise(function (resolve) { setTimeout(resolve, 10000, false); })]);
       if (miniLaunch && !readyBridge) { this.loginError = 'Telegram 组件没加载出来，请关闭小窗后重新打开'; return; }
       var tg = window.Telegram && window.Telegram.WebApp;
@@ -454,7 +476,7 @@ function resident() {
     },
     async miniSession(renew) {
       var headers = renew && this.miniToken ? { authorization: 'Bearer ' + this.miniToken } : { 'x-telegram-init-data': telegram.initData };
-      var response = await fetch('/web/session', { method: 'POST', headers: headers });
+      var response = await fetch(this.residentPath('/web/session'), { method: 'POST', headers: headers });
       if (!response.ok) throw new Error('Telegram 身份已失效或不在白名单里，请关闭小窗后重新打开');
       var data = await response.json();
       this.miniToken = data.token;
@@ -462,6 +484,8 @@ function resident() {
     },
     async api(path, options) {
       var opts = options || {};
+      // An answer for the resident the page was on before a switch is not shown on the new one.
+      var on = this.resident;
       if (this.miniApp && (!this.miniToken || this.miniExpires - Date.now() < 3600000)) {
         try { await this.miniSession(Boolean(this.miniToken)); } catch (error) {
           try { await this.miniSession(false); } catch (failed) { this.authed = false; this.loginError = failed.message; throw failed; }
@@ -471,6 +495,7 @@ function resident() {
       if (opts.body) headers['content-type'] = 'application/json';
       if (opts.raw) headers['content-type'] = opts.type || 'application/octet-stream';
       var payload = opts.raw || (opts.body ? JSON.stringify(opts.body) : undefined);
+      path = this.residentPath(path);
       var response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: payload });
       if (response.status === 401 && this.miniApp) {
         try {
@@ -479,10 +504,13 @@ function resident() {
           response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: payload });
         } catch (error) { this.authed = false; this.loginError = error.message; throw error; }
       }
+      if (on !== this.resident) { var moved = new Error('已经换到别的住户了'); moved.moved = true; throw moved; }
       if (response.status === 401) { this.authed = false; this.loginError = this.miniApp ? '请关闭小窗后重新打开，或检查 Telegram 白名单' : '钥匙不对'; throw new Error(this.loginError); }
       if (!response.ok) {
         var problem = await response.json().catch(function () { return {}; });
-        throw new Error(problem.error || '出错了（' + response.status + '）');
+        var failed = new Error(problem.error || '出错了（' + response.status + '）');
+        failed.status = response.status;
+        throw failed;
       }
       if (opts.blob) return response.blob();
       if (opts.bytes) return new Uint8Array(await response.arrayBuffer());
@@ -503,9 +531,18 @@ function resident() {
         this.loadTasks().catch(function () {});
         this.loadAlarms().catch(function () {});
         this.loadPushState().catch(function () {});
+        if (!this.miniApp) { remember('resident.current', this.resident); this.loadResidents().catch(function () {}); }
         this.scrollSoon(true);
         this.poll();
       } catch (error) {
+        if (error.moved) return;
+        // A resident deleted since this device last opened it: back to the first one.
+        if (error.status === 404 && this.resident !== 'default' && !this.miniApp) {
+          this.resident = 'default';
+          remember('resident.current', 'default');
+          history.replaceState(null, '', '/');
+          return this.check(key);
+        }
         this.authed = false;
         this.loginError = error.message;
       }
@@ -514,6 +551,139 @@ function resident() {
       this.loginError = '';
       if (this.keyInput.trim()) this.check(this.keyInput.trim());
     },
+    // ---- the residents (src/residents.ts): one avatar each in the sidebar ----
+    residentPrefix() {
+      return this.resident === 'default' ? '' : '/r/' + this.resident;
+    },
+    // Another resident's API is under /r/<id>; the list of residents is the same for all of them.
+    residentPath(path) {
+      return this.resident !== 'default' && path.indexOf('/web/') === 0 && path.indexOf('/web/residents') !== 0 ? '/r/' + this.resident + path : path;
+    },
+    stickerUrl(key) {
+      return this.residentPrefix() + '/stickers/' + key;
+    },
+    initialOf(name) {
+      return Array.from(String(name || '').trim())[0] || '住';
+    },
+    async loadResidents() {
+      var self = this;
+      clearTimeout(residentsTimer);
+      var data = await this.api('/web/residents');
+      var list = data.residents || [];
+      this.residents.list = list;
+      this.residents.max = data.max || 8;
+      // One first seen here starts without a dot; the one on the page is seen.
+      list.forEach(function (r) { if (!(r.id in self.residents.seen) || r.id === self.resident) self.residents.seen[r.id] = r.saidAt; });
+      remember('resident.seen', JSON.stringify(this.residents.seen));
+      if (!list.some(function (r) { return r.id === self.resident; })) return this.switchResident('default');
+      if (list.length < 2) return;
+      residentsTimer = setTimeout(function tick() {
+        if (!self.authed) return;
+        if (document.hidden) { residentsTimer = setTimeout(tick, RESIDENTS_MS); return; }
+        self.loadResidents().catch(function () { residentsTimer = setTimeout(tick, RESIDENTS_MS); });
+      }, RESIDENTS_MS);
+    },
+    // Another resident said something since this device last had it open.
+    residentDot(r) {
+      return r.id !== this.resident && r.saidAt > (this.residents.seen[r.id] || 0);
+    },
+    anyResidentDot() {
+      var self = this;
+      return this.residents.list.some(function (r) { return self.residentDot(r); });
+    },
+    async switchResident(id) {
+      this.residents.open = false;
+      if (id === this.resident || !this.authed) return;
+      clearTimeout(pollTimer);
+      this.resident = id;
+      remember('resident.current', id);
+      try { history.replaceState(null, '', id === 'default' ? '/' : '/?r=' + id); } catch (e) {}
+      var known = this.residents.list.find(function (r) { return r.id === id; });
+      if (known) this.residents.seen[id] = known.saidAt;
+      remember('resident.seen', JSON.stringify(this.residents.seen));
+      // Everything on the page was the last resident's.
+      seenRev = '';
+      fullAt = 0;
+      settled = {};
+      picLoading = {};
+      this.identity = known ? { name: known.name, avatar: known.avatar } : { name: '住户', avatar: null };
+      this.lines = [];
+      this.outbox = [];
+      this.loaded = false;
+      this.unseen = 0;
+      this.view = 'chat';
+      this.draft = '';
+      this.pics = [];
+      this.quote = null;
+      this.panel = '';
+      this.menu.open = false;
+      this.picker.open = false;
+      this.picUrls = {};
+      this.stickerList = [];
+      this.personaLoaded = false;
+      this.persona = { text: '', at: null, fallback: '', versions: [] };
+      this.model = { model: '', at: null, fallback: '', recent: [], lastUsage: null, memoryOff: false };
+      this.aeliosModels = { loaded: false, items: [], curated: false, error: '' };
+      this.usage = { loaded: false, busy: false, totals: null, rows: [], more: false, keepDays: 90 };
+      this.config = { fields: [], voice: { hears: null, gap: 'off', keyFrom: null }, telegram: { from: null, bot: null, here: false, error: null, lastError: null },
+        wecom: { gap: 'off', allowed: [], relay: null, error: null, refused: null } };
+      this.configSection = '';
+      this.configDraft = {};
+      this.configError = {};
+      this.mcp = { servers: [] };
+      this.sites = [];
+      this.stickers = { on: true, packs: [], left: 0 };
+      this.cloud = { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] };
+      this.threads = { loaded: false, on: false, threads: [] };
+      this.thread = emptyThread();
+      this.alarms = { on: false, limit: 10, alarms: [] };
+      this.setLetter(null);
+      await this.check(this.key);
+    },
+    openAddResident() {
+      this.residents.open = false;
+      this.residents.add = { open: true, id: '', name: '', busy: false, error: '' };
+    },
+    async addResident() {
+      var add = this.residents.add;
+      if (add.busy) return;
+      var id = add.id.trim().toLowerCase();
+      if (!RESIDENT_ID.test(id) || id === 'default') { add.error = '代号要小写英文字母开头，只用小写字母、数字和 -，最多 24 个'; return; }
+      add.busy = true;
+      add.error = '';
+      try {
+        var data = await this.api('/web/residents', { method: 'POST', body: { id: id, name: add.name.trim() } });
+        this.residents.list = data.residents || [];
+        this.residents.seen[id] = 0;
+        add.open = false;
+        await this.switchResident(id);
+        this.loadResidents().catch(function () {});
+      } catch (error) {
+        add.error = error.message;
+      } finally {
+        add.busy = false;
+      }
+    },
+    async removeResident() {
+      var id = this.resident;
+      if (id === 'default' || this.residents.busy) return;
+      var typed = prompt('删掉「' + this.identity.name + '」？它的聊天、人设、设置、表情包和闹钟都删掉，找不回来；Aelios 里的记忆不动。\n确定就输入它的代号：' + id);
+      if (typed === null) return;
+      if (typed.trim() !== id) { this.notify('代号不对，没删'); return; }
+      this.residents.busy = true;
+      try {
+        var data = await this.api('/web/residents/remove', { method: 'POST', body: { id: id } });
+        this.residents.list = data.residents || [];
+        delete this.residents.seen[id];
+        await this.switchResident('default');
+        this.notify('删好了');
+      } catch (error) {
+        this.notify(error.message);
+      } finally {
+        this.residents.busy = false;
+      }
+    },
+
     logout() {
       writeKey('');
       seenRev = '';
@@ -534,7 +704,9 @@ function resident() {
       this.setLetter(null);
       this.letterError = '';
       this.picker.open = false;
+      this.residents.list = [];
       clearTimeout(pollTimer);
+      clearTimeout(residentsTimer);
     },
 
     // ---- the conversation, as rows ----
@@ -871,7 +1043,7 @@ function resident() {
       this.panel = '';
       var payload = { sticker: sticker.key };
       if (this.quote) payload.quote = this.quote.id;
-      var shown = { sticker: { url: '/stickers/' + sticker.key, video: sticker.video }, quote: this.quote };
+      var shown = { sticker: { url: this.stickerUrl(sticker.key), video: sticker.video }, quote: this.quote };
       this.quote = null;
       return this.send(payload, shown);
     },
@@ -1854,7 +2026,7 @@ function resident() {
     },
     // The address WeCom's 「接收消息」 takes.
     wecomUrl() {
-      return location.origin + '/messengers/wecom/webhook';
+      return location.origin + this.residentPrefix() + '/messengers/wecom/webhook';
     },
     async copyText(text) {
       try { await navigator.clipboard.writeText(text); this.notify('复制好了'); } catch (e) { this.notify('复制不了，长按自己复制'); }
@@ -2129,6 +2301,8 @@ function resident() {
         var registration = await navigator.serviceWorker.getRegistration('/');
         var subscription = registration && (await registration.pushManager.getSubscription());
         this.push.on = Boolean(subscription) && Notification.permission === 'granted';
+        // Notifications on for this device: every resident it opens can reach it (one key pair for the site).
+        if (this.push.on) this.push.devices = (await this.api('/web/push/subscribe', { method: 'POST', body: { subscription: subscription.toJSON() } })).devices;
       } catch (e) {
         this.push.on = false;
       }

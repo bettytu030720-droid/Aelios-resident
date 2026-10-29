@@ -18,6 +18,10 @@
 //   POST /tasks/<id>/hands              a GitHub Actions run asking for the GitHub token (code in x-task-code)
 //   POST /tasks/<id>/model/chat/completions   its model calls, OpenAI format, the code as Bearer (hands-repo.ts)
 //   everything else                     the web page itself (public/)
+//
+// More than one resident (residents.ts): every address above under /r/<id> is that resident's, the same as the
+// default one's without it, and /r/<id> itself opens the web page on it (/?r=<id>). /web/residents lists, adds and
+// deletes them.
 
 import { getAgentByName } from "agents";
 import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini-app";
@@ -25,6 +29,7 @@ import { MCP_CALLBACK_PATH } from "./mcp-servers";
 import { MAX_ZIP_BYTES } from "./stickers";
 import { REPORT_MAX_BYTES } from "./cloud-tasks";
 import { TELEGRAM_WEBHOOK_PATH, commandOf, isAllowed, timingSafeEqual, type TelegramUpdate } from "./telegram";
+import { DEFAULT_RESIDENT, RESIDENTS_MAX, residentOfPath, residentPrefix } from "./residents";
 
 export { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 export { Resident } from "./resident";
@@ -36,8 +41,8 @@ const WECOM_PATH = "/messengers/wecom/webhook";
 const THREAD_ID = /^t_[0-9a-f]{10}$/;
 // A WeCom push is a few kilobytes of XML.
 const WECOM_MAX_BYTES = 64 * 1024;
-// Telegram and the web page both talk to this one agent.
-const AGENT_NAME = "default";
+// The first resident; the others are found by their ids (residents.ts).
+const AGENT_NAME = DEFAULT_RESIDENT;
 // A message from the web page with four pictures and a voice message, in base64; any other call is small.
 const SAY_MAX_BYTES = 24 * 1024 * 1024;
 const JSON_MAX_BYTES = 1024 * 1024;
@@ -55,6 +60,11 @@ function privateFile(type: string): HeadersInit {
   };
 }
 
+/** Which resident a request is for, and that resident's own address (origin plus /r/<id>). */
+type At = { id: string; base: string };
+
+const residentOf = (env: Env, at: At) => getAgentByName(env.RESIDENT, at.id);
+
 /** What makes the web page an app to put on the home screen: its name and icon follow the resident's. */
 async function manifest(env: Env): Promise<Response> {
   const { name, avatar } = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).webIdentity();
@@ -69,12 +79,12 @@ async function manifest(env: Env): Promise<Response> {
   );
 }
 
-async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext, url: URL, at: At): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   const got = request.headers.get("x-telegram-bot-api-secret-token") ?? "";
   if (!got) return new Response("unauthorized", { status: 401 });
   // The token and the webhook secret can be on the settings page, so the resident checks them.
-  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  const agent = await residentOf(env, at);
   if (!(await agent.telegramGate(got))) return new Response("unauthorized", { status: 401 });
 
   const body = await request.text();
@@ -103,12 +113,12 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
     ctx.waitUntil(agent.telegramCommand(command, String(chatId)).catch((error) => console.error("tg: command failed", { command, error: String(error) })));
     return new Response("ok");
   }
-  return agent.fetch(new Request(request.url, { method: "POST", headers: request.headers, body }));
+  return agent.fetch(new Request(url.href, { method: "POST", headers: request.headers, body }));
 }
 
 /** WeCom: its address check (GET) answered by the resident, a message (POST) handed to it as it came. */
-async function handleWecom(request: Request, env: Env, url: URL): Promise<Response> {
-  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+async function handleWecom(request: Request, env: Env, url: URL, at: At): Promise<Response> {
+  const agent = await residentOf(env, at);
   if (request.method === "GET") {
     const answer = await agent.wecomVerify(url.search);
     return new Response(answer.body, { status: answer.status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
@@ -121,14 +131,14 @@ async function handleWecom(request: Request, env: Env, url: URL): Promise<Respon
   return agent.fetch(new Request(url.href, { method: "POST", headers: { "content-type": "text/xml" }, body }));
 }
 
-async function handleSetup(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleSetup(request: Request, env: Env, url: URL, at: At): Promise<Response> {
   const headers = { "cache-control": "no-store" };
   if (request.method !== "GET" && request.method !== "POST") {
     return new Response("method not allowed", { status: 405, headers: { ...headers, allow: "GET, POST" } });
   }
   // Opened in a browser the secret is in the address; a script can send it as a header instead.
   const given = request.headers.get("x-tg-setup-secret") ?? url.searchParams.get("secret") ?? "";
-  const answer = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).telegramSetup(given, url.origin);
+  const answer = await (await residentOf(env, at)).telegramSetup(given, at.base);
   return new Response(answer.text, { status: answer.status, headers: { ...headers, "content-type": answer.json ? "application/json" : "text/plain; charset=utf-8" } });
 }
 
@@ -144,11 +154,12 @@ type WebCaller = { via: "web" } | { via: "telegram"; caller: NonNullable<Awaited
  * WEB_KEY, or else the Mini App's signed initData or session token from someone in TG_ALLOWED (checked on every
  * request, so taking someone off the list shuts them out at once). Null when neither.
  */
-async function webCaller(env: Env, request: Request): Promise<WebCaller | null> {
+async function webCaller(env: Env, request: Request, at: At): Promise<WebCaller | null> {
   if (webAllowed(env, request)) return { via: "web" };
   if (!triesMiniApp(request)) return null;
-  // The bot token can be on the settings page: the resident says which one is in effect.
-  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  // The bot token can be on the settings page: the resident says which one is in effect. Each resident's own bot
+  // opens the web page on that resident.
+  const agent = await residentOf(env, at);
   const caller = await miniAppCaller(request, await agent.telegramToken());
   if (!caller) return null;
   if (!callerAllowed(await agent.telegramAllowed(), caller)) {
@@ -158,22 +169,65 @@ async function webCaller(env: Env, request: Request): Promise<WebCaller | null> 
   return { via: "telegram", caller };
 }
 
-async function handleWeb(request: Request, env: Env, url: URL): Promise<Response> {
-  const who = await webCaller(env, request);
+/** Every resident for the sidebar, the default one first: its id, name, avatar and when it last said something. */
+async function residentList(env: Env): Promise<{ residents: { id: string; name: string; avatar: string | null; saidAt: number }[]; max: number }> {
+  const ids = [AGENT_NAME, ...(await (await getAgentByName(env.RESIDENT, AGENT_NAME)).residentIds())];
+  const residents = await Promise.all(
+    ids.map(async (id) => {
+      const agent = await getAgentByName(env.RESIDENT, id);
+      const [identity, saidAt] = await Promise.all([agent.webIdentity(), agent.saidAt()]);
+      return { ...identity, saidAt };
+    })
+  );
+  return { residents, max: RESIDENTS_MAX };
+}
+
+/**
+ * The residents (residents.ts): listed, added (with a name to start with) and deleted, with the web door key only.
+ * The list is the default resident's, whichever resident's page asks.
+ */
+async function handleResidents(request: Request, env: Env, url: URL, who: WebCaller): Promise<Response> {
+  if (who.via !== "web") return Response.json({ error: "用网页钥匙进门才能管住户" }, { status: 403 });
+  if (request.method === "POST") {
+    if (Number(request.headers.get("content-length") ?? 0) > JSON_MAX_BYTES) return Response.json({ error: "发的东西太大了" }, { status: 413 });
+    const body = (await request.json().catch(() => ({}))) as { id?: unknown; name?: unknown };
+    const id = String(body.id ?? "").trim();
+    const first = await getAgentByName(env.RESIDENT, AGENT_NAME);
+    if (url.pathname === "/web/residents/remove") {
+      if (!(await first.residentDrop(id))) return Response.json({ error: "没有这个住户" }, { status: 404 });
+      // Off the list it is already unreachable; then everything it keeps goes. Its isolate ends with it, so the
+      // call comes back as an error even when it went through.
+      await (await getAgentByName(env.RESIDENT, id)).residentForget().catch((error: unknown) => console.log("residents: deleted", { id, end: String(error) }));
+    } else if (url.pathname === "/web/residents") {
+      const name = String(body.name ?? "").trim();
+      if (name.length > 20) return Response.json({ error: "名字最多 20 个字" }, { status: 400 });
+      const added = await first.residentAdd(id);
+      if ("error" in added) return Response.json(added, { status: 400 });
+      if (name) await (await getAgentByName(env.RESIDENT, id)).webSetConfig("RESIDENT_NAME", name);
+    } else return new Response("not found", { status: 404 });
+  } else if (request.method !== "GET" || url.pathname !== "/web/residents") {
+    return new Response("method not allowed", { status: 405 });
+  }
+  return Response.json(await residentList(env), { headers: { "cache-control": "no-store" } });
+}
+
+async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<Response> {
+  const who = await webCaller(env, request, at);
   if (!who) return new Response("unauthorized", { status: 401 });
+  if (url.pathname === "/web/residents" || url.pathname === "/web/residents/remove") return handleResidents(request, env, url, who);
   if (url.pathname === "/web/session") {
     // Only the Mini App gets sessions; WEB_KEY is used as it is.
     if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
     if (who.via !== "telegram") return new Response("the Mini App way in only", { status: 400 });
     const { user, auth } = who.caller;
-    const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+    const agent = await residentOf(env, at);
     const session = await issueSession(await agent.telegramToken(), user, auth);
     return Response.json(
       { ...session, user: { id: user.id, username: user.username ?? null, first_name: user.first_name ?? null } },
       { headers: { "cache-control": "no-store" } }
     );
   }
-  const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+  const agent = await residentOf(env, at);
   // A sticker pack's zip comes as it is, its file name in ?name=.
   if (url.pathname === "/web/stickers/import" && request.method === "POST" && !/json/.test(request.headers.get("content-type") ?? "")) {
     if (Number(request.headers.get("content-length") ?? 0) > MAX_ZIP_BYTES) return Response.json({ error: `压缩包最多 ${MAX_ZIP_BYTES / 1024 / 1024} MB` }, { status: 413 });
@@ -222,7 +276,7 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       // ?since=<version>: { same } while nothing has changed, without reading the conversation.
       return Response.json(await agent.webLook(url.searchParams.get("since")));
     case "POST /web/say": {
-      await agent.noteOrigin(url.origin);
+      await agent.noteOrigin(at.base);
       const said = await agent.webSay({
         text: String(body.text ?? ""),
         ...(Array.isArray(body.pictures) ? { pictures: body.pictures.map((picture) => ({ data: String(picture?.data ?? "") })) } : {}),
@@ -256,7 +310,7 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "POST /web/avatar/remove":
       return Response.json(await agent.webRemoveAvatar());
     case "POST /web/task/choose": {
-      await agent.noteOrigin(url.origin);
+      await agent.noteOrigin(at.base);
       const chosen = await agent.webChoose(String(body.id ?? ""), String(body.text ?? ""));
       return Response.json(chosen, { status: "error" in chosen ? 400 : 200 });
     }
@@ -267,7 +321,7 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "GET /web/push":
       return Response.json(await agent.webPush());
     case "POST /web/push/subscribe": {
-      await agent.noteOrigin(url.origin);
+      await agent.noteOrigin(at.base);
       const saved = await agent.webPushSubscribe(body.subscription);
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
     }
@@ -303,19 +357,19 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json(await agent.webConfig());
     case "POST /web/config": {
       // A bot token saved here is connected to this address.
-      await agent.noteOrigin(url.origin);
+      await agent.noteOrigin(at.base);
       const saved = await agent.webSetConfig(String(body.key ?? ""), String(body.text ?? ""));
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
     }
     case "POST /web/telegram/connect": {
-      await agent.noteOrigin(url.origin);
+      await agent.noteOrigin(at.base);
       const connected = await agent.webTelegramConnect();
       return Response.json(connected, { status: "error" in connected ? 400 : 200 });
     }
     case "GET /web/mcp":
       return Response.json(await agent.webMcp());
     case "POST /web/mcp": {
-      const saved = await agent.webAddMcp(String(body.name ?? ""), String(body.url ?? ""), String(body.key ?? ""), url.origin);
+      const saved = await agent.webAddMcp(String(body.name ?? ""), String(body.url ?? ""), String(body.key ?? ""), at.base);
       return Response.json(saved, { status: "error" in saved ? 400 : 200 });
     }
     case "POST /web/mcp/retry": {
@@ -357,14 +411,14 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
       return Response.json(moved, { status: "error" in moved ? 400 : 200 });
     }
     case "GET /web/tasks":
-      return Response.json(await agent.webTasks(url.origin));
+      return Response.json(await agent.webTasks(at.base));
     case "POST /web/tasks/test": {
       const place = body.execution === "linux" || body.execution === "external" || body.execution === "local" ? body.execution : undefined;
-      const tried = await agent.webTestTask(url.origin, place);
+      const tried = await agent.webTestTask(at.base, place);
       return Response.json(tried, { status: "error" in tried ? 400 : 200 });
     }
     case "POST /web/tasks/github": {
-      const set = await agent.webGitHubSetup(url.origin);
+      const set = await agent.webGitHubSetup(at.base);
       return Response.json(set, { status: "error" in set ? 400 : 200 });
     }
     case "GET /web/threads":
@@ -394,7 +448,7 @@ async function handleWeb(request: Request, env: Env, url: URL): Promise<Response
     case "POST /web/thread/say": {
       const id = String(body.id ?? "");
       if (!THREAD_ID.test(id)) return Response.json({ error: "没有这条线程" }, { status: 404 });
-      await agent.noteOrigin(url.origin);
+      await agent.noteOrigin(at.base);
       const said = await agent.webThreadSay(id, String(body.text ?? ""));
       return Response.json(said, { status: "error" in said ? 400 : 200 });
     }
@@ -407,14 +461,24 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
-      if (url.pathname === TELEGRAM_WEBHOOK_PATH) return await handleWebhook(request, env, ctx);
-      if (url.pathname === WECOM_PATH) return await handleWecom(request, env, url);
-      if (url.pathname === "/tg/setup") return await handleSetup(request, env, url);
-      if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url);
-      if (url.pathname === "/manifest.webmanifest" && request.method === "GET") return await manifest(env);
+      // Another resident's address: answered only for one on the list, as that resident's own address without /r/<id>.
+      const { id, path } = residentOfPath(url.pathname);
+      const at: At = { id, base: url.origin + residentPrefix(id) };
+      if (id !== AGENT_NAME) {
+        if (!(await (await getAgentByName(env.RESIDENT, AGENT_NAME)).residentKnown(id))) return new Response("not found", { status: 404 });
+        // Its web page is the one page, opened on it; the hands' script is the one script.
+        if (path === "/" && request.method === "GET") return Response.redirect(`${url.origin}/?r=${id}`, 302);
+        if (path === "/hands.mjs" && request.method === "GET") return Response.redirect(`${url.origin}/hands.mjs`, 302);
+        url.pathname = path;
+      }
+      if (url.pathname === TELEGRAM_WEBHOOK_PATH) return await handleWebhook(request, env, ctx, url, at);
+      if (url.pathname === WECOM_PATH) return await handleWecom(request, env, url, at);
+      if (url.pathname === "/tg/setup") return await handleSetup(request, env, url, at);
+      if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url, at);
+      if (url.pathname === "/manifest.webmanifest" && request.method === "GET" && id === AGENT_NAME) return await manifest(env);
       const avatar = url.pathname.match(/^\/avatar\/([0-9a-f]{32})$/);
       if (avatar && request.method === "GET") {
-        const file = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).avatarFile(avatar[1]);
+        const file = await (await residentOf(env, at)).avatarFile(avatar[1]);
         if (!file) return new Response("not found", { status: 404 });
         return new Response(file.bytes, {
           headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" }
@@ -422,7 +486,7 @@ export default {
       }
       const sticker = url.pathname.match(/^\/stickers\/([0-9a-f]{24})$/);
       if (sticker && request.method === "GET") {
-        const file = await (await getAgentByName(env.RESIDENT, AGENT_NAME)).stickerFile(sticker[1]);
+        const file = await (await residentOf(env, at)).stickerFile(sticker[1]);
         if (!file) return new Response("not found", { status: 404 });
         return new Response(file.bytes, {
           headers: { "content-type": file.type, "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" }
@@ -431,7 +495,7 @@ export default {
       // A GitHub Actions run of the hands: the GitHub token to work with, and the model through the resident.
       const hands = url.pathname.match(/^\/tasks\/(t_[0-9a-f]{10})\/(hands|model\/chat\/completions)$/);
       if (hands && request.method === "POST") {
-        const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+        const agent = await residentOf(env, at);
         if (hands[2] === "hands") {
           const answer = await agent.handsToken(hands[1], request.headers.get("x-task-code") ?? "");
           return Response.json(answer.body, { status: answer.status, headers: { "cache-control": "no-store" } });
@@ -460,7 +524,7 @@ export default {
         } catch {
           return Response.json({ error: "the body must be JSON" }, { status: 400 });
         }
-        const agent = await getAgentByName(env.RESIDENT, AGENT_NAME);
+        const agent = await residentOf(env, at);
         const answer = await agent.taskReport(report[1], request.headers.get("x-task-code") ?? "", report[2] as "progress" | "result", body);
         return Response.json(answer.body, { status: answer.status });
       }
@@ -468,7 +532,7 @@ export default {
       // address goes in, never the caller's headers: a WebSocket upgrade here would otherwise open a connection
       // to the resident, which streams the conversation to every connection it has.
       if (url.pathname === MCP_CALLBACK_PATH && request.method === "GET" && url.searchParams.has("state")) {
-        return await (await getAgentByName(env.RESIDENT, AGENT_NAME)).fetch(new Request(url.href));
+        return await (await residentOf(env, at)).fetch(new Request(url.href));
       }
       return new Response("not found", { status: 404 });
     } catch (error) {

@@ -31,7 +31,11 @@ self.addEventListener('notificationclick', (event) => {
     (async () => {
       const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const page of pages) {
-        if (new URL(page.url).origin === self.location.origin && 'focus' in page) return page.focus();
+        if (new URL(page.url).origin === self.location.origin && 'focus' in page) {
+          // An open page switches to the resident the notification is from (?r=<id>, src/residents.ts).
+          page.postMessage({ open: url });
+          return page.focus();
+        }
       }
       return self.clients.openWindow(url);
     })()

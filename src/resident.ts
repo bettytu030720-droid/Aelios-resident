@@ -34,6 +34,7 @@ import {
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import type { Adapter } from "chat";
+import { getAgentByName } from "agents";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { asSchema, generateText, tool, type JSONSchema7, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
@@ -67,6 +68,7 @@ import {
 } from "./alarms";
 import { claudeOnRunPath } from "./claude-run";
 import { boxAddress, cleaned, describe, fieldOf, withSaved, type ConfigField } from "./config";
+import { DEFAULT_RESIDENT, RESIDENTS_MAX, residentEnv, residentIdProblem, residentPage, residentPrefix } from "./residents";
 import { customModel, isCustom } from "./custom";
 import { LETTER_KEEP_TOKENS, chatTokens, foldIntoLetter, letterTokenThreshold, reachesLetterThreshold } from "./fold";
 import { resumeLetterCompaction } from "./letter-recovery";
@@ -618,8 +620,20 @@ export class Resident extends Think<Env> {
 
   /** The settings in effect: those saved on the web page's settings page over the Worker's own (config.ts). */
   get cfg(): Env {
-    this.#cfg ??= withSaved(this.env, this.savedConfig());
+    if (!this.#cfg) {
+      const saved = this.savedConfig();
+      this.#cfg = withSaved(residentEnv(this.env, this.residentId, saved), saved);
+    }
     return this.#cfg;
+  }
+
+  /** Which resident this is (residents.ts): "default", or the id another one was made with. */
+  get residentId(): string {
+    try {
+      return this.name;
+    } catch {
+      return DEFAULT_RESIDENT;
+    }
   }
 
   #cfg: Env | null = null;
@@ -2092,7 +2106,7 @@ export class Resident extends Think<Env> {
       const sent = (part.output as { sent?: unknown } | undefined)?.sent;
       if (!STICKER_TOOLS.has(name) || typeof sent !== "string") continue;
       const row = this.stickers().find(sent, false);
-      if (row) shown.push({ url: `/stickers/${row.key}`, video: row.web_type === "video/webm" });
+      if (row) shown.push({ url: `${residentPrefix(this.residentId)}/stickers/${row.key}`, video: row.web_type === "video/webm" });
     }
     return shown.length ? shown : undefined;
   }
@@ -3132,6 +3146,8 @@ export class Resident extends Think<Env> {
       return;
     }
     const reply = textOf(result.message).trim();
+    // When it last said something, for the dot on its avatar in the sidebar (/web/residents).
+    if (reply && reply !== SKIP) await this.ctx.storage.put("said_at", Date.now());
     const trigger = this.activeTurn?.trigger;
     // A check-in, heartbeat, alarm or task result has no messenger turn to reply into: post it ourselves. Told by
     // its note too, because a response hook replayed after a restart has no trigger.
@@ -3400,7 +3416,7 @@ export class Resident extends Think<Env> {
           ...(pictures ? { pictures } : {}),
           ...(voice ? { voice } : {}),
           ...(own?.quote ? { quote: own.quote } : {}),
-          ...(own?.sticker ? { stickers: [{ url: `/stickers/${own.sticker}`, video: sticker?.video ?? false }] } : {})
+          ...(own?.sticker ? { stickers: [{ url: `${residentPrefix(this.residentId)}/stickers/${own.sticker}`, video: sticker?.video ?? false }] } : {})
         });
         continue;
       }
@@ -3648,9 +3664,9 @@ export class Resident extends Think<Env> {
   }
 
   /** The name the web page shows (RESIDENT_NAME), and its avatar's address, if one was put up. */
-  webIdentity(): { name: string; avatar: string | null } {
+  webIdentity(): { id: string; name: string; avatar: string | null } {
     const key = this.settings("avatar")?.value;
-    return { name: this.cfg.RESIDENT_NAME?.trim() || DEFAULT_NAME, avatar: key ? `/avatar/${key}` : null };
+    return { id: this.residentId, name: this.cfg.RESIDENT_NAME?.trim() || DEFAULT_NAME, avatar: key ? `${residentPrefix(this.residentId)}/avatar/${key}` : null };
   }
 
   /** A new avatar from the web page: a square picture, made small there first. */
@@ -3765,11 +3781,20 @@ export class Resident extends Think<Env> {
 
   /** The VAPID key pair this resident signs pushes with: made once, kept in storage. */
   private async pushKeys(): Promise<PushKeys> {
+    // One key pair for the whole site, the default resident's: a device's one subscription then takes every
+    // resident's pushes (residents.ts).
+    if (this.residentId !== DEFAULT_RESIDENT) return (await getAgentByName(this.env.RESIDENT, DEFAULT_RESIDENT)).pushKeysForAll();
     const kept = await this.ctx.storage.get<PushKeys>("push_keys");
     if (kept) return kept;
     const made = await makePushKeys();
     await this.ctx.storage.put("push_keys", made);
     return made;
+  }
+
+  /** The default resident's key pair, for the other residents to sign their pushes with. */
+  async pushKeysForAll(): Promise<PushKeys> {
+    if (this.residentId !== DEFAULT_RESIDENT) throw new Error("only the default resident keeps the push keys");
+    return this.pushKeys();
   }
 
   private pushTargets(): (PushTarget & { at: number })[] {
@@ -3830,11 +3855,14 @@ export class Resident extends Think<Env> {
     // The push services want a way to reach whoever sends: the resident's own address.
     const subject = origin.startsWith("https://") ? origin : "mailto:resident@localhost";
     const icon = this.webIdentity().avatar ?? "/icon-192.png";
-    const payload = JSON.stringify({ ...message, icon, url: "/" });
+    // Another resident's notifications open its own page, and do not take the place of the default one's.
+    const own = this.residentId !== DEFAULT_RESIDENT;
+    const tag = own ? `${this.residentId}-${message.tag}` : message.tag;
+    const payload = JSON.stringify({ ...message, tag, icon, url: own ? `/?r=${this.residentId}` : "/" });
     let sent = 0;
     const failed: string[] = [];
     for (const target of targets) {
-      const result = await sendPush(target, payload, keys, subject, { urgency: message.tag === "chat" ? "high" : "normal", topic: message.tag });
+      const result = await sendPush(target, payload, keys, subject, { urgency: message.tag === "chat" ? "high" : "normal", topic: tag.length <= 32 ? tag : message.tag });
       if ("ok" in result) sent += 1;
       else if ("gone" in result) this.sql`DELETE FROM res_push_targets WHERE endpoint = ${target.endpoint}`;
       else {
@@ -3952,7 +3980,7 @@ export class Resident extends Think<Env> {
     // the AI Gateway whose stored key voice relies on; how Telegram and WeCom stand.
     const [telegram, wecom] = await Promise.all([this.telegramState(), this.wecomState()]);
     return {
-      fields: describe(this.env, this.savedConfig()),
+      fields: describe(residentEnv(this.env, this.residentId, this.savedConfig()), this.savedConfig()),
       voice: { hears: hearsBy(this.cfg), gap: speakingGap(this.cfg), keyFrom: keyFromGateway(this.cfg) },
       telegram,
       wecom
@@ -4079,7 +4107,7 @@ export class Resident extends Think<Env> {
     // Telegram only opens Mini Apps from https; over http (local tests) the menu button is left alone.
     const https = origin.startsWith("https:");
     try {
-      const result = await setWebhook(config, `${origin}${TELEGRAM_WEBHOOK_PATH}`, secret, https ? { miniAppUrl: `${origin}/` } : {});
+      const result = await setWebhook(config, `${origin}${TELEGRAM_WEBHOOK_PATH}`, secret, https ? { miniAppUrl: residentPage(origin) } : {});
       if (!https) result.setChatMenuButton = { skipped: "the Mini App needs https; open the settings page on the https address" };
       const hook = result.setWebhook as { ok?: boolean; description?: string } | undefined;
       return hook?.ok ? { result } : { result, error: `Telegram 没接受这个地址：${hook?.description ?? "setWebhook 失败"}` };
@@ -4149,8 +4177,65 @@ export class Resident extends Think<Env> {
    * chat (where no request says it) comes back here.
    */
   async noteOrigin(origin: string): Promise<void> {
-    if (!/^https:\/\/[^/]+$|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return;
+    // Another resident's address carries its prefix (residents.ts): /r/<its id> and nothing else.
+    const prefix = residentPrefix(this.residentId);
+    if (prefix && !origin.endsWith(prefix)) return;
+    const bare = prefix ? origin.slice(0, -prefix.length) : origin;
+    if (!/^https:\/\/[^/]+$|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(bare)) return;
     if ((await this.ctx.storage.get<string>("origin")) !== origin) await this.ctx.storage.put("origin", origin);
+  }
+
+  // ---- the other residents (residents.ts): the default resident keeps their list ----
+
+  private residentRows(): { id: string; at: number }[] {
+    this.sql`CREATE TABLE IF NOT EXISTS res_residents (id TEXT PRIMARY KEY, at INTEGER NOT NULL)`;
+    return this.sql<{ id: string; at: number }>`SELECT id, at FROM res_residents ORDER BY at, id`;
+  }
+
+  /** The other residents' ids, oldest first. Only the default resident keeps the list; another one has none. */
+  residentIds(): string[] {
+    return this.residentId === DEFAULT_RESIDENT ? this.residentRows().map((row) => row.id) : [];
+  }
+
+  /** When it last said something (a reply, a check-in, an alarm, a task result), for the sidebar; 0 for never. */
+  async saidAt(): Promise<number> {
+    return (await this.ctx.storage.get<number>("said_at")) ?? 0;
+  }
+
+  /** For the Worker, before it hands an address under /r/<id> to that resident. */
+  residentKnown(id: string): boolean {
+    return this.residentIds().includes(id);
+  }
+
+  /** A new resident on the list. Its Durable Object starts empty the first time it is spoken to. */
+  residentAdd(id: string): { ok: true } | { error: string } {
+    if (this.residentId !== DEFAULT_RESIDENT) return { error: "住户名单在第一个住户那里" };
+    const problem = residentIdProblem(id);
+    if (problem) return { error: problem };
+    const rows = this.residentRows();
+    if (rows.some((row) => row.id === id)) return { error: "已经有这个代号的住户了" };
+    if (rows.length >= RESIDENTS_MAX) return { error: `最多再加 ${RESIDENTS_MAX} 个住户` };
+    this.sql`INSERT INTO res_residents (id, at) VALUES (${id}, ${Date.now()})`;
+    return { ok: true };
+  }
+
+  /** A resident off the list: the Worker stops answering for it at once. Whether it was on it. */
+  residentDrop(id: string): boolean {
+    if (this.residentId !== DEFAULT_RESIDENT || !this.residentKnown(id)) return false;
+    this.sql`DELETE FROM res_residents WHERE id = ${id}`;
+    return true;
+  }
+
+  /**
+   * Another resident being deleted, after it is off the list: its bot stops sending here, then everything it keeps
+   * goes (conversation, settings, stickers, alarms). The default resident is never deleted. Ends this resident's
+   * isolate, so the caller does not wait for an answer.
+   */
+  async residentForget(): Promise<void> {
+    if (this.residentId === DEFAULT_RESIDENT) throw new Error("the default resident is never deleted");
+    const config = this.telegramConfig();
+    if (config.token) await deleteWebhook(config);
+    await this.destroy();
   }
 
   /** The MCP servers on the settings page: how each is doing and what its tools cost per turn. Never a key. */
