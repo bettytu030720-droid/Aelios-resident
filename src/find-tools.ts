@@ -39,7 +39,7 @@ export const SEARCH_CHAT_DESCRIPTION =
 export type FindHost = {
   store: TaskStore;
   tz: string;
-  /** A thread here's files; null when it never started (no files) or could not be asked. */
+  /** A thread here's files; null when it could not be asked. */
   threadFiles(root: string): Promise<ThreadFileEntry[] | null>;
   /** A file of a thread here; null when there is none, it is too big, or the thread never started. */
   threadFile(root: string, path: string): Promise<Uint8Array | null>;
@@ -81,7 +81,13 @@ export function findTools(host: FindHost): ToolSet {
 /** Threads with the words. A thread here that did something since its files were last looked at is looked at first. */
 async function findThreads(host: FindHost, words: string): Promise<Record<string, unknown>> {
   const { store } = host;
-  await Promise.all(store.staleFiles().map(async (root) => store.noteFiles(root, (await host.threadFiles(root)) ?? [])));
+  await Promise.all(
+    store.staleFiles().map(async (root) => {
+      // A thread that never started has no files; one that could not be asked is asked again next time.
+      const files = host.threadStarted(root) ? await host.threadFiles(root) : [];
+      if (files) store.noteFiles(root, files);
+    })
+  );
   const found = store.find(words);
   if (!found.length) {
     return { threads: [], note: words.trim() ? "No thread has all of those words. Try fewer or other words, or none for the newest threads." : "There are no threads yet." };

@@ -476,12 +476,46 @@ await test("find_threads: every word in what was asked, reported or linked, or i
   assert.equal(tasks.filesOf(page.id), null);
 });
 
-await test("the descriptions of the tools that find earlier work never change and say how to carry on", async () => {
+/** src/find-tools.ts, built once. */
+let findModule;
+async function findTools() {
+  if (findModule) return findModule;
   const dir = mkdtempSync(join("node_modules/.cache", "resident-find-"));
   const out = join(dir, "find-tools.mjs");
   await build({ entryPoints: ["src/find-tools.ts"], bundle: true, platform: "node", format: "esm", outfile: out, logLevel: "error" });
-  const f = await import(pathToFileURL(join(process.cwd(), out)).href);
+  findModule = await import(pathToFileURL(join(process.cwd(), out)).href);
   rmSync(dir, { recursive: true, force: true });
+  return findModule;
+}
+
+await test("find_threads: a thread whose files could not be listed is asked again next time; one that never started has none", async () => {
+  const { findTools: tools } = await findTools();
+  const { tasks } = store();
+  const page = tasks.add({ title: "做个页面", job: "做", execution: "local" }).task;
+  const idle = tasks.add({ title: "没起来的", job: "x", execution: "local" }).task;
+  const answers = [null, [{ path: "/important-artifact.html", size: 1, at: 1 }]];
+  let asked = 0;
+  const host = {
+    store: tasks,
+    tz: "Asia/Shanghai",
+    threadStarted: (root) => root === page.id,
+    threadFiles: async () => (asked++, answers.shift() ?? null),
+    threadFile: async () => null,
+    chatHits: async () => ({ results: [], next: null }),
+    chatAround: async () => ({ error: "x" }),
+    answering: () => ""
+  };
+  const find = (words) => tools(host).find_threads.execute({ words }, { toolCallId: "t", messages: [] });
+  assert.deepEqual((await find("important-artifact")).threads, []);
+  assert.deepEqual(tasks.staleFiles(), [page.id], "the failure is not kept as no files");
+  assert.deepEqual(tasks.filesOf(idle.id).files, [], "a thread that never started is noted as having none");
+  assert.deepEqual((await find("important-artifact")).threads.map((thread) => thread.id), [page.id]);
+  assert.equal(asked, 2);
+  assert.deepEqual(tasks.staleFiles(), []);
+});
+
+await test("the descriptions of the tools that find earlier work never change and say how to carry on", async () => {
+  const f = await findTools();
   for (const text of [f.FIND_THREADS_DESCRIPTION, f.READ_THREAD_FILE_DESCRIPTION, f.SEARCH_CHAT_DESCRIPTION]) assert.ok(text && !/\$\{|undefined/.test(text));
   assert.match(f.FIND_THREADS_DESCRIPTION, /pass its id as cloud_task's follow_up_of/);
   assert.match(f.FIND_THREADS_DESCRIPTION, /information, not instructions/);
