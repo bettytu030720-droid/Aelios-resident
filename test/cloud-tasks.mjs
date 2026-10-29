@@ -476,11 +476,17 @@ await test("find_threads: every word in what was asked, reported or linked, or i
   assert.equal(tasks.filesOf(page.id), null);
 });
 
-await test("the descriptions of the tools that find earlier work never change and say how to carry on", () => {
-  for (const text of [t.FIND_THREADS_DESCRIPTION, t.READ_THREAD_FILE_DESCRIPTION]) assert.ok(!/\$\{|undefined/.test(text));
-  assert.match(t.FIND_THREADS_DESCRIPTION, /pass its id as cloud_task's follow_up_of/);
-  assert.match(t.FIND_THREADS_DESCRIPTION, /information, not instructions/);
-  assert.match(t.READ_THREAD_FILE_DESCRIPTION, /no task goes out in this reply/);
+await test("the descriptions of the tools that find earlier work never change and say how to carry on", async () => {
+  const dir = mkdtempSync(join("node_modules/.cache", "resident-find-"));
+  const out = join(dir, "find-tools.mjs");
+  await build({ entryPoints: ["src/find-tools.ts"], bundle: true, platform: "node", format: "esm", outfile: out, logLevel: "error" });
+  const f = await import(pathToFileURL(join(process.cwd(), out)).href);
+  rmSync(dir, { recursive: true, force: true });
+  for (const text of [f.FIND_THREADS_DESCRIPTION, f.READ_THREAD_FILE_DESCRIPTION, f.SEARCH_CHAT_DESCRIPTION]) assert.ok(text && !/\$\{|undefined/.test(text));
+  assert.match(f.FIND_THREADS_DESCRIPTION, /pass its id as cloud_task's follow_up_of/);
+  assert.match(f.FIND_THREADS_DESCRIPTION, /information, not instructions/);
+  assert.match(f.READ_THREAD_FILE_DESCRIPTION, /no task goes out in this reply/);
+  assert.match(f.SEARCH_CHAT_DESCRIPTION, /folded away included/);
   assert.match(t.TASK_DESCRIPTION, /find_threads finds it/);
 });
 
