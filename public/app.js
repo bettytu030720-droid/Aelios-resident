@@ -256,6 +256,8 @@ function resident() {
   // last opened on this device. "default" is the first one.
   var RESIDENT_ID = /^[a-z][a-z0-9-]{0,23}$/;
   function residentFromUrl() { try { var id = new URLSearchParams(location.search).get('r') || ''; return RESIDENT_ID.test(id) ? id : ''; } catch (e) { return ''; } }
+  // The search page's state: what was asked, the hits so far, where the next page starts and the hit opened.
+  function freshSearch() { return { q: '', asked: '', busy: false, done: false, error: '', results: [], next: null, open: '', around: {} }; }
   function seenOf() { try { return JSON.parse(localStorage.getItem('resident.seen') || '{}') || {}; } catch (e) { return {}; } }
   // The same rule as Telegram: a blank line starts a new bubble, except inside a fenced code block.
   function bubbleTexts(text) {
@@ -377,6 +379,7 @@ function resident() {
     stickers: { on: true, packs: [], left: 0 },
     cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] },
     threads: { loaded: false, on: false, threads: [] },
+    search: freshSearch(),
     thread: emptyThread(),
     fileView: emptyFileView(),
     threadDraft: '',
@@ -635,6 +638,7 @@ function resident() {
       this.configError = {};
       this.mcp = { servers: [] };
       this.sites = [];
+      this.search = freshSearch();
       this.stickers = { on: true, packs: [], left: 0 };
       this.cloud = { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] };
       this.threads = { loaded: false, on: false, threads: [] };
@@ -714,6 +718,7 @@ function resident() {
       this.letterError = '';
       this.picker.open = false;
       this.residents.list = [];
+      this.search = freshSearch();
       clearTimeout(pollTimer);
       clearTimeout(residentsTimer);
     },
@@ -1555,6 +1560,93 @@ function resident() {
       if (item.desc) bits.push(item.desc);
       if (!bits.length) bits.push(item.id);
       return bits.join(' · ');
+    },
+
+    // ---- searching the conversation (src/chat-search.ts) ----
+    openSearch() {
+      this.view = 'search';
+      var self = this;
+      this.$nextTick(function () { if (self.$refs.searchInput) self.$refs.searchInput.focus(); });
+    },
+    async runSearch(more) {
+      var search = this.search;
+      var q = more ? search.asked : search.q.trim();
+      if (!q || search.busy) return;
+      search.busy = true;
+      search.error = '';
+      try {
+        var data = await this.api('/web/search?q=' + encodeURIComponent(q) + (more && search.next ? '&before=' + search.next : ''));
+        if (!more) { search.results = []; search.open = ''; search.around = {}; search.asked = q; }
+        var seen = {};
+        search.results.forEach(function (hit) { seen[hit.id] = true; });
+        search.results = search.results.concat((data.results || []).filter(function (hit) { return !seen[hit.id]; }));
+        search.next = data.next || null;
+        search.done = true;
+      } catch (error) {
+        if (error.moved) return;
+        search.error = error.message;
+      } finally {
+        search.busy = false;
+      }
+    },
+    searchSummary() {
+      var n = this.search.results.length;
+      if (!n) return this.search.next ? '最近这一段没找到「' + this.search.asked + '」，可以接着往前翻。' : '没找到「' + this.search.asked + '」。';
+      return '找到 ' + n + (this.search.next ? '+' : '') + ' 条带「' + this.search.asked + '」的，新的在前。点一条看前后。';
+    },
+    async toggleHit(hit) {
+      var search = this.search;
+      if (search.open === hit.id) { search.open = ''; return; }
+      search.open = hit.id;
+      if (search.around[hit.id]) return;
+      try {
+        var data = await this.api('/web/search/around?id=' + encodeURIComponent(hit.id));
+        search.around[hit.id] = { lines: data.lines || [] };
+      } catch (error) {
+        if (error.moved) return;
+        search.around[hit.id] = { error: error.message, lines: [] };
+      }
+    },
+    // The words of a line, with what was searched for marked.
+    markedParts(text) {
+      var q = this.search.asked;
+      text = String(text || '');
+      if (!q) return [{ text: text }];
+      var parts = [];
+      var low = text.toLowerCase();
+      var needle = q.toLowerCase();
+      var from = 0;
+      for (var at = low.indexOf(needle); at >= 0; at = low.indexOf(needle, at + needle.length)) {
+        if (at > from) parts.push({ text: text.slice(from, at) });
+        parts.push({ text: text.slice(at, at + q.length), hit: true });
+        from = at + q.length;
+      }
+      if (from < text.length) parts.push({ text: text.slice(from) });
+      return parts;
+    },
+    searchWhen(at) {
+      if (!at) return '';
+      var year = new Date(at).getFullYear();
+      return (year === new Date().getFullYear() ? '' : year + '-') + this.fmt(at);
+    },
+    // Whether a message is in the chat as it is on the page now (older ones are folded into a letter there).
+    inChat(id) {
+      return this.lines.some(function (line) { return line.id === id; });
+    },
+    showInChat(id) {
+      var self = this;
+      // Off the bottom first: the conversation keeps to its bottom when it comes back into view (a frame later).
+      this.nearBottom = false;
+      this.view = 'chat';
+      setTimeout(function () {
+        var slot = document.querySelector('[data-line="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+        var el = slot && (slot.querySelector('.row') || slot.firstElementChild);
+        if (!el) return;
+        self.nearBottom = false;
+        el.scrollIntoView({ block: 'center' });
+        el.classList.add('found');
+        setTimeout(function () { el.classList.remove('found'); }, 1800);
+      }, 60);
     },
 
     // ---- moving between pages ----

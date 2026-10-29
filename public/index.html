@@ -98,6 +98,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <svg x-show="!replying()" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
       </button>
     </div>
+    <button class="icon-btn" type="button" @click="openSearch()" aria-label="搜聊天记录">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+    </button>
     <button class="icon-btn" type="button" x-show="cloud.on" @click="openThreads()" :aria-label="'线程' + (workingTasks() ? '，' + workingTasks() + ' 个在路上' : '')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M4 12h16"/><path d="M4 17h12"/><circle cx="19" cy="7" r="2"/></svg>
       <span class="badge-dot" x-show="workingTasks()" x-text="workingTasks()"></span>
@@ -122,7 +125,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <div class="empty" x-show="loaded && !lines.length && !outbox.length">还没有聊天。说句话吧。</div>
 
       <template x-for="row in rows()" :key="row.key">
-        <div class="slot">
+        <div class="slot" :data-line="row.type === 'line' ? row.line.id : null">
           <template x-if="row.type === 'day' || row.type === 'notice'">
             <div class="divider" x-text="row.text"></div>
           </template>
@@ -462,6 +465,42 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
       </template>
     </details>
+  </section>
+
+  <!-- ===== searching the conversation ===== -->
+  <header class="top plain" x-show="authed && view === 'search'">
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <form class="search-bar" @submit.prevent="runSearch()">
+      <input type="search" x-ref="searchInput" x-model="search.q" maxlength="50" placeholder="搜聊天记录" aria-label="搜聊天记录" enterkeyhint="search" autocomplete="off">
+      <button class="btn primary small" type="submit" :disabled="search.busy || !search.q.trim()">搜</button>
+    </form>
+  </header>
+  <section class="page" x-show="authed && view === 'search'">
+    <p class="hint" x-show="!search.done && !search.busy">交接信折起来的旧聊天也搜得到。</p>
+    <p class="error" x-show="search.error" x-text="search.error"></p>
+    <p class="hint" x-show="search.done && !search.error" x-text="searchSummary()"></p>
+    <template x-for="hit in search.results" :key="hit.id">
+      <div class="hit" :class="search.open === hit.id && 'open'">
+        <button class="hit-head" type="button" @click="toggleHit(hit)" :aria-expanded="search.open === hit.id">
+          <span class="hit-who"><span x-text="hit.role === 'user' ? '你' : identity.name"></span><span x-text="searchWhen(hit.at)"></span></span>
+          <span class="hit-snip"><span x-text="hit.before"></span><mark x-text="hit.match"></mark><span x-text="hit.after"></span></span>
+        </button>
+        <template x-if="search.open === hit.id">
+          <div class="around">
+            <p class="hint" x-show="!search.around[hit.id]">正在翻…</p>
+            <p class="error" x-show="search.around[hit.id] && search.around[hit.id].error" x-text="search.around[hit.id] && search.around[hit.id].error"></p>
+            <template x-for="line in (search.around[hit.id] && search.around[hit.id].lines) || []" :key="line.id">
+              <div class="tline" :class="['r-' + line.role, line.hit ? 'hit-line' : '']">
+                <div class="who-l"><span x-text="line.role === 'user' ? '你' : identity.name"></span><span x-text="searchWhen(line.at)"></span></div>
+                <div class="text"><template x-for="(part, i) in markedParts(line.text)" :key="i"><span :class="part.hit && 'mark'" x-text="part.text"></span></template></div>
+              </div>
+            </template>
+            <button class="btn small" type="button" x-show="inChat(hit.id)" @click="showInChat(hit.id)">在聊天里看</button>
+          </div>
+        </template>
+      </div>
+    </template>
+    <button class="btn" type="button" x-show="search.next" :disabled="search.busy" @click="runSearch(true)">更早的</button>
   </section>
 
   <!-- ===== threads ===== -->

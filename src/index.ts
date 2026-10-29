@@ -8,7 +8,8 @@
 //                                       A bot token saved on the settings page is connected from there instead
 //   /web/*                              the web page's API (same conversation as Telegram, the model, the persona,
 //                                       the settings and the usage timeline), behind WEB_KEY, or inside Telegram behind signed
-//                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts)
+//                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts); /web/search finds
+//                                       words in the whole conversation (chat-search.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
 //   GET  /avatar/<key>                  the resident's avatar, put up on the web page (public, like a sticker)
@@ -273,6 +274,16 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
     case "GET /web/messages":
       // ?since=<version>: { same } while nothing has changed, without reading the conversation.
       return Response.json(await agent.webLook(url.searchParams.get("since")));
+    case "GET /web/search": {
+      // ?q=<words>, and ?before=<where the last page stopped> for the next page (chat-search.ts).
+      const before = Number(url.searchParams.get("before"));
+      const found = await agent.webChatSearch(url.searchParams.get("q") ?? "", Number.isSafeInteger(before) && before > 0 ? before : undefined);
+      return Response.json(found, { status: "error" in found ? 400 : 200, headers: { "cache-control": "no-store" } });
+    }
+    case "GET /web/search/around": {
+      const around = await agent.webChatAround(url.searchParams.get("id") ?? "");
+      return Response.json(around, { status: "error" in around ? 404 : 200, headers: { "cache-control": "no-store" } });
+    }
     case "POST /web/say": {
       await agent.noteOrigin(at.base);
       const said = await agent.webSay({
