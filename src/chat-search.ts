@@ -1,5 +1,6 @@
-// Searching the conversation from the web page (Resident.webChatSearch): every message on the current branch, the
-// ones a handoff letter folded away included, since their rows stay in the session's table. Plain substring
+// Searching the conversation, from the web page (Resident.webChatSearch) and by the resident itself (search_chat):
+// every message on the current branch, the ones a handoff letter folded away included, since their rows stay in
+// the session's table. Plain substring
 // matching, so Chinese works without word splitting (the session's own full-text index does not split it).
 
 /** The longest search, in characters. */
@@ -10,6 +11,17 @@ export const SEARCH_PAGE = 30;
 export const SEARCH_ROWS = 300;
 /** Messages shown on each side of a hit when it is opened. */
 export const AROUND = 4;
+
+/** search_chat (the resident's own search, with its threads): hits it gives at once, and words shown of each line around one. */
+export const SEARCH_TOOL_HITS = 10;
+export const AROUND_SHOWN = 600;
+
+/** search_chat's description: fixed, so the prompt cache holds. */
+export const SEARCH_CHAT_DESCRIPTION =
+  "Search your conversation with them for exact words, the part a handoff letter folded away included: their " +
+  "messages and yours that contain the words, newest first, with when each was said. Use it when they bring up " +
+  "something said before that you no longer see. A few words work best, written as they would have been said. Pass " +
+  "a hit's id as around to read the messages around it.";
 
 /** A message as the search shows it. */
 export type ChatLine = { id: string; role: "user" | "assistant"; text: string; at: number; hit?: true };

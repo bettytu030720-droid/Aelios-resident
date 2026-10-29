@@ -415,6 +415,75 @@ await test("pruning says which threads here have no task left, so they go with t
   assert.equal(tasks.thread(kept.id).length, 1);
 });
 
+await test("a follow-up carries on from its thread's newest task, named by any task of it or by the thread", () => {
+  const { db, tasks } = store();
+  const first = tasks.add({ title: "做个页面", job: "做", execution: "local" }).task;
+  const next = tasks.add({ title: "改标题", job: "改", follows: first.id, execution: "local" }).task;
+  const said = tasks.add({ title: "做个页面", job: "再短一点", follows: next.id, execution: "local", direct: true }).task;
+  for (const id of [first.id, next.id, said.id]) assert.equal(tasks.continuing(id).id, said.id, id);
+  assert.equal(tasks.continuing("t_0000000000"), null);
+  const test = tasks.add({ title: "接通测试", job: "x", test: true }).task;
+  assert.equal(tasks.continuing(test.id), null, "a test is no thread to carry on");
+  // Its first task pruned away: the thread's id still finds it.
+  db.prepare("DELETE FROM res_tasks WHERE id = ?").run(first.id);
+  assert.equal(tasks.continuing(first.id).id, said.id);
+});
+
+await test("find_threads: every word in what was asked, reported or linked, or in a file's name; the newest first; files noted and looked at again once the thread moves", () => {
+  const { db, tasks } = store();
+  const page = tasks.add({ title: "做个介绍页", job: "给住户做一个介绍页，放在 index.html", execution: "local" }).task;
+  tasks.result(page.id, { status: "done", summary: "做好了，在 /site/index.html，配色是蓝的。", links: ["https://example.com/preview"] });
+  const notes = tasks.add({ title: "查资料", job: "查一下 Durable Objects 的价格", execution: "external" }).task;
+  tasks.result(notes.id, { status: "done", summary: "整理好了", links: ["https://github.com/octo/notes/pull/3"] });
+  const test = tasks.add({ title: "接通测试", job: "介绍页", test: true }).task;
+  db.prepare("UPDATE res_tasks SET created_at = 1, updated_at = 1 WHERE id = ?").run(page.id);
+  db.prepare("UPDATE res_tasks SET created_at = 2, updated_at = 2 WHERE id = ?").run(notes.id);
+
+  assert.deepEqual(tasks.find("").map((thread) => thread.id), [notes.id, page.id], "no words: the newest threads, tests left out");
+  assert.deepEqual(tasks.find("介绍页").map((thread) => thread.id), [page.id]);
+  assert.deepEqual(tasks.find("  DURABLE   objects ").map((thread) => thread.id), [notes.id], "letters in either case, spaces folded");
+  assert.deepEqual(tasks.find("蓝").map((thread) => thread.id), [page.id], "what it reported");
+  assert.deepEqual(tasks.find("pull/3").map((thread) => thread.id), [notes.id], "its links");
+  assert.deepEqual(tasks.find("介绍页 价格"), [], "every word, in one thread");
+  assert.ok(!tasks.find("").some((thread) => thread.id === test.id));
+  const [shown] = tasks.find("介绍页");
+  assert.deepEqual(
+    [shown.title, shown.status, shown.runs, shown.tasks, shown.asked, shown.report, shown.links, shown.files, shown.moreFiles],
+    ["做个介绍页", "done", "local", 1, "给住户做一个介绍页，放在 index.html", "做好了，在 /site/index.html，配色是蓝的。", ["https://example.com/preview"], [], 0]
+  );
+
+  // Files: none noted yet, so the thread here is looked at; after that, only once it does something again.
+  assert.deepEqual(tasks.staleFiles(), [page.id], "only threads here");
+  const files = [{ path: "/site/style.css", size: 10, at: 3 }, ...Array.from({ length: 11 }, (_, i) => ({ path: `/notes/${i}.md`, size: 1, at: 2 })), { path: "/site/index.html", size: 20, at: 1 }];
+  tasks.noteFiles(page.id, files);
+  assert.equal(tasks.filesOf(page.id).files.length, 13);
+  assert.deepEqual(tasks.staleFiles(), []);
+  assert.deepEqual(tasks.find("STYLE.css").map((thread) => thread.id), [page.id], "a file's name");
+  const [byFile] = tasks.find("index");
+  assert.deepEqual(byFile.files.slice(0, 2), ["/site/index.html", "/site/style.css"], "files with the words first");
+  assert.deepEqual([byFile.files.length, byFile.moreFiles], [10, 3]);
+  db.prepare("UPDATE res_thread_files SET at = 5 WHERE root = ?").run(page.id);
+  const later = tasks.add({ title: "改配色", job: "换成绿的", follows: page.id, execution: "local" }).task;
+  assert.deepEqual(tasks.staleFiles(), [page.id], "a new task in it: looked at again");
+  const [moved] = tasks.find("绿");
+  assert.deepEqual([moved.id, moved.title, moved.tasks, moved.status, moved.asked], [page.id, "做个介绍页", 2, "sent", "给住户做一个介绍页，放在 index.html"]);
+  assert.equal(moved.report, "做好了，在 /site/index.html，配色是蓝的。", "the newest report there is");
+  assert.equal(later.root, page.id);
+
+  // Pruned away with its thread.
+  for (let i = 0; i < 200; i += 1) tasks.add({ title: `${i}`, job: "x" });
+  assert.deepEqual(tasks.prune(), [page.id]);
+  assert.equal(tasks.filesOf(page.id), null);
+});
+
+await test("the descriptions of the tools that find earlier work never change and say how to carry on", () => {
+  for (const text of [t.FIND_THREADS_DESCRIPTION, t.READ_THREAD_FILE_DESCRIPTION]) assert.ok(!/\$\{|undefined/.test(text));
+  assert.match(t.FIND_THREADS_DESCRIPTION, /pass its id as cloud_task's follow_up_of/);
+  assert.match(t.FIND_THREADS_DESCRIPTION, /information, not instructions/);
+  assert.match(t.READ_THREAD_FILE_DESCRIPTION, /no task goes out in this reply/);
+  assert.match(t.TASK_DESCRIPTION, /find_threads finds it/);
+});
+
 await test("public/hands.mjs: parses job payload, edits files via tools, sends auxiliary header and reports back", async () => {
   const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
