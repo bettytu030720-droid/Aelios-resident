@@ -32,6 +32,9 @@
 //   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
 //            --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:): connected, the resident started again, the Mini App
 //            and commands with that token, connecting again, a token Telegram refuses, taking it off
+//   residents  more than one resident (src/residents.ts): added and listed, its own addresses under /r/<id>, its
+//            own settings, conversation, Aelios identity, Telegram bot, avatar and task reports, one push key for
+//            all, deleted and added again empty
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -42,7 +45,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { "claude-code": 2400, main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
+let nextId = { residents: 2500, "claude-code": 2400, main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -2886,7 +2889,7 @@ if (phase === "web") {
     const tooBig = await fetch(`${WORKER}/web/avatar`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "image/png" }, body: new Uint8Array(600 * 1024) });
     assert.equal(tooBig.status, 413);
     assert.equal((await fetch(`${WORKER}/web/avatar`, { method: "POST", body: PNG })).status, 401, "only with the web key");
-    assert.deepEqual((await json("/web/avatar/remove", {})).data, { name: "小助手", avatar: null });
+    assert.deepEqual((await json("/web/avatar/remove", {})).data, { id: "default", name: "小助手", avatar: null });
     assert.equal((await fetch(`${WORKER}${avatar}`)).status, 404, "a removed avatar is gone");
     assert.equal((await (await fetch(`${WORKER}/manifest.webmanifest`)).json()).icons[0].src, "/icon-192.png");
   });
@@ -3008,3 +3011,184 @@ if (phase === "web") {
     assert.equal((await web("/web/task/settle", "wrong", { id })).status, 401);
   });
 }
+
+if (phase === "residents") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const json = async (path, body) => {
+    const response = await web(path, KEY, body);
+    return { status: response.status, data: await response.json().catch(() => null) };
+  };
+  const ids = async () => (await json("/web/residents")).data.residents.map((r) => r.id);
+  const messages = async (prefix = "") => (await json(`${prefix}/web/messages`)).data.data;
+  const field = async (prefix, key) => (await json(`${prefix}/web/config`)).data.fields.find((f) => f.key === key);
+  const update = (text, messageId) => ({
+    update_id: messageId,
+    message: { message_id: messageId, date: Math.floor(Date.now() / 1000), text, from: { id: 42, is_bot: false, username: "her_test", first_name: "Her" },
+      chat: { id: 42, type: "private", username: "her_test", first_name: "Her" } }
+  });
+  const toBot = (prefix, secret, text) =>
+    fetch(`${WORKER}${prefix}/messengers/telegram/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-telegram-bot-api-secret-token": secret },
+      body: JSON.stringify(update(text, nextId++))
+    });
+
+  await step("at first there is only the default resident, and no address under /r/ answers", async () => {
+    assert.deepEqual(await ids(), ["default"]);
+    assert.equal((await json("/web/residents")).data.max, 8);
+    assert.equal((await web("/r/mochi/web/check", KEY)).status, 404);
+    assert.equal((await fetch(`${WORKER}/r/mochi/avatar/${"0".repeat(32)}`)).status, 404);
+    assert.equal((await web("/web/residents", "wrong")).status, 401);
+  });
+
+  await step("a new resident needs a proper id, not default, and is listed with its name", async () => {
+    assert.match((await json("/web/residents", { id: "Zhi Lai" })).data.error, /小写英文字母/);
+    assert.match((await json("/web/residents", { id: "default" })).data.error, /第一个住户/);
+    assert.match((await json("/web/residents", { id: "mochi", name: "名".repeat(21) })).data.error, /20/);
+    const added = await json("/web/residents", { id: "mochi", name: "麻薯" });
+    assert.equal(added.status, 200);
+    assert.deepEqual(added.data.residents.map((r) => [r.id, r.name]), [["default", "住户"], ["mochi", "麻薯"]]);
+    assert.match((await json("/web/residents", { id: "mochi" })).data.error, /已经有/);
+    const check = await json("/r/mochi/web/check");
+    assert.equal(check.status, 200);
+    assert.equal(check.data.id, "mochi");
+    assert.equal(check.data.name, "麻薯");
+    assert.equal((await json("/web/check")).data.name, "住户", "the default one keeps its name");
+  });
+
+  await step("/r/<id> opens the one web page on it, and the hands' script is the one script", async () => {
+    const page = await fetch(`${WORKER}/r/mochi`, { redirect: "manual" });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get("location"), `${WORKER}/?r=mochi`);
+    const hands = await fetch(`${WORKER}/r/mochi/hands.mjs`, { redirect: "manual" });
+    assert.equal(hands.headers.get("location"), `${WORKER}/hands.mjs`);
+  });
+
+  await step("its own settings: no bot, WeCom app or check-ins of the default one's, its id as its Aelios identity and space", async () => {
+    assert.equal((await field("/r/mochi", "TG_BOT_TOKEN")).workerHas, false);
+    assert.equal((await field("", "TG_BOT_TOKEN")).workerHas, true, "the default one still has the Worker's bot");
+    assert.equal((await field("/r/mochi", "AELIOS_IDENTITY")).fromWorker, "mochi");
+    assert.equal((await field("/r/mochi", "AELIOS_NAMESPACE")).fromWorker, "mochi");
+    assert.equal((await field("", "AELIOS_NAMESPACE")).fromWorker, "test-space");
+    assert.equal((await field("/r/mochi", "HEARTBEAT")).fromWorker, "0", "it does not check in until told to");
+    assert.equal((await field("/r/mochi", "TG_ALLOWED")).fromWorker, "@her_test", "who she is stays shared");
+    assert.equal((await field("/r/mochi", "TIME_ZONE")).fromWorker, "Asia/Shanghai");
+    assert.equal((await json("/r/mochi/web/config")).data.telegram.from, null);
+    await json("/r/mochi/web/models");
+    assert.equal((await log()).filter((e) => e.kind === "aelios.models").at(-1).identity, "mochi");
+    assert.equal((await json("/r/mochi/web/config", { key: "AELIOS_IDENTITY", text: "mochi2" })).status, 200);
+    assert.equal((await field("/r/mochi", "AELIOS_NAMESPACE")).fromWorker, "mochi2", "the space follows a saved identity");
+    assert.equal((await json("/r/mochi/web/config", { key: "AELIOS_IDENTITY", text: "" })).status, 200);
+  });
+
+  await step("its conversation is its own, and the sidebar learns when it last said something", async () => {
+    const said = await json("/r/mochi/web/say", { text: "你好麻薯" });
+    assert.deepEqual(said.data, { status: "completed" });
+    const own = await messages("/r/mochi");
+    assert.deepEqual(own.map((line) => line.role), ["user", "assistant"]);
+    assert.match(own[0].text, /你好麻薯/);
+    assert.equal((await messages()).length, 0, "nothing on the default one");
+    const list = (await json("/web/residents")).data.residents;
+    assert.ok(list.find((r) => r.id === "mochi").saidAt > Date.now() - 60000);
+    assert.equal(list.find((r) => r.id === "default").saidAt, 0);
+  });
+
+  await step("its own Telegram bot, pointed at its own address; the default bot's secret does not open it", async () => {
+    const token = "7654321:mochi-token-abcdefghijklmnopqrstuvwxyz0123";
+    const saved = await json("/r/mochi/web/config", { key: "TG_BOT_TOKEN", text: token });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.data.telegram.here, true);
+    const hook = (await log()).filter((e) => e.kind === "tg.setWebhook" && e.token === token).at(-1);
+    assert.equal(hook.body.url, `${WORKER}/r/mochi/messengers/telegram/webhook`);
+    await sleep(2500);
+    assert.equal((await toBot("/r/mochi", SECRET, "冒充")).status, 401);
+    const before = (await log()).filter((e) => e.kind === "tg.sendMessage").length;
+    assert.equal((await toBot("/r/mochi", hook.body.secret_token, "在吗麻薯")).status, 200);
+    const start = Date.now();
+    let replies = [];
+    while (Date.now() - start < 20000) {
+      replies = (await log()).filter((e) => e.kind === "tg.sendMessage").slice(before);
+      if (replies.length >= 2) break;
+      await sleep(300);
+    }
+    assert.ok(replies.length >= 2, JSON.stringify(replies));
+    assert.ok(replies.every((e) => e.token === token), "answered on its own bot");
+    assert.match(plain(replies[0].body.text), /在吗麻薯/);
+    assert.equal((await messages()).length, 0, "the default one heard nothing");
+  });
+
+  await step("its avatar and stickers are under its own address", async () => {
+    const upload = await fetch(`${WORKER}/r/mochi/web/avatar`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "image/png" }, body: PNG });
+    const avatar = (await upload.json()).avatar;
+    assert.match(avatar, /^\/r\/mochi\/avatar\/[0-9a-f]{32}$/);
+    assert.equal((await fetch(`${WORKER}${avatar}`)).status, 200);
+    assert.equal((await fetch(`${WORKER}${avatar.replace("/r/mochi", "")}`)).status, 404, "not the default one's");
+    assert.equal((await json("/web/residents")).data.residents.find((r) => r.id === "mochi").avatar, avatar);
+  });
+
+  await step("one push key and one device list for the whole site: a device that turned it on once gets every resident's", async () => {
+    const first = (await json("/web/push")).data.publicKey;
+    assert.ok(first);
+    assert.equal((await json("/r/mochi/web/push")).data.publicKey, first);
+    const point = crypto.createECDH("prime256v1");
+    point.generateKeys();
+    const subscription = { endpoint: "https://push.invalid/device-1", keys: { p256dh: point.getPublicKey().toString("base64url"), auth: crypto.randomBytes(16).toString("base64url") } };
+    assert.equal((await json("/web/push/subscribe", { subscription })).data.devices, 1, "turned on while the default one was open");
+    assert.equal((await json("/r/mochi/web/push")).data.devices, 1, "the other resident sees the same device");
+    const tried = (await json("/r/mochi/web/push/test", {})).data;
+    const left = (await json("/web/push")).data.devices;
+    assert.equal(tried.sent + tried.failed.length + (1 - left), 1, `the other resident pushed to it: ${JSON.stringify(tried)}`);
+    if (left) assert.equal((await json("/r/mochi/web/push/unsubscribe", { endpoint: subscription.endpoint })).data.devices, 0);
+    assert.equal((await json("/web/push")).data.devices, 0, "turned off from either page, it is off for the site");
+  });
+
+  await step("its task reports and MCP sign-ins come back to its own address", async () => {
+    const tasks = (await json("/r/mochi/web/tasks")).data;
+    assert.equal(tasks.origin, `${WORKER}/r/mochi`);
+    assert.equal((await json("/web/tasks")).data.origin, WORKER);
+  });
+
+  await step("at most 8 besides the default one", async () => {
+    for (let i = 2; i <= 8; i += 1) assert.equal((await json("/web/residents", { id: `r${i}` })).status, 200);
+    assert.match((await json("/web/residents", { id: "r9" })).data.error, /最多/);
+    for (let i = 2; i <= 8; i += 1) assert.equal((await json("/web/residents/remove", { id: `r${i}` })).status, 200);
+  });
+
+  await step("deleted: off the list, its addresses gone, its bot let go; added again it starts empty", async () => {
+    assert.equal((await json("/web/residents/remove", { id: "nobody" })).status, 404);
+    assert.equal((await json("/web/residents/remove", { id: "default" })).status, 404, "the default one is never deleted");
+    const removed = await json("/web/residents/remove", { id: "mochi" });
+    assert.equal(removed.status, 200);
+    assert.deepEqual(removed.data.residents.map((r) => r.id), ["default"]);
+    assert.equal((await web("/r/mochi/web/check", KEY)).status, 404);
+    assert.ok((await log()).some((e) => e.kind === "tg.deleteWebhook" && e.token === "7654321:mochi-token-abcdefghijklmnopqrstuvwxyz0123"));
+    assert.equal((await json("/web/residents", { id: "mochi" })).status, 200);
+    assert.equal((await messages("/r/mochi")).length, 0);
+    assert.equal((await json("/r/mochi/web/config")).data.telegram.from, null);
+    assert.equal((await json("/r/mochi/web/check")).data.avatar, null);
+    assert.equal((await json("/web/check")).data.id, "default");
+  });
+
+  await step("while it is being deleted its id stays taken and its addresses are gone; free again once it is wiped", async () => {
+    assert.equal((await json("/r/mochi/web/config", { key: "RESIDENT_NAME", text: "旧的" })).status, 200);
+    assert.equal((await json("/r/mochi/web/config", { key: "TG_BOT_TOKEN", text: "7654321:mochi-token-abcdefghijklmnopqrstuvwxyz0123" })).status, 200);
+    await sleep(1500); // a new bot token starts the resident again a second later
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ slowDeleteWebhook: 1500 }) });
+    try {
+      const removing = json("/web/residents/remove", { id: "mochi" });
+      await sleep(400);
+      assert.match((await json("/web/residents", { id: "mochi", name: "新的" })).data.error, /还在删/);
+      assert.deepEqual(await ids(), ["default"], "off the list at once");
+      assert.equal((await web("/r/mochi/web/check", KEY)).status, 404);
+      assert.equal((await removing).status, 200);
+    } finally {
+      await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ slowDeleteWebhook: 0 }) });
+    }
+    assert.equal((await json("/web/residents", { id: "mochi", name: "新的" })).status, 200);
+    const check = await json("/r/mochi/web/check");
+    assert.equal(check.data.name, "新的", "nothing of the old one");
+    assert.equal((await json("/r/mochi/web/config")).data.telegram.from, null);
+  });
+}
+

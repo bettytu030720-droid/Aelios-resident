@@ -142,7 +142,7 @@ Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Te
 - **Its page**: tap its avatar at the top left to change its picture and name, the model and the persona, and to see its memory, alarms, threads and usage.
 - Night and day themes, or follow the system (at the bottom of settings). It works well on a phone.
 
-**As an app with notifications**: on a phone, add the web door to the home screen (Safari: Share → Add to Home Screen; Chrome: Install app). Then turn on notifications from the card the chat shows, or under **Notifications** (「通知」) in settings. By default (`WEB_PUSH`) it notifies you when it reaches out, a thread finishes or an alarm rings and that message did not reach you on Telegram or WeCom, and when it answers on the web after you have left the page for 20 seconds. On iPhone and iPad, notifications work only from the home-screen icon (iOS 16.4 or later); in the Telegram Mini App there are none. The keys that sign the notifications are made by the resident and stay in it.
+**As an app with notifications**: on a phone, add the web door to the home screen (Safari: Share → Add to Home Screen; Chrome: Install app). Then turn on notifications from the card the chat shows, or under **Notifications** (「通知」) in settings. By default (`WEB_PUSH`) it notifies you when it reaches out, a thread finishes or an alarm rings and that message did not reach you on Telegram or WeCom, and when it answers on the web after you have left the page for 20 seconds. On iPhone and iPad, notifications work only from the home-screen icon (iOS 16.4 or later); in the Telegram Mini App there are none. The keys that sign the notifications are made by the first resident and stay in it, along with the list of devices that turned notifications on; the other residents sign with the same pair and send to the same devices.
 
 ### Telegram
 
@@ -208,6 +208,18 @@ Tap its avatar at the top left of the web door, then the pen on the **Persona** 
 - The last 10 versions are kept and can be restored with one click.
 - If you use the API key that comes with Max, keep the words "Claude Code" out of the persona.
 - The resident's built-in chat rules, letter prompt and check-in prompts are written in English and assume nothing about who you are or your gender. It chats in the language the persona is written in.
+
+### More than one resident
+
+One Worker can house several residents, each with its own persona, model, settings, conversation, stickers, alarms and Telegram bot. Their avatars sit in a column on the left of the web door (on a phone, tap ☰ at the top left); tap one to switch to it. The **+** at the bottom makes a new one: give it a name and an id (lowercase letters, like `mochi`). A dot on an avatar means that resident said something since you last had it open.
+
+- **The first resident** stays exactly as it was: same address, settings and bot. If you never make another, nothing changes.
+- **A new resident's addresses** are under `/r/<id>`: its web page is `/?r=<id>`, and its Telegram webhook, WeCom message URL, thread reports and MCP sign-ins all carry that part. The resident fills them in itself.
+- **Memory**: it shares the first resident's Aelios address and key, speaks as the Aelios identity named after its id (`/<id>/`) and keeps its memories in that identity's space. Create the identity in Aelios' admin page and give it its main models; change the identity on its settings page under Long-term memory. The key must be Aelios' main key, `CHATBOX_API_KEY`: the other keys read and write only the default space, where two residents' memories would mix.
+- **Settings it never takes from Cloudflare**: the Telegram bot token, the WeCom app (AgentId, Secret, Token, EncodingAESKey), the claude.ai scheduled task's trigger URL and token, the Aelios identity and space, its name, and check-ins and heartbeats (a new resident does not reach out until you turn it on). The Cloudflare variables for these are the first resident's only. Everything else (providers, the Claude box, search, voice, the GitHub token, the time zone, who may talk to it) follows Cloudflare until set on its page.
+- **Its own bot**: make another bot with @BotFather and paste its token on the new resident's settings page under Chat channels → Telegram. It connects the bot to `/r/<id>` itself, and the bot's menu button opens the Mini App on it. For WeCom, make another app and use the message URL shown on its settings page.
+- **Notifications**: the whole web door has one key pair and one list of devices, so a device that turned notifications on once, on any resident's page, gets every resident's, and tapping one opens that resident. Turning them off on one page turns them off for all.
+- **Deleting one**: open its page (tap its avatar), then **Delete this resident** (「删除这个住户」) at the bottom, and type its id to confirm. Its conversation, settings, stickers and alarms are deleted and its bot is let go; its memories in Aelios stay. It is off the list at once, but its id stays taken until everything is wiped; if wiping fails, it is tried again a few minutes later. The first resident cannot be deleted. Up to 8 more besides the first.
 
 ### The settings page
 

@@ -169,6 +169,8 @@ const server = http.createServer(async (req, res) => {
     const method = tg[2];
     log.push({ kind: `tg.${method}`, body: json, token });
     if (token.includes(":bad")) return reply({ ok: false, error_code: 401, description: "Unauthorized" }, 401);
+    // faults.slowDeleteWebhook: milliseconds a bot takes to let go, to hold a resident's deletion open.
+    if (method === "deleteWebhook" && faults.slowDeleteWebhook) await new Promise((resolve) => setTimeout(resolve, faults.slowDeleteWebhook));
     const chat = { id: Number(json?.chat_id ?? 42), type: "private" };
     const message = () => ({ message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, text: json?.text });
     switch (method) {
