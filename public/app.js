@@ -827,8 +827,13 @@ function resident() {
       this.openLetter = next;
       this.resettle();
     },
+    // Only this resident's own sticker addresses (another resident's start with /r/<id>).
     stickersOf(line) {
-      return (line.stickers || []).filter(function (sticker) { return /^\/stickers\/[0-9a-f]{24}$/.test(sticker.url); });
+      var prefix = this.residentPrefix();
+      return (line.stickers || []).filter(function (sticker) {
+        var url = String(sticker.url || '');
+        return url.slice(0, prefix.length) === prefix && /^\/stickers\/[0-9a-f]{24}$/.test(url.slice(prefix.length));
+      });
     },
     picsOf(line) {
       var list = [];
