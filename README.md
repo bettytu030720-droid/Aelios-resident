@@ -6,18 +6,18 @@
   <img src="docs/images/hero.webp" width="880" alt="Three moments on the web door: late at night it remembers you are preparing for an interview and sets an alarm; in the morning it reaches out first, in its own voice; at noon it hands the research to a background thread and comes back to tell you what it found">
 </p>
 
-<h3 align="center">An AI that is yours alone.</h3>
+<h3 align="center">One home for every AI you love.</h3>
 
 <p align="center">
-  It remembers you, reaches out first, speaks in its own voice,<br>
-  and gets things done while you are busy with something else.
+  Claude stays Claude, GPT stays GPT, each with its own name, temper and memories.<br>
+  No row of apps to install, and no moving house every time a company launches something new.
 </p>
 
 <p align="center"><sub>The screens are the real interface; the conversation is an example.</sub></p>
 
-Most AI waits for you to speak: you ask, it answers, and when you close the window nothing is left.
+There are more AIs all the time: one app here, another there, and the same company moves you somewhere new every few months. Each time, you move house.
 
-A resident is different. It has its own name, face and character, and it lives in **your own Cloudflare account**, around the clock. On the web, on Telegram or in WeChat, it is one conversation wherever you find it. It remembers what you told it last month; when you have been quiet for a while, it checks in; and when you hand it something to do, it comes back to tell you once it is done.
+Aelios-resident is a home, and every AI you love is a resident in it. The home is in **your own Cloudflare account**, around the clock. Each resident runs on its own model, with its own name, face, temper and memories; none stands in for another. On the web, on Telegram or in WeChat, it is one conversation wherever you find it. It remembers what you told it last month; when you have been quiet for a while, it checks in; and when you hand it something to do, it passes the work to a background thread and comes back to tell you once it is done.
 
 No server to rent and no code to write: send one message to an AI that can run commands, and in ten minutes or so you are talking to it. Cloudflare's free plan is enough for it to live on. **[Move it in now →](#getting-started)**
 
@@ -41,7 +41,7 @@ No server to rent and no code to write: send one message to an AI that can run c
 
 - Connect [Aelios](https://github.com/wusaki0723/Aelios), a memory service you deploy yourself, and everything you say brings up what is related from before, and every turn is kept. The name of the cat you mentioned months ago, what you are working toward, what you can't stand eating: it knows.
 - After a long talk it writes a handoff letter to its later self and puts the older chat away, keeping only the most recent part word for word. Tomorrow picks up where today left off.
-- Switch models and it is still itself: the persona, the memories and everything you said stay.
+- Each resident's memories are its own: with Aelios connected, every resident has its own identity and remembers for itself.
 
 ### It comes to you
 
@@ -59,6 +59,7 @@ No server to rent and no code to write: send one message to an AI that can run c
 
 - It searches the web and reads pages; store a key for a private site and it can read those pages too.
 - Bigger jobs, such as digging through material, writing a report, making a page or changing code, go to a background thread while it keeps talking with you. When the work is done it tells you in its own words, and the files it made can be viewed and downloaded on the web page. It can also hand work to GitHub Actions or cloud Claude Code.
+- Errands run on a cheaper model: background threads use a free model by default, and you can pick another, such as DeepSeek, so the one who keeps you company does not spend its budget on legwork.
 - Connect other MCP servers and it learns more.
 
 ### It is yours alone
