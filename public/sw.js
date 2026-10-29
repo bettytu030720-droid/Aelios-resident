@@ -31,7 +31,8 @@ self.addEventListener('notificationclick', (event) => {
     (async () => {
       const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const page of pages) {
-        if (new URL(page.url).origin === self.location.origin && 'focus' in page) {
+        // Not a page framed inside another site (the Mini App in Telegram's web app): open a window of its own.
+        if (new URL(page.url).origin === self.location.origin && page.frameType !== 'nested' && 'focus' in page) {
           // An open page switches to the resident the notification is from (?r=<id>, src/residents.ts).
           page.postMessage({ open: url });
           return page.focus();

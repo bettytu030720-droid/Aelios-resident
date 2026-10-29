@@ -238,7 +238,7 @@ const AVATAR_MAX_BYTES = 512 * 1024;
 const WEB_AWAY_MS = 20_000;
 // Devices that can get notifications at once.
 const PUSH_DEVICES_MAX = 10;
-// A deleted resident whose wipe failed is tried again after this long (residentWipeAgain).
+// A deleted resident is wiped again after this long if the first wipe did not finish (residentWipeAgain).
 const RESIDENT_WIPE_RETRY_SECONDS = 5 * 60;
 // Set while a resident is being deleted; only the wipe removes it (residentForgotten).
 const FORGETTING = "resident_forgetting";
@@ -4272,7 +4272,11 @@ export class Resident extends Think<Env> {
     if (this.residentId !== DEFAULT_RESIDENT) return { error: "住户名单在第一个住户那里", status: 400 };
     const row = this.residentRows().find((row) => row.id === id);
     if (!row) return { error: "没有这个住户", status: 404 };
-    if (!row.gone) this.sql`UPDATE res_residents SET gone = ${Date.now()} WHERE id = ${id}`;
+    if (!row.gone) {
+      // The next try is set before anything else, so a wipe cut off at any point (a deploy, an eviction) still ends.
+      await this.schedule(RESIDENT_WIPE_RETRY_SECONDS, "residentWipeAgain", { id, wait: RESIDENT_WIPE_RETRY_SECONDS });
+      this.sql`UPDATE res_residents SET gone = ${Date.now()} WHERE id = ${id}`;
+    }
     return (await this.residentWiping(id)) ? { ok: true } : { error: "它已经下线了，东西还没删干净，过几分钟会自己再删一次", status: 502 };
   }
 
@@ -4303,14 +4307,19 @@ export class Resident extends Think<Env> {
       return true;
     } catch (error) {
       console.log("residents: not wiped yet, trying again later", { id, error: String(error) });
-      await this.schedule(RESIDENT_WIPE_RETRY_SECONDS, "residentWipeAgain", { id }, { idempotent: true }).catch(() => undefined);
       return false;
     }
   }
 
-  /** The retry of a wipe that failed, unless it has been wiped since. */
-  async residentWipeAgain(payload: { id: string }): Promise<void> {
-    if (this.residentRows().some((row) => row.id === payload.id && row.gone)) await this.residentWiping(payload.id);
+  /**
+   * The next try at a wipe, unless it is done. It sets the one after first, waiting twice as long each time up to
+   * six hours, so tries never stop while something of the resident is left. Once done, the one left does nothing.
+   */
+  async residentWipeAgain(payload: { id: string; wait?: number }): Promise<void> {
+    if (!this.residentRows().some((row) => row.id === payload.id && row.gone)) return;
+    const wait = Math.min((payload.wait ?? RESIDENT_WIPE_RETRY_SECONDS) * 2, 6 * 60 * 60);
+    await this.schedule(wait, "residentWipeAgain", { id: payload.id, wait });
+    await this.residentWiping(payload.id);
   }
 
   /**

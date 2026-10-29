@@ -422,10 +422,13 @@ function resident() {
       // A notification tapped while this page is open: the page goes to the resident it is from.
       if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', function (event) {
         var open = event.data && event.data.open;
-        if (!open || self.miniApp || !self.authed) return;
+        if (!open || self.miniApp) return;
         var id = '';
         try { id = new URL(open, location.origin).searchParams.get('r') || ''; } catch (e) {}
-        self.switchResident(RESIDENT_ID.test(id) ? id : 'default');
+        id = RESIDENT_ID.test(id) ? id : 'default';
+        // Not in yet: it opens on that resident once the key is entered.
+        if (!self.authed) self.resident = id;
+        else self.switchResident(id);
       });
       fetch('/models.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
         if (!data) return;
