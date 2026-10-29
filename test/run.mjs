@@ -3058,19 +3058,20 @@ if (phase === "web") {
 
   await step("search: any words of hers or its, newest first, a page at a time, and the messages around a hit", async () => {
     const find = (q, before) => json(`/web/search?q=${encodeURIComponent(q)}${before ? `&before=${before}` : ""}`);
-    await say({ text: '那家店叫"蓝月亮"\n记得带 100% 的伞_明天 D:\\照片 Moonlight' });
+    await say({ text: '那家店叫"蓝月亮"\n记得带 100% 的伞_明天 D:\\照片 Moonlight CAFÉ  au lait' });
     const moon = (await find("蓝月亮")).data;
     assert.equal(moon.next, null);
     const mine = moon.results.find((hit) => hit.role === "user");
     assert.ok(mine, JSON.stringify(moon));
     assert.equal(mine.match, "蓝月亮");
     assert.equal(mine.before, '那家店叫"');
-    assert.equal(mine.after, '" 记得带 100% 的伞_明天 D:\\照片 Moonlight', "on one line, without the time stamp");
+    assert.equal(mine.after, '" 记得带 100% 的伞_明天 D:\\照片 Moonlight CAFÉ au lait', "on one line, without the time stamp");
     assert.equal(typeof mine.at, "number");
     assert.ok(moon.results.some((hit) => hit.role === "assistant"), "its words too");
     assert.equal(moon.results[0].role, "assistant", "newest first");
-    // Quotes, line breaks and backslashes are escaped in the stored JSON; % and _ are LIKE's wildcards.
-    for (const q of ['"蓝月亮"', "100%", "伞_明", "D:\\照片", "moonlight", "  蓝月亮  "]) {
+    // Quotes, line breaks and backslashes are escaped in the stored JSON; % and _ are LIKE's wildcards; across a
+    // line break and a run of spaces, and a letter outside ASCII in the other case (test/chat-search.mjs has more).
+    for (const q of ['"蓝月亮"', "100%", "伞_明", "D:\\照片", "moonlight", "  蓝月亮  ", '蓝月亮" 记得', "café au lait"]) {
       const { status, data } = await find(q);
       assert.equal(status, 200, q);
       assert.ok(data.results.some((hit) => hit.id === mine.id), `${q}: ${JSON.stringify(data)}`);
@@ -3086,7 +3087,7 @@ if (phase === "web") {
     const at = around.lines.findIndex((line) => line.hit);
     assert.ok(at > 0, JSON.stringify(around));
     assert.equal(around.lines[at].id, mine.id);
-    assert.equal(around.lines[at].text, '那家店叫"蓝月亮"\n记得带 100% 的伞_明天 D:\\照片 Moonlight', "as she wrote it");
+    assert.equal(around.lines[at].text, '那家店叫"蓝月亮"\n记得带 100% 的伞_明天 D:\\照片 Moonlight CAFÉ  au lait', "as she wrote it");
     assert.equal(around.lines[at + 1]?.role, "assistant", "its reply after it");
     assert.ok(around.lines.length <= 9);
     assert.equal((await json("/web/search/around?id=nope")).status, 404);
