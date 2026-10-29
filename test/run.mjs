@@ -13,7 +13,8 @@
 //   stickers sticker packs: imported from a zip and from Telegram, sent, drawn, shown on the web page
 //   voice    voice messages: heard, answered in a voice, send_voice, each provider's request, falling back to text
 //   tasks    后台帮忙: a job sent through a scheduled task's trigger, its reports, the cards, the limits; threads here,
-//            what the web page shows of them, their files, and writing to one directly
+//            what the web page shows of them, their files, and writing to one directly; the resident finding its
+//            threads, their files and the chat again
 //   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
 //   sites    keys for sites web_fetch reads, set on the settings page
 //   heartbeat  going quiet while the chat is short (start wrangler with --var LETTER_IDLE_MINUTES:0.05
@@ -1440,8 +1441,8 @@ if (phase === "tasks" || phase === "tasks-quiet") {
   };
 
   if (phase === "tasks") {
-    await step("off by default: no cloud_task tool even with the trigger filled in, until it is turned on; a wrong address is not taken", async () => {
-      assert.match(await ask("云端工具有哪些"), /没有 cloud_task/);
+    await step("off by default: no cloud_task tool, nor the ones that find earlier work, even with the trigger filled in, until it is turned on; a wrong address is not taken", async () => {
+      assert.match(await ask("云端工具有哪些"), /没有 cloud_task。找不了旧线程和聊天记录。/);
       const bad = await web("/web/config", KEY, { key: "CLOUD_TASK_URL", text: "https://example.com/fire" });
       assert.equal(bad.status, 400);
       assert.match((await bad.json()).error, /API 触发网址/);
@@ -1451,7 +1452,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(await ask("/status"), /后台帮忙：关/);
       assert.deepEqual([(await tasks()).on, (await tasks()).configured], [false, false]);
       await set({ CLOUD_TASKS: "on" });
-      assert.match(await ask("云端工具有哪些"), /有 cloud_task/);
+      assert.match(await ask("云端工具有哪些"), /有 cloud_task。也能找旧线程和聊天记录。/);
     });
 
     await step("the settings page gives the scheduled task's prompt, with this resident's address in it", async () => {
@@ -1665,6 +1666,36 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal(await file.text(), "<h1>短标题</h1>");
       assert.equal((await web(`/web/thread/file?id=${localThread}&path=/nope.txt`, KEY)).status, 404);
       assert.equal((await fetch(`${WORKER}/web/thread/file?id=${localThread}&path=/page.html`)).status, 401);
+    });
+
+    await step("the resident finds its threads again by their words and their files' names, reads a file, and searches the chat", async () => {
+      const today = (await tasks()).today;
+      const found = await ask("找找线程 page.html");
+      assert.ok(found.includes(`"id":"${localThread}"`) && found.includes('"files":["/page.html"]'), found);
+      assert.ok(!found.includes(`"id":"${first.id}"`), "a thread without those words is left out");
+      assert.ok(found.includes('"where":"local"') && found.includes('"tasks":2'), found);
+      assert.ok(!found.includes("接通测试"), "tests are not threads");
+      // Words from the job of each: both threads, the newest first, and its id is all a follow-up needs.
+      const both = await ask("找找线程 README recieve");
+      assert.ok(both.indexOf(`"id":"${localThread}"`) >= 0 && both.indexOf(`"id":"${localThread}"`) < both.indexOf(`"id":"${first.id}"`), both);
+      assert.match(await ask("找找线程 没有这种词"), /No thread has all of those words/);
+
+      const read = await ask(`看看线程文件 ${localThread} page.html`);
+      assert.ok(read.includes('"path":"/page.html"') && read.includes("短标题"), read);
+      assert.match(await ask(`看看线程文件 ${localThread} /nope.txt`), /No file \/nope\.txt in that thread/);
+      assert.match(await ask(`看看线程文件 ${first.id} page.html`), /has no files here/);
+      assert.match(await ask(`读完文件再派活 ${localThread}`), /has read a web page, a thread's file/);
+      assert.equal((await tasks()).today, today, "nothing went out");
+
+      // Her three questions about the tools, not this one, which has the words too.
+      const searched = await ask("翻翻聊天 云端工具");
+      assert.equal(searched.match(/"who":"them"/g)?.length, 3, searched);
+      assert.ok(searched.includes('"text":"云端工具有哪些"'), searched);
+      const id = searched.match(/"id":"([^"]+)"/)?.[1];
+      assert.ok(id, searched);
+      const around = await ask(`翻翻聊天前后 ${id}`);
+      assert.ok(around.includes('"hit":true') && around.includes("有 cloud_task"), around);
+      assert.match(await ask("翻翻聊天 没人说过这句话"), /Nothing said has those words/);
     });
 
     await step("GitHub Actions with one token: the resident sets up a private repository, starts runs there, and lends a run its GitHub token and model", async () => {

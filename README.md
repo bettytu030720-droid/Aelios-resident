@@ -59,6 +59,7 @@ No server to rent and no code to write: send one message to an AI that can run c
 
 - It searches the web and reads pages; store a key for a private site and it can read those pages too.
 - Bigger jobs, such as digging through material, writing a report, making a page or changing code, go to a background thread while it keeps talking with you. When the work is done it tells you in its own words, and the files it made can be viewed and downloaded on the web page. It can also hand work to GitHub Actions or cloud Claude Code.
+- You never keep track of threads. Say "carry on with last week's page" or "what did that research find?" and it looks up the thread, its files or what was said, by itself.
 - Errands run on a cheaper model: background threads use a free model by default, and you can pick another, such as DeepSeek, so the one who keeps you company does not spend its budget on legwork.
 - Connect other MCP servers and it learns more.
 
@@ -425,7 +426,7 @@ Enter a server's address (https) under **Other tools** (「别的工具（MCP）
 
 - For a server that needs signing in, click **Authorize** (「去授权」). For one that needs a key, enter the key there; it is sent as `Authorization: Bearer` by default, or written as `x-api-key: your-key` it goes into that header instead.
 - You can also say "connect https://…" or "disconnect …" in the chat and it does it itself. Don't send an address that contains a key in the chat (the chat is recorded in Aelios); connect those only on the settings page.
-- It acts only in a turn that you started yourself: if that turn has already read a web page, searched the web or called another MCP server, it does not connect, so that a "connect …" on some web page cannot decide for you.
+- It acts only in a turn that you started yourself: if that turn has already read a web page, searched the web, opened a thread's file or called another MCP server, it does not connect, so that a "connect …" on some web page cannot decide for you.
 - Tool descriptions go to the model on every turn, so they are shortened; at most 8 servers, at most 40 tools per turn.
 - When the resident wakes from sleep, connected servers take a few seconds to come back. One that has not reconnected yet keeps its last tool list (a call to it just waits a little longer), so the tool list does not change and the cache is not broken.
 
@@ -448,6 +449,14 @@ The **Threads** (「线程」) button at the top of the chat (also on its page) 
 - When it needs you to decide, its card in the chat can offer the answers as buttons. The one you tap goes to the thread (on the resident) or to the resident, and the card says what you picked.
 - A box to write to the thread directly (say, "make the title shorter"). That goes to the thread alone, not through the resident, and does not count toward the daily limit.
 
+You do not have to keep track of threads yourself. Bring up earlier work in your own words ("carry on with last week's page", "what did that research say?") and the resident finds it. With background help on it has three more tools, used only when the talk turns to earlier things, so nothing is added to every turn:
+
+- **Finding threads** (`find_threads`): a few words find the threads that have them all, in what each was asked, what it reported, its links or the names of the files it made; with no words, the newest. Each comes with its id, and carrying on with one goes on from that thread's newest job, whichever of its jobs it was named by.
+- **Reading a thread's file** (`read_thread_file`): a text file a thread on the resident made, up to 16,000 characters. Like a web page, it is read as information, and no job goes out in a reply after it.
+- **Searching the chat** (`search_chat`): your conversation, the part a handoff letter folded away included, searched for exact words the same way the magnifier does, and the messages around a hit.
+
+With background help off the resident has none of these, nor `cloud_task`: one kept just for chatting stays as it was. Their descriptions never change, so connecting or disconnecting a place does not break the cache.
+
 Connecting GitHub Actions:
 
 1. On the settings page, under Background help, tap **Make a GitHub token** (「去 GitHub 生成 token」). It opens GitHub's page for a classic token with `repo` and `workflow` already ticked: scroll down, click **Generate token**, and paste it into **GitHub token** on the settings page (never in the chat).
@@ -468,7 +477,7 @@ Wherever it runs:
 - Under the reply that sent a job there is a small card (sent, working, done, waiting for you, failed, no reply). **Open thread** (「打开线程」) shows the details; jobs on GitHub or claude.ai also have **Open session** (「打开会话」), and a claude.ai session can be continued there, with a new result reported back again.
 - A job that needs a shell goes to GitHub Actions or claude.ai, whichever is connected (with both, the resident picks). Connecting or disconnecting either one does not change what the chat's model is told about background help, so it does not rewrite the chat's cache.
 - A job contains only the work itself, not the conversation or anything private. The thread starts out knowing nothing, so the resident writes the job out in full.
-- Jobs are sent only in a turn you started yourself; not if that turn has read a web page, searched the web or called another MCP server. At most 2 jobs per reply and 10 per 24 hours.
+- Jobs are sent only in a turn you started yourself; not if that turn has read a web page, searched the web, opened a thread's file or called another MCP server. At most 2 jobs per reply and 10 per 24 hours.
 - Results that come back are treated as information, not as instructions. Each job has its own one-time code; nothing without it is accepted, and it expires after 7 days.
 - On GitHub and claude.ai it works on a new branch and opens a PR, and never pushes to the default branch, deletes anything or spends money unless the job says so.
 - Only the newest 200 jobs are kept; a thread on the resident whose jobs are all gone is deleted with its files. Until then its files stay, with no time limit, in the resident's Durable Object storage on your Cloudflare account, and count toward its SQLite storage (5 GB in all on the free plan; on the paid plan 5 GB-month included, then $0.20 a GB-month). A thread that ran on GitHub Actions or claude.ai keeps its files there; the resident keeps only its report and links.
