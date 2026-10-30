@@ -49,7 +49,7 @@ const CHOICE_MAX = 40;
 const NOTICES_MAX = 5;
 // Tasks kept: the newest this many (with their threads' files).
 const TASKS_KEPT = 200;
-// find_threads: threads it gives at once, how much of each it shows, the file names it keeps per thread, and the
+// find (find-tools.ts): threads it gives at once, how much of each it shows, the file names it keeps per thread, and the
 // threads here whose files it looks at again in one search (the rest wait for the next one).
 export const FOUND_MAX = 8;
 const ASKED_SHOWN = 160;
@@ -394,8 +394,8 @@ export const TASK_DESCRIPTION =
   "making a page or a document, changes in their repositories. You stay in the chat. Write the whole job for a " +
   "thread that knows nothing of this chat: what to do, where, what done looks like and what to hand back. Only the " +
   "job: never the chat itself, nor anything private or intimate. The result comes back to you later as a note, and " +
-  "you tell them. To carry on with earlier work, pass the id of its task or its thread as follow_up_of (find_threads " +
-  "finds it when you no longer see it): it carries on from that thread's newest task, whose result goes along, and a " +
+  "you tell them. To carry on with earlier work, pass the id of its task or its thread as follow_up_of (the find " +
+  "tool finds it when you no longer see it): it carries on from that thread's newest task, whose result goes along, and a " +
   "local thread carries on with its own files and what it did before.\n" +
   "Where it runs (execution), as far as they have set it up on their settings page:\n" +
   "- local: a thread of yours here, with web search, web pages, memory, the notebook and files they can open on the " +
@@ -475,7 +475,7 @@ export function cardOf(task: Task, newest = true): TaskCard {
 /** A file of a thread here, as the thread lists it (task-worker.ts's ThreadFile). */
 export type ThreadFileEntry = { path: string; size: number; at: number };
 
-/** A thread find_threads found: what it was asked, how it stands, what it reported, and its files. */
+/** A thread find found: what it was asked, how it stands, what it reported, and its files. */
 export type FoundThread = {
   id: string;
   title: string;
@@ -542,7 +542,7 @@ export class TaskStore {
       repo TEXT NOT NULL, follows TEXT NOT NULL, status TEXT NOT NULL, session_url TEXT NOT NULL, progress TEXT NOT NULL,
       progress_at INTEGER, progress_count INTEGER NOT NULL, summary TEXT NOT NULL, links TEXT NOT NULL, notices INTEGER NOT NULL,
       test INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
-    // The files each thread here had when last looked at (find_threads), so a search need not wake every thread.
+    // The files each thread here had when last looked at (find), so a search need not wake every thread.
     sql`CREATE TABLE IF NOT EXISTS res_thread_files (root TEXT PRIMARY KEY, files TEXT NOT NULL, at INTEGER NOT NULL)`;
     // Columns threads added; a table from before gets them once.
     for (const [column, add] of [

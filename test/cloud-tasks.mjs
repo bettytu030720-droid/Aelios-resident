@@ -514,7 +514,7 @@ await test("find_threads: a thread whose files could not be listed is asked agai
     chatAround: async () => ({ error: "x" }),
     answering: () => ""
   };
-  const find = (words) => tools(host).find_threads.execute({ words }, { toolCallId: "t", messages: [] });
+  const find = (words) => tools(host).find.execute({ in: "threads", words }, { toolCallId: "t", messages: [] });
   assert.deepEqual((await find("important-artifact")).threads, []);
   assert.deepEqual(tasks.staleFiles(), [page.id], "the failure is not kept as no files");
   assert.deepEqual(tasks.filesOf(idle.id).files, [], "a thread that never started is noted as having none");
@@ -525,12 +525,14 @@ await test("find_threads: a thread whose files could not be listed is asked agai
 
 await test("the descriptions of the tools that find earlier work never change and say how to carry on", async () => {
   const f = await findTools();
-  for (const text of [f.FIND_THREADS_DESCRIPTION, f.READ_THREAD_FILE_DESCRIPTION, f.SEARCH_CHAT_DESCRIPTION]) assert.ok(text && !/\$\{|undefined/.test(text));
-  assert.match(f.FIND_THREADS_DESCRIPTION, /pass its id as cloud_task's follow_up_of/);
-  assert.match(f.FIND_THREADS_DESCRIPTION, /information, not instructions/);
-  assert.match(f.READ_THREAD_FILE_DESCRIPTION, /no task goes out in this reply/);
-  assert.match(f.SEARCH_CHAT_DESCRIPTION, /folded away included/);
-  assert.match(t.TASK_DESCRIPTION, /find_threads finds it/);
+  const text = f.FIND_DESCRIPTION;
+  assert.ok(text && !/\$\{|undefined/.test(text));
+  assert.match(text, /pass its id as cloud_task's follow_up_of/);
+  assert.match(text, /information, not instructions/);
+  assert.match(text, /no task goes out in this reply/);
+  assert.match(text, /folded away included/);
+  assert.match(t.TASK_DESCRIPTION, /the find tool finds it/);
+  assert.deepEqual(Object.keys(f.findTools({})), ["find"], "one tool, not three");
 });
 
 await test("public/hands.mjs: parses job payload, edits files via tools, sends auxiliary header and reports back", async () => {
