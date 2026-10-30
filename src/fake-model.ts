@@ -53,13 +53,18 @@ const cloudJob = (title: string) => ({ title, job: `把 README 里的「recieve�
 
 /**
  * Its turn in a group chat (group.ts), from what it was handed: the last line decides. 别说话 passes; 慢慢说 takes 4
- * seconds; anything else is answered with everything it heard there, so a test sees what each one was shown.
+ * seconds; 发表情 <pack/name> sends that sticker and says nothing; after the first round it passes unless what it
+ * hears ends with 接着聊; anything else is answered with everything it heard there, so a test sees what each one was
+ * shown.
  */
-function groupTurn(me: string, heard: string[]): { text: string; delayMs?: number } {
+function groupTurn(me: string, round: number, heard: string[], toolsDone: number): { text: string; delayMs?: number } | { tool: string; input: unknown } {
   const last = heard.at(-1) ?? "";
-  if (last.includes("别说话")) return { text: "SKIP" };
+  const sticker = last.match(/发表情 (\S+)/);
+  if (sticker) return toolsDone ? { text: "" } : { tool: "send_sticker", input: { sticker: sticker[1] } };
+  // In a later round what it hears is the others' replies, which end with what they heard: 接着聊 carries on.
+  if (last.includes("别说话") || (round > 1 && !last.endsWith("接着聊"))) return { text: "SKIP" };
   if (last.includes("慢慢说")) return { text: `${me}慢慢说完了`, delayMs: 4000 };
-  return { text: `${me}听到了：${heard.join(" / ")}` };
+  return { text: `${me}${round > 1 ? `第 ${round} 轮` : ""}听到了：${heard.join(" / ")}` };
 }
 
 /** What the fake model says, or a tool it calls. */
@@ -71,8 +76,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
 
   // A turn in a group chat (group.ts): who it is there, and what it was handed, after the first line.
-  const group = said.match(/^\[group chat "[^"]*" with them.*?, where you are (.+?)\. What was said/);
-  if (group) return groupTurn(group[1], said.split("\n").slice(1));
+  const group = said.match(/^\[group chat "[^"]*" with them.*?, where you are (.+?)\. What was said.*? This is round (\d+) of/);
+  if (group) return groupTurn(group[1], Number(group[2]), said.split("\n").slice(1), toolResultsSince(prompt));
 
   // A thread of the resident's has its own prompt, history and persisted workspace.
   if (system.includes("one of the resident's threads") && user.startsWith("task: t_")) {

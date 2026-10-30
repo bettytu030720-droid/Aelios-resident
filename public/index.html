@@ -56,7 +56,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     </template>
     <template x-for="g in groups" :key="g.id">
       <button class="rail-item" type="button" :class="view === 'group' && group.id === g.id && 'on'" @click="openGroup(g.id)" :title="g.name">
-        <span class="avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15.5V7a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 16 7v4.5a2.5 2.5 0 0 1-2.5 2.5H8z"/><path d="M19 9.5a2 2 0 0 1 1 1.7v8.3l-3-2.5h-5a2 2 0 0 1-1.7-1"/></svg></span>
+        <span class="avatar"><template x-if="g.icon"><img :src="g.icon" alt=""></template><template x-if="!g.icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15.5V7a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 16 7v4.5a2.5 2.5 0 0 1-2.5 2.5H8z"/><path d="M19 9.5a2 2 0 0 1 1 1.7v8.3l-3-2.5h-5a2 2 0 0 1-1.7-1"/></svg></template></span>
         <span class="label" x-text="g.name"></span>
       </button>
     </template>
@@ -542,12 +542,43 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="slot">
           <template x-if="line.kind === 'note'"><div class="divider" x-text="line.text"></div></template>
           <template x-if="line.kind === 'say' && !line.author">
-            <div class="row me"><div class="bubble first last only"><span x-text="line.text"></span><span class="meta" x-text="fmt(line.at)"></span></div></div>
+            <div class="row me">
+              <template x-if="groupPics(line).length">
+                <div class="pics" :class="line.pictures === 1 && 'one'">
+                  <template x-for="n in groupPics(line)" :key="n">
+                    <button type="button" @click="lightbox = groupPicUrl(line, n)" aria-label="看大图" title="看大图">
+                      <template x-if="groupPicUrl(line, n)"><img :src="groupPicUrl(line, n)" alt="你发的图"></template>
+                      <template x-if="!groupPicUrl(line, n)"><span class="missing">图片</span></template>
+                    </button>
+                  </template>
+                </div>
+              </template>
+              <template x-for="(s, i) in groupStickers(line)" :key="i">
+                <div class="sticker">
+                  <template x-if="s.video"><video :src="s.url" autoplay loop muted playsinline aria-label="表情包"></video></template>
+                  <template x-if="!s.video"><img :src="s.url" alt="表情包" loading="lazy"></template>
+                </div>
+              </template>
+              <template x-for="(b, i) in groupBubbles(line)" :key="i">
+                <div class="bubble first last only"><span x-text="b.text"></span><span class="meta" x-text="fmt(line.at)"></span></div>
+              </template>
+            </div>
           </template>
           <template x-if="line.kind === 'say' && line.author">
             <div class="row ai group-line">
               <span class="who-g"><span class="avatar mini"><template x-if="groupMember(line.author).avatar"><img :src="groupMember(line.author).avatar" alt=""></template><template x-if="!groupMember(line.author).avatar"><span class="initial" x-text="initialOf(groupMember(line.author).name)"></span></template></span><span x-text="groupMember(line.author).name"></span></span>
-              <div class="bubble first last only"><span x-text="line.text"></span><span class="meta" x-text="fmt(line.at)"></span></div>
+              <template x-for="(b, i) in groupBubbles(line)" :key="i">
+                <div class="bubble" :class="{ first: b.first }">
+                  <div class="md" x-markdown="b.text"></div>
+                  <template x-if="b.last"><span class="meta" x-text="fmt(line.at)"></span></template>
+                </div>
+              </template>
+              <template x-for="(s, i) in groupStickers(line)" :key="i">
+                <div class="sticker">
+                  <template x-if="s.video"><video :src="s.url" autoplay loop muted playsinline aria-label="表情包"></video></template>
+                  <template x-if="!s.video"><img :src="s.url" alt="表情包" loading="lazy"></template>
+                </div>
+              </template>
             </div>
           </template>
         </div>
@@ -566,13 +597,42 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </button>
       </template>
     </div>
+    <template x-if="pics.length">
+      <div class="thumbs">
+        <template x-for="(p, i) in pics" :key="p.url">
+          <div><img :src="p.url" alt=""><button type="button" @click="removePic(i)" aria-label="拿掉这张" title="拿掉这张"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+        </template>
+      </div>
+    </template>
     <p class="error" x-show="group.error" x-text="group.error" style="margin: 6px 16px 0"></p>
     <form class="bar" @submit.prevent="sayInGroup()">
-      <div class="field"><textarea x-ref="groupInput" rows="1" x-model="group.draft" @keydown="groupKeydown($event)" placeholder="跟大家说…" aria-label="群聊消息" maxlength="4000"></textarea></div>
-      <button class="round go" type="submit" :disabled="group.busy || !group.draft.trim()" aria-label="发送">
+      <label class="round" title="发图" aria-label="发图">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="M20 16l-5-5-8.5 8.5"/></svg>
+        <input type="file" accept="image/*" multiple @change="addPhotos($event)" hidden>
+      </label>
+      <div class="field">
+        <textarea x-ref="groupInput" rows="1" x-model="group.draft" @keydown="groupKeydown($event)" @focus="panel = ''" placeholder="跟大家说…" aria-label="群聊消息" maxlength="4000"></textarea>
+        <button class="icon-btn" :class="panel && panelTab === 'stickers' && 'on'" type="button" @click="togglePanel('stickers')" :aria-expanded="Boolean(panel && panelTab === 'stickers')" aria-label="表情包" title="表情包">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1.8 2 5.2 2 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>
+        </button>
+      </div>
+      <button class="round go" type="submit" :disabled="!canSayInGroup()" aria-label="发送" title="发送">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/></svg>
       </button>
     </form>
+    <template x-if="panel && panelTab === 'stickers'">
+      <section class="panel" aria-label="表情包">
+        <p class="hint" x-show="!stickerList.length">还没有开着的表情包：去 设置 → 表情包 导一个。</p>
+        <div class="sticker-pick">
+          <template x-for="s in stickerList" :key="s.key">
+            <button type="button" @click="sayInGroup(s)" :aria-label="'发表情包 ' + (s.when || s.emoji)" :title="s.when || s.emoji">
+              <template x-if="s.video"><video :src="stickerUrl(s.key)" autoplay loop muted playsinline></video></template>
+              <template x-if="!s.video"><img :src="stickerUrl(s.key)" alt="" loading="lazy"></template>
+            </button>
+          </template>
+        </div>
+      </section>
+    </template>
   </footer>
 
   <!-- ===== threads ===== -->
@@ -1164,14 +1224,25 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <span class="grab" aria-hidden="true"></span>
         <div class="sheet-head"><h2 x-text="groupEdit.id ? '群聊设置' : '新群聊'"></h2></div>
         <form class="sheet-body" @submit.prevent="saveGroupEdit()">
-          <input type="text" x-model="groupEdit.name" maxlength="30" placeholder="群名（不填就用大家的名字）" aria-label="群名">
+          <div class="inline">
+            <template x-if="groupEdit.id">
+              <label class="avatar group-icon" title="换图标" aria-label="换图标">
+                <template x-if="groupEdit.icon"><img :src="groupEdit.icon" alt=""></template>
+                <template x-if="!groupEdit.icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15.5V7a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 16 7v4.5a2.5 2.5 0 0 1-2.5 2.5H8z"/><path d="M19 9.5a2 2 0 0 1 1 1.7v8.3l-3-2.5h-5a2 2 0 0 1-1.7-1"/></svg></template>
+                <input type="file" accept="image/*" @change="pickGroupIcon($event)" hidden>
+              </label>
+            </template>
+            <input type="text" x-model="groupEdit.name" maxlength="30" placeholder="群名（不填就用大家的名字）" aria-label="群名" style="flex: 1">
+            <button class="icon-btn" type="button" x-show="groupEdit.icon" @click="removeGroupIcon()" aria-label="不用图标了" title="不用图标了"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+          </div>
           <p class="hint">群里有谁</p>
           <template x-for="r in residents.list" :key="r.id">
             <label class="check"><input type="checkbox" x-model="groupEdit.on[r.id]"><span x-text="r.name"></span></label>
           </template>
           <div class="inline"><span class="grow-label">没 @ 人时</span><select x-model="groupEdit.reply" aria-label="没 @ 人时谁回"><option value="all">大家都回</option><option value="one">一个人回，轮着来</option><option value="none">都不回</option></select></div>
           <div class="inline"><span class="grow-label">谁先说</span><select x-model="groupEdit.order" aria-label="谁先说"><option value="list">按侧栏的顺序</option><option value="random">每次打乱</option></select></div>
-          <p class="hint">@ 谁只叫谁。轮到谁，群里它没听过的话就进它自己的私聊，在那里回，也记进 Aelios。</p>
+          <div class="inline"><span class="grow-label">你说一句，最多聊几轮</span><select x-model="groupEdit.rounds" aria-label="最多聊几轮"><option value="1">1 轮</option><option value="2">2 轮</option><option value="3">3 轮</option><option value="4">4 轮</option><option value="5">5 轮</option></select></div>
+          <p class="hint">@ 谁只叫谁。大家说完一轮还有话就接着下一轮，都不说了就停。轮到谁，群里它没听过的话就进它自己的私聊，在那里回，也记进 Aelios。</p>
           <p class="error" x-show="groupEdit.error" x-text="groupEdit.error"></p>
           <div class="inline">
             <button class="btn text danger" type="button" x-show="groupEdit.id" :disabled="groupEdit.busy" @click="removeGroup()">删掉这个群</button>

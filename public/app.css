@@ -549,6 +549,8 @@ input.secret { -webkit-text-security: disc; font-family: var(--mono); }
 .group-call { display: flex; gap: 8px; padding: 8px 14px 0; overflow-x: auto; }
 .group-call .avatar { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); cursor: pointer; }
 .group-call .avatar .initial { font-size: 14px; }
+.compose label.round, .group-icon { cursor: pointer; }
+.group-icon { border: 1px solid var(--line); }
 .check { display: flex; align-items: center; gap: 10px; font-size: 15px; }
 .check input { width: 18px; height: 18px; accent-color: var(--accent); }
 .grow-label { flex: 1; font-size: 14px; color: var(--text-2); }
