@@ -217,9 +217,6 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
 .bubble.held { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .bubble.failed { border-color: color-mix(in srgb, var(--err) 55%, transparent); opacity: .85; }
 .bubble.sending { opacity: .7; }
-.take-back { display: flex; gap: 2px; margin-left: 2px; }
-.take-back .icon-btn { width: 30px; height: 30px; border-radius: 10px; color: var(--text-3); }
-.take-back .icon-btn svg { width: 16px; height: 16px; }
 .meta { float: right; display: inline-flex; align-items: center; gap: 4px; margin: 9px -3px -6px 12px; font-size: 11px; line-height: 1; color: var(--text-4); white-space: nowrap; }
 .row.me .meta { color: var(--text-3); }
 .meta svg { width: 11px; height: 11px; color: var(--accent-text); }
@@ -378,10 +375,11 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
 .option .state svg { width: 20px; height: 20px; }
 .sheet-foot { padding: 10px 20px 0; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--text-3); }
 .menu-pop { position: fixed; z-index: 30; display: flex; gap: 2px; padding: 4px; border-radius: 16px; background: var(--panel-strong); border: 1px solid var(--line); box-shadow: 0 12px 30px rgba(2, 5, 18, .45); }
-.menu-pop button { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 60px; padding: 6px 4px; border: 0; border-radius: 12px; background: transparent; color: var(--text-2); font-size: 11px; }
+.menu-pop button { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 60px; white-space: nowrap; padding: 6px 4px; border: 0; border-radius: 12px; background: transparent; color: var(--text-2); font-size: 11px; }
 .menu-pop button:hover { background: var(--line-soft); }
 .menu-pop button svg { width: 20px; height: 20px; }
 .menu-pop button.hot { color: var(--accent-text); }
+.menu-pop.six button { min-width: 52px; }
 .lightbox { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .9); display: grid; place-items: center; padding: 16px; }
 .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
 .lightbox button { position: absolute; top: max(12px, env(safe-area-inset-top)); right: 12px; color: #fff; }
