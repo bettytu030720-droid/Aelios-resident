@@ -685,7 +685,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <template x-for="(step, i) in line.steps" :key="i"><div class="step-l" x-text="step"></div></template>
         <div class="text" x-show="line.text && line.direct" x-text="line.text"></div>
         <div class="text md" x-show="line.text && !line.direct" x-markdown="line.text"></div>
-        <div class="links" x-show="(line.links && line.links.length) || line.sessionUrl || waitingFor(line)">
+        <div class="links" x-show="(line.files && line.files.length) || (line.links && line.links.length) || line.sessionUrl || waitingFor(line)">
+          <template x-for="file in line.files || []" :key="file.path"><button class="btn small" type="button" @click="viewFile(file)" :title="file.path" x-text="file.path.split('/').pop()"></button></template>
           <a class="icon-btn sm" x-show="line.sessionUrl" :href="line.sessionUrl || '#'" target="_blank" rel="noopener noreferrer" title="打开会话" aria-label="打开会话"><i class="i i-open" aria-hidden="true"></i></a>
           <template x-for="link in line.links || []" :key="link"><a class="btn small" :href="link" target="_blank" rel="noopener noreferrer" x-text="linkText(link)"></a></template>
           <template x-if="waitingFor(line)">

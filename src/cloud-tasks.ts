@@ -854,14 +854,15 @@ export class TaskStore {
   }
 
   /**
-   * Keeps the newest tasks. Returns the threads that ran here and have no task left, so the host can delete them
-   * with their files.
+   * Keeps the newest tasks. Returns the threads that ran here or on GitHub Actions and have no task left, so the host
+   * can delete them with their files.
    */
   prune(): string[] {
-    const before = new Set(this.sql<{ root: string }>`SELECT DISTINCT root FROM res_tasks WHERE runs = 'local' AND root != ''`.map((row) => row.root));
+    // Threads here, and ones on GitHub Actions, which keep the files their runs handed back here.
+    const before = new Set(this.sql<{ root: string }>`SELECT DISTINCT root FROM res_tasks WHERE runs IN ('local', 'linux') AND root != ''`.map((row) => row.root));
     this.sql`DELETE FROM res_tasks WHERE id NOT IN (SELECT id FROM res_tasks ORDER BY created_at DESC, rowid DESC LIMIT ${TASKS_KEPT})`;
     this.sql`DELETE FROM res_thread_files WHERE root NOT IN (SELECT root FROM res_tasks)`;
-    const after = new Set(this.sql<{ root: string }>`SELECT DISTINCT root FROM res_tasks WHERE runs = 'local' AND root != ''`.map((row) => row.root));
+    const after = new Set(this.sql<{ root: string }>`SELECT DISTINCT root FROM res_tasks WHERE runs IN ('local', 'linux') AND root != ''`.map((row) => row.root));
     return [...before].filter((root) => !after.has(root));
   }
 }
