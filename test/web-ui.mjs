@@ -1256,3 +1256,40 @@ assert.equal(searcher.search.error, '最多搜 50 个字');
 searcher.logout();
 assert.equal(searcher.search.q, '', 'the search is not kept after locking the door');
 console.log('PASS search: pages of hits put together once each, a new search starts over, a hit read once, the words marked as text');
+
+// Its latest reply has two icons under it: delete (asked first) and answer again (the dots show until the new one).
+const back = vm.runInContext('testPage()', context);
+const takes = [];
+back.api = async (path, options) => { takes.push([path, copy(options.body)]); return path === '/web/take-back' && options.body.again ? { status: 'completed' } : { status: 'removed' }; };
+back.poll = () => {};
+back.refresh = async () => {};
+back.lines = [
+  { id: 'u1', role: 'user', text: '在吗', kind: 'chat', via: 'web' },
+  { id: 'a1', role: 'assistant', text: '我不能完成这个任务。', kind: 'chat', via: 'web' },
+  { id: 'n1', role: 'assistant', text: '换成了 x', kind: 'notice', via: null }
+];
+assert.equal(back.takeBackable(back.lines[1]), true, 'the latest reply; a notice after it does not count');
+assert.equal(back.takeBackable(back.lines[0]), false, 'not her message');
+back.lines.push({ id: 'u2', role: 'user', text: '？', kind: 'chat', via: 'web' });
+assert.equal(back.takeBackable(back.lines[1]), false, 'not once she has said something after it');
+back.lines.pop();
+back.lines[1].pending = true;
+assert.equal(back.takeBackable(back.lines[1]), false, 'not while it is still coming');
+delete back.lines[1].pending;
+assert.equal(back.answersHer(back.lines[1]), true);
+assert.equal(back.answersHer({ ...back.lines[1], via: 'checkin' }), false, 'a check-in can only be deleted');
+const again = back.takeBack(back.lines[1], true);
+assert.equal(back.waiting(), true, 'the old reply goes at once and the dots show');
+assert.equal(back.takeBackable(back.lines[1] || {}), false);
+await again;
+assert.deepEqual(takes, [['/web/take-back', { id: 'a1', again: true }]]);
+assert.deepEqual([back.sending, back.takingBack], [0, false]);
+back.lines = [{ id: 'u1', role: 'user', text: '在吗', kind: 'chat', via: 'web' }, { id: 'a2', role: 'assistant', text: '��', kind: 'chat', via: 'web' }];
+context.confirm = () => false;
+await back.takeBack(back.lines[1], false);
+assert.equal(takes.length, 1, 'a no to 删掉这条？ deletes nothing');
+context.confirm = () => true;
+await back.takeBack(back.lines[1], false);
+assert.deepEqual(takes[1], ['/web/take-back', { id: 'a2', again: false }]);
+console.log('PASS taking back its latest reply: only the latest and when done, delete asks first, again shows the dots');
+

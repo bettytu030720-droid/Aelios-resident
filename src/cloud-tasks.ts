@@ -26,7 +26,10 @@ export function isFireUrl(value: string): boolean {
 // What the resident sends out by itself in a day. A claude.ai run is a whole session on their subscription and an
 // Actions run takes minutes of theirs: a few a day is plenty. What they write to a thread themselves is not counted.
 export const TASKS_PER_DAY = 10;
-export const TASKS_PER_TURN = 2;
+export const TASKS_PER_TURN = 3;
+// A thread they asked for may be carried on this many times in a row without them asking again, each time in the turn
+// its report came back in (to fix or finish the same thing). Past that, it waits for them.
+export const UNASKED_FOLLOW_UPS = 2;
 // How long the resident waits for a result before it says the task has gone quiet (a little longer while
 // progress keeps coming), and how long a task's code can report at all.
 export const QUIET_MINUTES = 180;
@@ -74,6 +77,8 @@ export type Task = {
   direct: boolean;
   /** The role it was sent with (task-roles.ts), or "": its template is in the job, and its model does the work. */
   role: string;
+  /** Follow-ups in a row, this one included, that went out without them asking (0: they asked). */
+  unasked: number;
   status: TaskStatus;
   sessionUrl: string;
   progress: string;
@@ -350,7 +355,19 @@ export function resultNote(task: Task): string {
 <<<
 ${unfenced(task.summary)}${task.links.length ? `\nLinks: ${unfenced(task.links.join(" "))}` : ""}
 >>>${session}${task.choices?.length ? `\nOn the web page its card offers these answers as buttons: ${task.choices.map((choice) => `"${unfenced(choice)}"`).join(", ")}.` : ""}
-Tell them in your own words and briefly, with the links that matter.${where} If it needs them, ask. To carry on with it later, once they say so, use cloud_task with follow_up_of "${task.id}".)`;
+Tell them in your own words and briefly, with the links that matter.${where} If it needs them, ask. ${carryOn(task)})`;
+}
+
+/** Whether a thread can be carried on in the turn its report came back in, without them asking (UNASKED_FOLLOW_UPS). */
+export function carriesOnUnasked(task: Task): boolean {
+  return (task.status === "done" || task.status === "failed") && !task.test && (task.unasked ?? 0) < UNASKED_FOLLOW_UPS;
+}
+
+function carryOn(task: Task): string {
+  const later = `use cloud_task with follow_up_of "${task.id}"`;
+  return carriesOnUnasked(task)
+    ? `If the same thing they asked for needs more work (a fix, a missing part, a failed try), you may ${later} now; anything new waits until they ask.`
+    : `To carry on with it later, once they say so, ${later}.`;
 }
 
 /** The note for a task that has gone quiet. */
@@ -406,6 +423,7 @@ type Row = {
   runs: string;
   direct: number;
   role: string;
+  unasked: number;
   status: TaskStatus;
   session_url: string;
   progress: string;
@@ -434,6 +452,7 @@ function taskOf(row: Row): Task {
     runs: (["local", "linux", "external"].includes(row.runs) ? row.runs : "external") as TaskExecution,
     direct: Boolean(row.direct),
     role: row.role ?? "",
+    unasked: row.unasked ?? 0,
     status: row.status,
     sessionUrl: row.session_url,
     progress: row.progress,
@@ -501,6 +520,8 @@ export type NewTask = {
   direct?: boolean;
   /** Left out, a follow-up keeps its thread's (one they write in the thread too); "" for none. */
   role?: string;
+  /** Sent without them asking: the count it carries on (Task.unasked). */
+  unasked?: number;
 };
 
 /** A GitHub pull request link: github.com/<owner>/<repo>/pull/<n>. */
@@ -537,7 +558,8 @@ export class TaskStore {
       ["choices", () => sql`ALTER TABLE res_tasks ADD COLUMN choices TEXT NOT NULL DEFAULT '[]'`],
       ["chosen", () => sql`ALTER TABLE res_tasks ADD COLUMN chosen TEXT NOT NULL DEFAULT ''`],
       ["settled", () => sql`ALTER TABLE res_tasks ADD COLUMN settled INTEGER NOT NULL DEFAULT 0`],
-      ["role", () => sql`ALTER TABLE res_tasks ADD COLUMN role TEXT NOT NULL DEFAULT ''`]
+      ["role", () => sql`ALTER TABLE res_tasks ADD COLUMN role TEXT NOT NULL DEFAULT ''`],
+      ["unasked", () => sql`ALTER TABLE res_tasks ADD COLUMN unasked INTEGER NOT NULL DEFAULT 0`]
     ] as const) {
       try {
         if (column === "root") sql`SELECT root FROM res_tasks LIMIT 0`;
@@ -546,7 +568,8 @@ export class TaskStore {
         else if (column === "choices") sql`SELECT choices FROM res_tasks LIMIT 0`;
         else if (column === "chosen") sql`SELECT chosen FROM res_tasks LIMIT 0`;
         else if (column === "settled") sql`SELECT settled FROM res_tasks LIMIT 0`;
-        else sql`SELECT role FROM res_tasks LIMIT 0`;
+        else if (column === "role") sql`SELECT role FROM res_tasks LIMIT 0`;
+        else sql`SELECT unasked FROM res_tasks LIMIT 0`;
       } catch {
         add();
       }
@@ -565,10 +588,10 @@ export class TaskStore {
     const now = Date.now();
     const follows = input.follows ? this.get(input.follows) : null;
     const root = follows?.root ?? id;
-    this.sql`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, role, status, session_url, progress,
+    this.sql`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, role, unasked, status, session_url, progress,
       progress_at, progress_count, summary, links, notices, test, created_at, updated_at)
       VALUES (${id}, ${code}, ${title}, ${job}, ${repo}, ${input.follows ?? ""}, ${root}, ${input.execution ?? "external"},
-      ${input.direct ? 1 : 0}, ${input.role ?? follows?.role ?? ""}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
+      ${input.direct ? 1 : 0}, ${input.role ?? follows?.role ?? ""}, ${input.unasked ?? 0}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
     return { task: this.get(id)!, code };
   }
 

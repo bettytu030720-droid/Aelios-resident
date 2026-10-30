@@ -15,6 +15,8 @@ let checkins = 0;
 let previous: { system: string; tools: string; messages: string[] } | null = null;
 // Whether 卡住测试 has had its one quiet call.
 let stalledOnce = false;
+// How many times 重来测试 has been answered.
+let redos = 0;
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -103,7 +105,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("读完再派活") && last?.role === "tool" && toolOf(last.content) === "web_fetch") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
   // A thread's file read first, then a task: refused like one after a web page.
   if (said.includes("读完文件再派活") && last?.role === "tool" && toolOf(last.content) === "find") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
-  if (said.includes("派三单") && last?.role === "tool" && toolResultsSince(prompt) < 3) return { tool: "cloud_task", input: cloudJob(`第 ${toolResultsSince(prompt) + 1} 单`) };
+  if (said.includes("派四单") && last?.role === "tool" && toolResultsSince(prompt) < 4) return { tool: "cloud_task", input: cloudJob(`第 ${toolResultsSince(prompt) + 1} 单`) };
   // The heartbeat: with alarms on it first asks for an alarm too soon for a turn of its own (refused), then one far
   // enough ahead, and passes; with them off it reaches out.
   if (said.startsWith("(Not from them: a heartbeat")) {
@@ -129,7 +131,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("看看线程文件")) return { tool: "find", input: { in: "threads", thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: said.match(/ (\/?[\w.-]+\.\w+)$/)?.[1] ?? "" } };
   if (said.includes("翻翻聊天前后")) return { tool: "find", input: { in: "chat", around: said.split("翻翻聊天前后")[1].trim() } };
   if (said.includes("翻翻聊天")) return { tool: "find", input: { in: "chat", words: said.split("翻翻聊天")[1].trim() } };
-  if (said.includes("派三单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
+  if (said.includes("派四单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
   if (said.includes("后台写文件")) return { tool: "cloud_task", input: { title: "工作区写入测试", job: "workspace-write-test", execution: "local" } };
   if (said.includes("后台接着读")) return { tool: "cloud_task", input: { title: "工作区读取测试", job: "workspace-read-test", execution: "local", follow_up_of: said.match(/t_[0-9a-f]{10}/)?.[0] } };
   if (said.includes("Linux派活")) return { tool: "cloud_task", input: { ...cloudJob("Linux测试"), execution: "linux" } };
@@ -140,6 +142,11 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("接着派")) {
     const earlier = [...prompt.map((m) => textOf(m.content)).join("\n").matchAll(/\bt_[0-9a-f]{10}\b/g)].at(-1)?.[0];
     return { tool: "cloud_task", input: { ...cloudJob("接着修"), follow_up_of: earlier } };
+  }
+  // A report that says the same work is not finished: carried on at once (without her asking), or something new tried.
+  if (said.startsWith("(Not from them: your cloud task") && said.includes("还差一点")) {
+    const reported = said.match(/your cloud task (t_[0-9a-f]{10})/)?.[1];
+    return { tool: "cloud_task", input: said.includes("另开一单") ? cloudJob("另一件事") : { ...cloudJob("补上标题"), follow_up_of: reported } };
   }
   if (said.startsWith("(Not from them: your cloud task")) return { text: `云端回来了：${said}` };
   if (said.includes("读网页怎么说")) {
@@ -241,6 +248,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const pictures = parts.filter((part) => part.type === "file" && part.mediaType?.startsWith("image/")).length;
     return { text: `看到 ${pictures} 张图${user.includes("Attachments:") ? "，还有一行附件说明" : ""}。` };
   }
+  // Taking back a reply (take-back.ts): each answer to 重来测试 is new, and 你上一句说了什么 shows its last words it sees.
+  if (said.includes("重来测试")) return { text: `第 ${++redos} 回` };
+  if (said.includes("你上一句说了什么")) return { text: `上一句：${lastOf(prompt, "assistant") || "没有"}` };
   if (said.includes("卡住测试")) return { text: "刚才卡住了，现在好了。" };
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // Fill real-sized chat windows in letter tests without echoing thousands of characters back to Telegram.
