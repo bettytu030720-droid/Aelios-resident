@@ -1252,6 +1252,20 @@ await grouper.sayInGroup();
 assert.deepEqual(copy(groupCalls.at(-1)), ['/web/group/say?g=g1', { text: '你好 @旦九' }]);
 assert.equal(grouper.group.draft, '');
 assert.ok(grouper.group.lines.some((line) => line.seq === 7));
+// A reply that reached the server while she was writing is still fetched after her line is put in.
+grouper.view = 'group';
+grouper.group.lines = [{ seq: 1, author: '', text: '在吗', at: 1, kind: 'say' }];
+grouper.group.seen = 1;
+groupAnswer = { line: { seq: 3, author: '', text: '人呢', at: 3, kind: 'say' } };
+grouper.group.draft = '人呢';
+await grouper.sayInGroup();
+groupAnswer = { lines: [{ seq: 2, author: 'mochi', text: '在', at: 2, kind: 'say' }, { seq: 3, author: '', text: '人呢', at: 3, kind: 'say' }] };
+await grouper.groupNews();
+assert.equal(groupCalls.at(-1)[0], '/web/group?g=g1&after=1', 'asked after the last line the server handed it, not her own');
+assert.deepEqual(grouper.group.lines.map((line) => line.seq), [1, 2, 3], 'once each, in order');
+groupAnswer = { lines: [] };
+await grouper.groupNews();
+assert.equal(groupCalls.at(-1)[0], '/web/group?g=g1&after=3');
 grouper.openGroupSettings();
 assert.deepEqual(copy(grouper.groupEdit.on), { default: true, mochi: true, kiki: false }, 'its members ticked');
 grouper.groupEdit.on.kiki = true;
@@ -1266,7 +1280,7 @@ handed.lines = [
   { id: 'a1', role: 'assistant', kind: 'chat', text: '我也要', at: null, via: 'group' }
 ];
 assert.deepEqual(copy(handed.rows().map((row) => [row.type, row.text ?? row.line.id])), [['why', '群聊「周末」'], ['line', 'u1'], ['line', 'a1']]);
-console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, what is said is bound as text, settings sent, marked in its own chat');
+console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, what is said is bound as text, a reply not fetched yet is not skipped, settings sent, marked in its own chat');
 // Its latest reply has two icons under it: delete (asked first) and answer again (the dots show until the new one).
 const back = vm.runInContext('testPage()', context);
 const takes = [];

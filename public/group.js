@@ -3,8 +3,20 @@
 function groupPage() {
   var GROUP_MS = 3000;
   var groupTimer = 0;
+  // `seen` is the latest line the server has handed the page: what to ask after. A line of hers the page put in
+  // itself does not move it, so a reply that reached the server just before it is still fetched.
   function freshGroup(id) {
-    return { id: id || '', name: '', loaded: false, lines: [], more: false, members: [], config: null, speaking: '', waiting: [], running: false, draft: '', busy: false, error: '' };
+    return { id: id || '', name: '', loaded: false, lines: [], seen: 0, more: false, members: [], config: null, speaking: '', waiting: [], running: false, draft: '', busy: false, error: '' };
+  }
+  // Lines put together once each, in the order they were said.
+  function merged(lines, more) {
+    var have = {};
+    lines.forEach(function (line) { have[line.seq] = true; });
+    var fresh = more.filter(function (line) { return !have[line.seq]; });
+    return fresh.length ? lines.concat(fresh).sort(function (a, b) { return a.seq - b.seq; }) : lines;
+  }
+  function lastSeq(lines, seq) {
+    return lines.reduce(function (max, line) { return Math.max(max, line.seq); }, seq);
   }
   return {
     groups: [],
@@ -35,7 +47,8 @@ function groupPage() {
         var first = group.lines[0];
         var data = await this.api(this.groupPath('group', older && first ? '&before=' + first.seq : ''));
         if (group !== this.group) return;
-        group.lines = older ? data.lines.concat(group.lines) : data.lines;
+        group.lines = older ? merged(group.lines, data.lines) : data.lines;
+        if (!older) group.seen = lastSeq(data.lines, 0);
         group.more = data.more;
         this.takeGroup(data);
         group.loaded = true;
@@ -62,22 +75,22 @@ function groupPage() {
       clearTimeout(groupTimer);
       groupTimer = setTimeout(async function () {
         if (self.view !== 'group' || !self.authed) return;
-        var group = self.group;
         if (!document.hidden) {
-          var last = group.lines[group.lines.length - 1];
-          try {
-            var data = await self.api(self.groupPath('group', '&after=' + (last ? last.seq : 0)));
-            if (self.view !== 'group' || group !== self.group) return;
-            var seen = {};
-            group.lines.forEach(function (line) { seen[line.seq] = true; });
-            var fresh = (data.lines || []).filter(function (line) { return !seen[line.seq]; });
-            group.lines = group.lines.concat(fresh);
-            self.takeGroup(data);
-            if (fresh.length) self.groupToEnd();
-          } catch (error) { /* tried again on the next tick */ }
+          try { await self.groupNews(); } catch (error) { /* tried again on the next tick */ }
         }
         self.pollGroup();
       }, GROUP_MS);
+    },
+    // The lines the server has after the last one it handed the page.
+    async groupNews() {
+      var group = this.group;
+      var data = await this.api(this.groupPath('group', '&after=' + group.seen));
+      if (this.view !== 'group' || group !== this.group) return;
+      var count = group.lines.length;
+      group.lines = merged(group.lines, data.lines || []);
+      group.seen = lastSeq(data.lines || [], group.seen);
+      this.takeGroup(data);
+      if (group.lines.length > count) this.groupToEnd();
     },
     groupToEnd() {
       var self = this;
@@ -92,7 +105,7 @@ function groupPage() {
       try {
         var data = await this.api(this.groupPath('group/say'), { method: 'POST', body: { text: text } });
         group.draft = '';
-        if (!group.lines.some(function (line) { return line.seq === data.line.seq; })) group.lines.push(data.line);
+        group.lines = merged(group.lines, [data.line]);
         group.running = true;
         this.groupToEnd();
       } catch (error) {
