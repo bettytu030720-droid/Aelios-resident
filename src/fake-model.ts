@@ -102,7 +102,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // Cloud tasks: one sent after a web page was read (refused), three in one reply (the third refused).
   if (said.includes("读完再派活") && last?.role === "tool" && toolOf(last.content) === "web_fetch") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
   // A thread's file read first, then a task: refused like one after a web page.
-  if (said.includes("读完文件再派活") && last?.role === "tool" && toolOf(last.content) === "read_thread_file") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
+  if (said.includes("读完文件再派活") && last?.role === "tool" && toolOf(last.content) === "find") return { tool: "cloud_task", input: cloudJob("偷偷派的") };
   if (said.includes("派三单") && last?.role === "tool" && toolResultsSince(prompt) < 3) return { tool: "cloud_task", input: cloudJob(`第 ${toolResultsSince(prompt) + 1} 单`) };
   // The heartbeat: with alarms on it first asks for an alarm too soon for a turn of its own (refused), then one far
   // enough ahead, and passes; with them off it reaches out.
@@ -124,11 +124,11 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (last?.role === "tool") return { text: `我查到了：${textOf(last.content)}` };
   if (said.includes("读完再派活")) return { tool: "web_fetch", input: { url: "http://localhost:8787/web/messages" } };
   // Finding earlier work: threads by words, a thread's file, the conversation and the messages around a hit.
-  if (said.includes("读完文件再派活")) return { tool: "read_thread_file", input: { thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: "/page.html" } };
-  if (said.includes("找找线程")) return { tool: "find_threads", input: { words: said.split("找找线程")[1].trim() } };
-  if (said.includes("看看线程文件")) return { tool: "read_thread_file", input: { thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: said.match(/ (\/?[\w.-]+\.\w+)$/)?.[1] ?? "" } };
-  if (said.includes("翻翻聊天前后")) return { tool: "search_chat", input: { around: said.split("翻翻聊天前后")[1].trim() } };
-  if (said.includes("翻翻聊天")) return { tool: "search_chat", input: { words: said.split("翻翻聊天")[1].trim() } };
+  if (said.includes("读完文件再派活")) return { tool: "find", input: { in: "threads", thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: "/page.html" } };
+  if (said.includes("找找线程")) return { tool: "find", input: { in: "threads", words: said.split("找找线程")[1].trim() } };
+  if (said.includes("看看线程文件")) return { tool: "find", input: { in: "threads", thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: said.match(/ (\/?[\w.-]+\.\w+)$/)?.[1] ?? "" } };
+  if (said.includes("翻翻聊天前后")) return { tool: "find", input: { in: "chat", around: said.split("翻翻聊天前后")[1].trim() } };
+  if (said.includes("翻翻聊天")) return { tool: "find", input: { in: "chat", words: said.split("翻翻聊天")[1].trim() } };
   if (said.includes("派三单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
   if (said.includes("后台写文件")) return { tool: "cloud_task", input: { title: "工作区写入测试", job: "workspace-write-test", execution: "local" } };
   if (said.includes("后台接着读")) return { tool: "cloud_task", input: { title: "工作区读取测试", job: "workspace-read-test", execution: "local", follow_up_of: said.match(/t_[0-9a-f]{10}/)?.[0] } };
@@ -158,7 +158,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   }
   if (said.includes("云端工具有哪些")) {
     const names = (options.tools ?? []).filter((t) => t.type === "function").map((t) => t.name);
-    const finds = ["find_threads", "read_thread_file", "search_chat"].every((name) => names.includes(name));
+    const finds = names.includes("find");
     return { text: `${names.includes("cloud_task") ? "有 cloud_task。" : "没有 cloud_task。"}${finds ? "也能找旧线程和聊天记录。" : "找不了旧线程和聊天记录。"}` };
   }
   if (said.includes("只发表情") || said.includes("发两张") || said.includes("发表情")) return { tool: "send_sticker", input: { sticker: "test/wave" } };
