@@ -42,6 +42,26 @@ await test("three roles come with it, put in once: removed ones do not come back
   assert.deepEqual(new r.RoleStore(sqlOn(db)).list().map((role) => role.name), ["coder", "reviewer"], "a restart leaves the list as they left it");
 });
 
+await test("the ones that came with an earlier version, still as they came, get the new wording; changed ones stay", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE res_task_roles (name TEXT PRIMARY KEY, template TEXT NOT NULL, model TEXT NOT NULL, at INTEGER NOT NULL)");
+  const add = db.prepare("INSERT INTO res_task_roles VALUES (?, ?, ?, ?)");
+  add.run("coder", "改代码。先新开一个分支，改完跑 typecheck 和测试，都过了再开 PR。绝不合并、不推默认分支、不部署。交回来写：改了什么、测试结果、PR 链接。", "x/own", 0);
+  add.run("reviewer", "只读审查，我自己写的。", "", 1);
+  add.run("researcher", "调研、写文档。每条结论附出处链接，没把握的标「不确定」。交回来写：结论、出处、还没查清的。", "", 2);
+  const roles = new r.RoleStore(sqlOn(db));
+  const by = Object.fromEntries(roles.list().map((role) => [role.name, role]));
+  assert.equal(by.coder.template, r.DEFAULT_ROLES[0].template);
+  assert.equal(by.coder.model, "x/own", "its model stays");
+  assert.equal(by.reviewer.template, "只读审查，我自己写的。", "one they changed stays theirs");
+  assert.equal(by.researcher.template, r.DEFAULT_ROLES[2].template);
+  // What each now asks for, in short.
+  assert.match(by.coder.template, /根因[\s\S]*先写一个能复现它的测试[\s\S]*试了 3 次[\s\S]*仓库里有的检查[\s\S]*没有，跳过」，不因此不交付/);
+  assert.match(by.researcher.template, /一手来源[\s\S]*说法不一/);
+  assert.match(r.DEFAULT_ROLES[1].template, /不到八成的不报[\s\S]*文件和行号/);
+  for (const role of r.DEFAULT_ROLES) assert.ok([...role.template].length <= 600, `${role.name} stays short`);
+});
+
 await test("saving: a new one goes last, a changed one keeps its place; names, templates and models are checked", () => {
   const roles = new r.RoleStore(sqlOn(new DatabaseSync(":memory:")));
   assert.deepEqual(roles.save({ name: " Tester ", template: " 只跑测试，写出哪些没过。 ", model: "anthropic/claude-haiku-5.5" }), { name: "tester", template: "只跑测试，写出哪些没过。", model: "anthropic/claude-haiku-5.5" });

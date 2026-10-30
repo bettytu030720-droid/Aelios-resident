@@ -17,6 +17,8 @@ const execAsync = promisify(execFile);
 const MAX_STEPS = 30;
 // How long a model call that timed out or met a server error waits before its one retry.
 const MODEL_RETRY_MS = 5_000;
+// How long one model call may take: a little longer than the resident gives it (5 minutes), so its answer gets here.
+const MODEL_WAIT_MS = 330_000;
 const OUTPUT_LIMIT = 12_000;
 // The most one file handed back to the resident may be: what its thread page opens (THREAD_FILE_MAX in task-worker.ts).
 const HANDED_FILE_MAX = 10 * 1024 * 1024;
@@ -233,6 +235,12 @@ export const TOOLS = [
   tool("report_result", "Report final result, failure, or a decision needed from the user. With needs_you, choices are up to 4 short answers they can pick with one tap.", { status: { type: "string", enum: ["done", "failed", "needs_you"] }, summary: text, links: { type: "array", items: text }, choices: { type: "array", items: text, maxItems: 4 } }, ["status", "summary"])
 ];
 
+/** One search command: its output, "" when nothing matched (exit 1), or the error. */
+async function searchWith(exec, bin, argv, cwd) {
+  try { return { output: stdoutOf(await exec(bin, argv, { cwd })) }; }
+  catch (error) { return error.code === 1 || error.status === 1 ? { output: "" } : { error }; }
+}
+
 export async function runTool(name, args, context) {
   const { workdir, exec = execute } = typeof context === "string" ? { workdir: context } : context;
   if (name === "bash") {
@@ -243,12 +251,20 @@ export async function runTool(name, args, context) {
   }
   if (name === "search_files") {
     const path = insideWorkdir(workdir, args.path || ".");
-    const argv = args.filenames ? ["--files", "--", path] : ["--line-number", "--no-heading", "--max-count", "50", "--max-columns", "500", "--max-columns-preview", "--", string(args.pattern), path];
-    let output;
-    try { output = stdoutOf(await exec("rg", argv, { cwd: workdir })); }
-    catch (error) { if (error.code === 1 || error.status === 1) return "No matches"; throw new Error("ripgrep search failed"); }
-    if (args.filenames && args.pattern) output = output.split("\n").filter((line) => line.includes(string(args.pattern))).join("\n");
-    return output.split("\n").slice(0, 200).join("\n").slice(0, OUTPUT_LIMIT) || "No matches";
+    const pattern = string(args.pattern);
+    const argv = args.filenames ? ["--files", "--", path] : ["--line-number", "--no-heading", "--max-count", "50", "--max-columns", "500", "--max-columns-preview", "--", pattern, path];
+    let found = await searchWith(exec, "rg", argv, workdir);
+    // GitHub's runners have no ripgrep: find and grep do the same, leaving out .git and node_modules.
+    if (found.error?.code === "ENOENT") {
+      found = args.filenames
+        ? await searchWith(exec, "find", [path, "-type", "f", "-not", "-path", "*/.git/*", "-not", "-path", "*/node_modules/*"], workdir)
+        : await searchWith(exec, "grep", ["-rnIE", "--max-count=50", "--exclude-dir=.git", "--exclude-dir=node_modules", "--", pattern, path], workdir);
+    }
+    // A bad pattern or path: what the search said, so the next try can fix it.
+    if (found.error) return bounded(`Search failed: ${string(found.error.stderr).trim() || found.error.message}`);
+    let lines = found.output.split("\n").map((line) => (line.length > 500 ? `${line.slice(0, 500)} […]` : line));
+    if (args.filenames && pattern) lines = lines.filter((line) => line.includes(pattern));
+    return lines.slice(0, 200).join("\n").slice(0, OUTPUT_LIMIT).trim() || "No matches";
   }
   if (name === "publish_files") return publishFiles({ ...context, files: args.files });
   if (name === "save_artifacts") return saveArtifacts({ ...context, files: args.files });
@@ -368,7 +384,7 @@ export async function runHands({ residentUrl, modelBaseUrl = "", modelApiKey = "
       let response;
       for (let attempt = 0; ; attempt++) {
         const again = attempt === 0 ? "" : "，重试过一次";
-        try { response = await fetch(`${base}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-aelios-purpose": "auxiliary", "content-type": "application/json" }, body: JSON.stringify({ model: named, messages, tools }), signal: AbortSignal.timeout(180_000) }); }
+        try { response = await fetch(`${base}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${key}`, "x-aelios-purpose": "auxiliary", "content-type": "application/json" }, body: JSON.stringify({ model: named, messages, tools }), signal: AbortSignal.timeout(MODEL_WAIT_MS) }); }
         catch {
           if (!again) { say("模型连接失败或超时，过一会儿再试一次"); await new Promise((resolve) => setTimeout(resolve, modelRetryMs)); continue; }
           throw new Error(`模型连接失败或超时（${again.slice(1)}）`);

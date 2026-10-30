@@ -236,6 +236,8 @@ const HANDS_FILES = 100;
 const HANDS_FILES_BYTES = 50 * 1024 * 1024;
 // A thread's report shows at most this many of the files its task made; the rest are in the list below it.
 const FILES_ON_REPORT = 8;
+// How long one of its steps may take: a big context on a slow model takes minutes (hands.mjs waits a little longer).
+const HANDS_MODEL_MINUTES = 5;
 const PERSONA_MAX_CHARS = 30000;
 // How many earlier personas the web page can bring back.
 const PERSONA_VERSIONS = 10;
@@ -1687,12 +1689,14 @@ export class Resident extends Think<Env> {
         tools: request.tools,
         maxOutputTokens: LOCAL_TASK_OUTPUT,
         providerOptions: promptCache(this.cfg),
-        abortSignal: AbortSignal.timeout(170_000),
+        abortSignal: AbortSignal.timeout(HANDS_MODEL_MINUTES * 60_000),
         onStepEnd: (step) => this.recordUsage(step, { kind: "worker", via: "" })
       });
       return { status: 200, json: JSON.stringify(toOpenAI(result, name)) };
     } catch (error) {
       console.error("hands: model call failed", { error: String(error) });
+      const timedOut = error instanceof Error && (error.name === "TimeoutError" || /aborted due to timeout/i.test(error.message));
+      if (timedOut) return failed(504, `the model did not answer within ${HANDS_MODEL_MINUTES} minutes`);
       return failed(502, `the model call failed: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`);
     }
   }

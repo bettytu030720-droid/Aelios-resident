@@ -31,6 +31,34 @@ assert.equal(rg.bin, 'rg');
 assert.equal(rg.args[0], '--files');
 await runTool('search_files', { pattern: '$(bad)' }, { workdir, exec: async (bin, args) => { assert.ok(args.includes('$(bad)')); return { stdout: 'one' }; } });
 console.log('PASS search uses rg argument arrays and filters filename mode');
+{
+  // A machine without ripgrep (GitHub's runners): grep and find, leaving out .git and node_modules.
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const tried = [];
+  const noRg = async (bin, args, options) => {
+    tried.push(bin);
+    if (bin === 'rg') throw Object.assign(new Error('spawn rg ENOENT'), { code: 'ENOENT' });
+    return run(bin, args, { encoding: 'utf8', ...options });
+  };
+  const where = join(root, 'search');
+  for (const dir of ['src', 'node_modules/x', '.git']) mkdirSync(join(where, dir), { recursive: true });
+  writeFileSync(join(where, 'src/a.ts'), 'const one = 1;\nwebThreads(one);\n' + 'x'.repeat(900) + ' webThreads(two)\n');
+  writeFileSync(join(where, 'node_modules/x/b.ts'), 'webThreads(lib);\n');
+  writeFileSync(join(where, '.git/c'), 'webThreads(git);\n');
+  const hits = await runTool('search_files', { pattern: 'webThreads\\(' }, { workdir: where, exec: noRg });
+  assert.deepEqual(tried, ['rg', 'grep']);
+  const lines = hits.split('\n');
+  assert.equal(lines.length, 2, hits);
+  assert.match(lines[0], /src\/a\.ts:2:webThreads\(one\);$/);
+  assert.ok(lines[1].endsWith(' […]') && lines[1].length < 600, 'a long line is cut');
+  assert.equal(await runTool('search_files', { pattern: 'nowhere' }, { workdir: where, exec: noRg }), 'No matches');
+  assert.deepEqual((await runTool('search_files', { filenames: true, pattern: '.ts' }, { workdir: where, exec: noRg })).split('\n').map((line) => line.slice(where.length)), ['/src/a.ts']);
+  // A pattern the search cannot read: what it said comes back to the model instead of a bare failure.
+  assert.match(await runTool('search_files', { pattern: 'webThreads(' }, { workdir: where, exec: noRg }), /^Search failed: .*(parenth|\(|unmatched|Unmatched)/i);
+}
+console.log('PASS without ripgrep, search falls back to grep and find; a bad pattern says why');
 const runUrl = 'https://github.com/owner/repo/actions/runs/123';
 // Files go back to the resident; the run's Artifacts only keep one that could not go.
 writeFileSync(join(workdir, 'out/big.bin'), Buffer.alloc(10 * 1024 * 1024 + 1));
@@ -104,6 +132,11 @@ try {
   assert.equal((await runHands({ ...base, log: (line) => retried.push(line) })).status, 'done');
   assert.equal(modelCalls, 2);
   assert.ok(retried.includes('模型调用失败（HTTP 502），过一会儿再试一次'), JSON.stringify(retried));
+  // A step the model took too long over, twice: the resident's words reach the result.
+  modelCalls = 0;
+  globalThis.fetch = async (url) => String(url).includes('/tasks/') ? new Response('{}') : (modelCalls++, Response.json({ error: { message: 'the model did not answer within 5 minutes' } }, { status: 504 }));
+  assert.equal((await runHands(base)).summary, '模型调用失败（HTTP 504，重试过一次）：the model did not answer within 5 minutes');
+  assert.equal(modelCalls, 2);
   globalThis.fetch = async (url) => String(url).includes('/tasks/') ? new Response('{}', { status: 403 }) : new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Ready' } }] }));
   await assert.rejects(runHands(base), /report could not be delivered/);
   globalThis.fetch = async (url) => { assert.ok(String(url).includes('/tasks/')); return new Response('{}'); };
