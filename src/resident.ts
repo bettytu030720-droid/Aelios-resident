@@ -131,6 +131,7 @@ import {
   routinePrompt,
   TASK_DESCRIPTION,
   taskOfNote,
+  carriesOnUnasked,
   threadName,
   isFireUrl,
   type NewTask,
@@ -1439,10 +1440,15 @@ export class Resident extends Think<Env> {
     return { error: `Not sent: ${asked} is not set up on their settings page; only local is. Send it to local if a thread without a shell can do it, or tell them.` };
   }
 
-  /** Why no task can be sent in this turn; null when one can. */
-  private taskRefusal(): string | null {
+  /**
+   * Why no task can be sent in this turn; null when one can. Without them asking, only the thread whose report this
+   * turn answers can be carried on (carriesOnUnasked).
+   */
+  private taskRefusal(follows: Task | null): string | null {
     const id = this.activeTurn?.requestId;
-    if (!id || this.#letterPromptId || !this.#theirTurns.has(id)) return "Not sent: a task is sent only when they ask for it in a message of theirs.";
+    const reported = taskOfNote(textOf(this.messages.findLast((message) => message.role === "user")));
+    const unasked = follows !== null && reported !== null && this.cloudTasks().get(reported)?.root === follows.root && carriesOnUnasked(follows);
+    if (!id || this.#letterPromptId || !(this.#theirTurns.has(id) || unasked)) return "Not sent: a task is sent only when they ask for it in a message of theirs.";
     if (this.#readOutside.has(id)) {
       return "Not sent: this turn has read a web page, a thread's file or another server's tool, which is not them asking. Tell them what you would send, and send it when they say so in their next message.";
     }
@@ -1452,17 +1458,18 @@ export class Resident extends Think<Env> {
   }
 
   private async sendTask(input: TaskInput): Promise<Record<string, unknown>> {
-    const refused = this.taskRefusal();
-    if (refused) return { error: refused };
     const earlier = input.follow_up_of?.trim() ?? "";
     // Any task of a thread, or the thread itself: it carries on from the thread's newest task.
     const follows = earlier ? this.cloudTasks().continuing(earlier) : null;
+    const refused = this.taskRefusal(follows);
+    if (refused) return { error: refused };
     if (earlier && !follows) return { error: `No task or thread ${earlier}. find_threads finds them.` };
     const execution = this.placeFor(input.execution);
     if (typeof execution === "object") return execution;
     const id = this.activeTurn!.requestId;
     this.#turnTasks.set(id, (this.#turnTasks.get(id) ?? 0) + 1);
-    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution }, follows);
+    const unasked = this.#theirTurns.has(id) ? 0 : follows!.unasked + 1;
+    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution, unasked }, follows);
     if ("error" in task) return { error: task.error };
     return { task: task.id, title: task.title, runs: task.runs, session_url: task.sessionUrl, note: "Sent. Its result comes back to you later as a note." };
   }
