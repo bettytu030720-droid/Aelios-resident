@@ -195,6 +195,7 @@ import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
+import { GROUP_TEXT_MAX, GroupStore, HER, ROUND_IDLE, afterReply, cleanReply, groupConfig, groupConfigFrom, groupPrompt, groupRules, membersOf, speakersFor, type GroupConfig, type GroupLine, type GroupRound, type Member } from "./group";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { findTools, type FindHost } from "./find-tools";
 import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
@@ -242,6 +243,11 @@ const WEB_AWAY_MS = 20_000;
 const PUSH_DEVICES_MAX = 10;
 // The deepest a search walks back along the conversation's branch, as the session's own path reads do.
 const PATH_MAX = 10_000;
+// A resident's turn in the group chat (group.ts): how long it may take, and how long its reply may be.
+const GROUP_REPLY_MS = 120_000;
+const GROUP_OUTPUT = 2000;
+// A round that has not moved for this long is taken as dead (its isolate went away mid-turn) and started again.
+const GROUP_STALE_MS = 5 * 60_000;
 // A deleted resident is wiped again after this long if the first wipe did not finish (residentWipeAgain).
 const RESIDENT_WIPE_RETRY_SECONDS = 5 * 60;
 // Set while a resident is being deleted; only the wipe removes it (residentForgotten).
@@ -525,6 +531,7 @@ export class Resident extends Think<Env> {
   /** What each running turn is, for its rows in the usage timeline. */
   #usageLabels = new Map<string, UsageLabel>();
   #usageStore: UsageStore | null = null;
+  #groupStore: GroupStore | null = null;
 
   // Lazily created once per object lifetime; mark ready only after the DDL succeeds.
   private turnTableReady = false;
@@ -4488,6 +4495,134 @@ export class Resident extends Think<Env> {
   /** Whether the wipe went through: the mark residentForgetting left is gone with everything else. */
   async residentForgotten(): Promise<boolean> {
     return (await this.ctx.storage.get(FORGETTING)) === undefined;
+  }
+
+  // ---- the group chat (group.ts): the room lives in the default resident, each resident answers from its own ----
+
+  private groupStore(): GroupStore {
+    this.#groupStore ??= new GroupStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#groupStore;
+  }
+
+  private groupSettings(): GroupConfig {
+    return groupConfig(JSON.parse(this.settings("group_config")?.value ?? "null"));
+  }
+
+  private groupRound(): GroupRound {
+    return { ...ROUND_IDLE, ...(JSON.parse(this.settings("group_round")?.value ?? "null") as Partial<GroupRound> | null) };
+  }
+
+  private saveGroupRound(round: GroupRound): void {
+    this.saveSetting("group_round", JSON.stringify(round));
+  }
+
+  /** Every resident with the name the room calls it by, and the group's members among them, in the sidebar's order. */
+  private async groupPeople(): Promise<{ everyone: Member[]; members: Member[] }> {
+    const ids = [DEFAULT_RESIDENT, ...this.residentIds()];
+    const everyone = await Promise.all(
+      ids.map(async (id) => ({ id, name: id === this.residentId ? this.webIdentity().name : (await (await getAgentByName(this.env.RESIDENT, id)).webIdentity()).name }))
+    );
+    const members = membersOf(this.groupSettings(), ids);
+    return { everyone, members: everyone.filter((person) => members.includes(person.id)) };
+  }
+
+  /** The group for the web page: its latest lines (or those after `after`, or before `before`), who is in it, who speaks. */
+  webGroup(after: number | null, before: number | null): Record<string, unknown> {
+    const config = this.groupSettings();
+    const round = this.groupRound();
+    const page = after !== null ? { lines: this.groupStore().after(after), more: false } : this.groupStore().page(before);
+    const ids = [DEFAULT_RESIDENT, ...this.residentIds()];
+    return { ...page, members: membersOf(config, ids), config, speaking: round.speaking, waiting: round.queue, running: round.running };
+  }
+
+  /** A message of hers in the group: kept, and the round it starts handed to the room (groupTurn). */
+  async webGroupSay(text: string): Promise<{ line: GroupLine } | { error: string }> {
+    const said = text.trim();
+    if (!said) return { error: "要说什么？" };
+    if (said.length > GROUP_TEXT_MAX) return { error: `一条最多 ${GROUP_TEXT_MAX} 字` };
+    const { everyone, members } = await this.groupPeople();
+    const line = this.groupStore().add(HER, said);
+    const queue = speakersFor(said, members, this.groupSettings(), this.groupStore().lastSaid(), { everyone });
+    // A new round: whoever was still to speak in the last one does not; one speaking now finishes.
+    const round = { ...this.groupRound(), root: line.seq, queue, calls: 0 };
+    const idle = !round.running || Date.now() - round.since > GROUP_STALE_MS;
+    this.saveGroupRound(idle && queue.length ? { ...round, running: true, since: Date.now() } : round);
+    if (idle && queue.length) await this.schedule(0, "groupTurn", {});
+    return { line };
+  }
+
+  /** Stop: no one else speaks in this round, and a reply on its way is dropped. Does not wait for the one speaking. */
+  webGroupStop(): { ok: true } {
+    const round = this.groupRound();
+    if (round.queue.length || round.speaking) {
+      this.saveGroupRound({ ...round, queue: [], speaking: "", epoch: round.epoch + 1 });
+      this.groupStore().add(HER, "你让大家先停一下。", "note");
+    }
+    return { ok: true };
+  }
+
+  webGroupConfig(body: Record<string, unknown>): Record<string, unknown> {
+    const checked = groupConfigFrom(body, [DEFAULT_RESIDENT, ...this.residentIds()]);
+    if ("error" in checked) return checked;
+    this.saveSetting("group_config", JSON.stringify(checked.config));
+    return this.webGroup(null, null);
+  }
+
+  /**
+   * One reply in the group, then the next one is scheduled: the first in line speaks, its reply goes into the room
+   * unless she stopped the round meanwhile, those it calls with @ join the line, and the round ends at its cap.
+   */
+  async groupTurn(): Promise<void> {
+    const start = this.groupRound();
+    const speaker = start.queue[0];
+    if (!speaker) return this.saveGroupRound({ ...start, speaking: "", running: false });
+    const { root, epoch } = start;
+    this.saveGroupRound({ ...start, queue: start.queue.slice(1), calls: start.calls + 1, speaking: speaker, since: Date.now(), running: true });
+    const { everyone, members } = await this.groupPeople();
+    const names = Object.fromEntries(everyone.map((person) => [person.id, person.name]));
+    let reply: { text: string } | { error: string } = { text: "" };
+    if (members.some((member) => member.id === speaker)) {
+      const view = { ...this.groupStore().window(), names, members: members.map((member) => member.id) };
+      try {
+        reply = speaker === this.residentId ? await this.groupReply(view) : await (await getAgentByName(this.env.RESIDENT, speaker)).groupReply(view);
+      } catch (error) {
+        reply = { error: String(error instanceof Error ? error.message : error).slice(0, 200) };
+      }
+    }
+    let round = this.groupRound();
+    if (round.epoch === epoch) {
+      const text = "text" in reply ? reply.text : "";
+      if ("error" in reply) this.groupStore().add(speaker, `${names[speaker]} 没回上来：${reply.error}`, "note");
+      else if (text) this.groupStore().add(speaker, text);
+      const settled = afterReply(round, { root, speaker, text }, members, this.groupSettings().turns);
+      if (settled.note) this.groupStore().add(HER, settled.note, "note");
+      round = settled.round;
+    }
+    this.saveGroupRound({ ...round, speaking: "", running: round.queue.length > 0 });
+    if (round.queue.length) await this.schedule(0, "groupTurn", {});
+  }
+
+  /**
+   * This resident's turn in the group, asked by the default resident: its next message there, with its own persona
+   * and model, or "" to pass. Nothing is kept here: not in its conversation, not in Aelios (auxiliary).
+   */
+  async groupReply(view: { lines: GroupLine[]; cut: boolean; names: Record<string, string>; members: string[] }): Promise<{ text: string } | { error: string }> {
+    const name = this.webIdentity().name;
+    const others = view.members.filter((id) => id !== this.residentId).map((id) => view.names[id] ?? id);
+    try {
+      const result = await generateText({
+        model: this.resolveModel(this.chatModel(this.savedModel() || this.defaultModel, { auxiliary: true, thinking: false })),
+        system: `${this.personas(1)[0]?.text || DEFAULT_PERSONA}\n\n${groupRules(name, others)}`,
+        messages: groupPrompt(view.lines, view.cut, this.residentId, view.names),
+        maxOutputTokens: GROUP_OUTPUT,
+        providerOptions: promptCache(this.cfg),
+        abortSignal: AbortSignal.timeout(GROUP_REPLY_MS),
+        onStepEnd: (step) => this.recordUsage(step, { kind: "group", via: "web" })
+      });
+      return { text: cleanReply(result.text, name) };
+    } catch (error) {
+      return { error: String(error instanceof Error ? error.message : error).slice(0, 200) };
+    }
   }
 
   /** The MCP servers on the settings page: how each is doing and what its tools cost per turn. Never a key. */

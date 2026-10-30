@@ -224,6 +224,14 @@ One Worker can house several residents, each with its own persona, model, settin
 - **Notifications**: the whole web door has one key pair and one list of devices, so a device that turned notifications on once, on any resident's page, gets every resident's, and tapping one opens that resident. Turning them off on one page turns them off for all.
 - **Deleting one**: open its page (tap its avatar), then **Delete this resident** (「删除这个住户」) at the bottom, and type its id to confirm. Its conversation, settings, stickers and alarms are deleted and its bot is let go; its memories in Aelios stay. It is off the list at once, but its id stays taken until everything is wiped; if wiping fails, it is tried again a few minutes later. The first resident cannot be deleted. Up to 8 more besides the first.
 
+**Group chat**: with two or more residents, **群聊** (Group chat) appears in the column under their avatars. You and the residents talk in one room, on the web door (and in the Mini App); it is not on Telegram or WeCom.
+
+- **Who answers**: say something and everyone answers in the column's order, each hearing the ones before. `@` a name to call only that one; tap an avatar under the box to put its `@` in. When a resident `@`s another, that one answers next.
+- **It stops by itself**: one message of yours leads to at most 6 replies, residents calling each other included; then the room says it stopped there, and your next message starts again. The square button at the top stops everyone at once, dropping the reply on its way.
+- **Settings** (the sliders icon at the top): who is in the group (everyone by default, new residents included), who answers when you `@` no one (everyone, one of them in turn, or no one), in what order (the column's, or shuffled), and the cap (1 to 20).
+- **Each one is itself**: a resident answers with its own persona and model, and the call shows in its own usage timeline as 「群聊」. It sees the latest 31 to 60 messages of the room, moved 30 at a time so its cache holds.
+- **Hearing is not remembering**: what is said in the group stays in the group. It goes into no resident's one-to-one conversation and is not recorded in Aelios. The room lives in the first resident.
+
 ### The settings page
 
 Tap **···** at the top right of the web door. It opens on a list of sections in four groups: Long-term memory (「长期记忆」), Chat channels (「聊天渠道」, Telegram and WeCom) and Notifications (「通知」); Voice (「语音」), Stickers (「表情包」), Search & web pages (「搜网和读网页」), Background help (「后台帮忙」) and Other tools (「别的工具（MCP）」); Reaching out & alarms (「主动找你和闹钟」); Thinking & letters (「思考和交接信」) and Providers (「供应商」). A short line beside each shows its current state. Open one to see only that section; the explanation of a setting is behind the **?** beside it, and settings you rarely change are under **More settings** (「更多设置」). Telegram and WeCom are set up as numbered steps: the step to do is open, finished ones fold away with a summary.

@@ -304,7 +304,7 @@ function resident() {
   var IMAGE_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
   var extOf = function (path) { var m = String(path).match(/\.([A-Za-z0-9]+)$/); return m ? m[1].toLowerCase() : ''; };
 
-  return {
+  return Object.assign({
     key: readKey(),
     miniApp: false,
     miniToken: '',
@@ -1928,7 +1928,7 @@ function resident() {
     },
     kindText(row) {
       var kind = { chat: '聊天', letter: '写交接信', checkin: '定时找你', heartbeat: '心跳', alarm: '闹钟', task: '线程交回', worker: '线程干活',
-        note: '系统提示', compress: '压缩网页', learn: '记下搜到的', trial: '试模型' }[row.kind] || row.kind;
+        note: '系统提示', compress: '压缩网页', learn: '记下搜到的', trial: '试模型', group: '群聊' }[row.kind] || row.kind;
       var via = { web: '网页', telegram: 'Telegram', wecom: '企业微信' }[row.via];
       return kind + (via ? ' · ' + via : '') + (row.step ? ' · 工具后' : '');
     },
@@ -2822,5 +2822,5 @@ function resident() {
       this.toast = message;
       setTimeout(function () { if (self.toast === message) self.toast = ''; }, 2400);
     }
-  };
+  }, typeof groupPage === 'function' ? groupPage() : {});
 }

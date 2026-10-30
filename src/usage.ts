@@ -20,9 +20,9 @@ export const USAGE_PAGE = 100;
 /**
  * What a call was for: a turn of theirs, the handoff letter, a check-in, a heartbeat, an alarm, a cloud task's
  * report, another system note; or work outside the conversation: shrinking a web page, saving what a search found,
- * the trial call when a model is picked.
+ * the trial call when a model is picked; a turn in the group chat.
  */
-export type UsageKind = "chat" | "letter" | "checkin" | "heartbeat" | "alarm" | "task" | "worker" | "note" | "compress" | "learn" | "trial";
+export type UsageKind = "chat" | "letter" | "checkin" | "heartbeat" | "alarm" | "task" | "worker" | "note" | "compress" | "learn" | "trial" | "group";
 /** Where the turn came from; "" for a turn the resident started itself and for work outside the conversation. */
 export type UsageVia = "web" | "telegram" | "wecom" | "";
 export type UsageLabel = { kind: UsageKind; via: UsageVia };

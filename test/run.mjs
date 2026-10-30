@@ -36,6 +36,8 @@
 //   residents  more than one resident (src/residents.ts): added and listed, its own addresses under /r/<id>, its
 //            own settings, conversation, Aelios identity, Telegram bot, avatar and task reports, one push key for
 //            all, deleted and added again empty
+//   group    the group chat (src/group.ts): who answers, @, residents calling each other up to the cap, stop, the
+//            settings, nothing kept in their own conversations
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -46,7 +48,7 @@ const MOCK = "http://127.0.0.1:9999";
 const SECRET = "test-secret";
 const phase = process.argv[2] ?? "main";
 
-let nextId = { residents: 2500, "claude-code": 2400, main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
+let nextId = { group: 2600, residents: 2500, "claude-code": 2400, main: 100, checkin: 200, idle: 300, "crash-1": 500, "crash-2": 600, migrate: 700, mcp: 800, "mcp-2": 1000, stickers: 1100, voice: 1300, tasks: 1400, "tasks-quiet": 1600, sites: 1700, heartbeat: 1800, alarms: 1900, wecom: 2000, telegram: 2100, web: 2200, stall: 2300 }[phase] ?? 900;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = async () => (await fetch(`${MOCK}/__log`)).json();
 // MarkdownV2 escapes punctuation with a backslash; tests compare the plain text.
@@ -3289,3 +3291,107 @@ if (phase === "residents") {
   });
 }
 
+
+if (phase === "group") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const json = async (path, body) => {
+    const response = await web(path, KEY, body);
+    return { status: response.status, data: await response.json().catch(() => null) };
+  };
+  const room = async (prefix = "") => (await json(`${prefix}/web/group`)).data;
+  // Until the round is over; the lines after `after`, as "author: text" (her lines with no author).
+  const settled = async (after = 0, ms = 20000) => {
+    const start = Date.now();
+    for (;;) {
+      const now = await room();
+      if (!now.running && !now.speaking) return now.lines.filter((l) => l.seq > after).map((l) => `${l.kind === "note" ? "note" : l.author || "her"}: ${l.text}`);
+      if (Date.now() - start > ms) throw new Error(`the round did not end: ${JSON.stringify(now)}`);
+      await sleep(300);
+    }
+  };
+  const lastSeq = async () => (await room()).lines.at(-1)?.seq ?? 0;
+  const say = async (text) => {
+    const { status, data } = await json("/web/group/say", { text });
+    assert.equal(status, 200, JSON.stringify(data));
+    return data.line.seq - 1;
+  };
+
+  await step("the group is the default resident's, and with one resident it is a group of one", async () => {
+    const empty = await room();
+    assert.deepEqual([empty.lines, empty.members, empty.config.reply, empty.config.turns], [[], ["default"], "all", 6]);
+    assert.equal((await web("/web/group", "wrong")).status, 401);
+    assert.equal((await json("/web/group/say", { text: "  " })).status, 400);
+    assert.equal((await json("/web/group/say", { text: "长".repeat(4001) })).status, 400);
+    assert.equal((await json("/web/residents", { id: "mochi", name: "麻薯" })).status, 200);
+    assert.deepEqual((await room()).members, ["default", "mochi"], "a new resident is in it");
+  });
+
+  await step("a message of hers: everyone answers in the sidebar's order, each hearing the ones before", async () => {
+    const after = await say("今晚吃什么");
+    assert.deepEqual(await settled(after), ["her: 今晚吃什么", "default: 住户听到了：今晚吃什么", "mochi: 麻薯听到了：住户听到了：今晚吃什么"]);
+    assert.deepEqual((await room("/r/mochi")).lines.length, 3, "the same room from another resident's page");
+  });
+
+  await step("@ calls only those named; passing says nothing", async () => {
+    let after = await say("@麻薯 你呢");
+    assert.deepEqual(await settled(after), ["her: @麻薯 你呢", "mochi: 麻薯听到了：@麻薯 你呢"]);
+    after = await say("都别说话");
+    assert.deepEqual(await settled(after), ["her: 都别说话"], "both passed");
+  });
+
+  await step("residents calling each other stop at the cap, and her next message starts again", async () => {
+    let after = await say("互相点名");
+    const lines = await settled(after);
+    assert.equal(lines.filter((l) => /^(default|mochi): @/.test(l)).length, 6, lines.join("\n"));
+    assert.equal(lines.at(-1), "note: 这一轮说了 6 句，先停在这里。你再说一句就接着聊。");
+    assert.deepEqual(lines.slice(1, 3), ["default: @麻薯 该你了", "mochi: @住户 该你了"]);
+    after = await say("好了好了");
+    assert.equal((await settled(after)).length, 3, "a new round");
+  });
+
+  await step("the settings: who is in it, one answering in turn, the cap; checked", async () => {
+    const set = (body) => json("/web/group/config", { members: null, reply: "all", order: "list", turns: 6, ...body });
+    assert.equal((await set({ members: ["nobody"] })).status, 400);
+    assert.equal((await set({ turns: 21 })).status, 400);
+    assert.equal((await set({ reply: "one", turns: 3 })).status, 200);
+    let after = await say("轮到谁");
+    const first = await settled(after);
+    assert.equal(first.length, 2, first.join("\n"));
+    after = await lastSeq();
+    await say("再轮一个");
+    const second = await settled(after);
+    assert.notEqual(first[1].split(":")[0], second[1].split(":")[0], `one in turn: ${first[1]} / ${second[1]}`);
+    after = await say("互相点名");
+    const capped = await settled(after);
+    assert.equal(capped.filter((l) => /该你了/.test(l)).length, 3, capped.join("\n"));
+    assert.match(capped.at(-1), /说了 3 句/);
+    const { data } = await set({ members: ["mochi"] });
+    assert.deepEqual([data.members, data.config.members], [["mochi"], ["mochi"]]);
+    after = await say("只有麻薯在吗");
+    assert.deepEqual(await settled(after), ["her: 只有麻薯在吗", "mochi: 麻薯听到了：只有麻薯在吗"]);
+    after = await say("@住户 你在吗");
+    assert.deepEqual(await settled(after), ["her: @住户 你在吗"], "not in the group, not called");
+    assert.equal((await set({ members: ["default", "mochi"] })).data.config.members, null, "everyone ticked is everyone");
+  });
+
+  await step("stop: the one speaking is dropped and no one else speaks", async () => {
+    const after = await say("大家慢慢说");
+    const start = Date.now();
+    while (!(await room()).speaking && Date.now() - start < 5000) await sleep(100);
+    assert.deepEqual((await json("/web/group/stop", {})).data, { ok: true });
+    await sleep(5000);
+    assert.deepEqual(await settled(after), ["her: 大家慢慢说", "note: 你让大家先停一下。"]);
+    const again = await say("继续吧");
+    const next = await settled(again);
+    assert.equal(next.length, 3, `the next message is answered: ${next.join(" / ")}`);
+  });
+
+  await step("nothing said in the group is in their own conversations; its calls are in each one's usage", async () => {
+    const own = async (prefix) => (await json(`${prefix}/web/messages`)).data.data;
+    assert.equal((await own("")).length, 0);
+    assert.equal((await own("/r/mochi")).length, 0);
+    const rows = (await json("/r/mochi/web/usage")).data.rows;
+    assert.ok(rows.length > 0 && rows.every((row) => row.kind === "group" && row.via === "web"), JSON.stringify(rows.slice(0, 2)));
+  });
+}
