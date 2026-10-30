@@ -1362,14 +1362,7 @@ groupAnswer = { group: { id: 'g1', name: '周末', members: ['default', 'mochi',
 await grouper.saveGroupEdit();
 assert.deepEqual(copy(groupCalls.find((call) => call[0].startsWith('/web/group/config'))), ['/web/group/config?g=g1', { name: '周末', members: ['default', 'mochi', 'kiki'], reply: 'one', order: 'list', rounds: 2 }]);
 assert.equal(grouper.groupEdit, null, 'closed once saved');
-// In a resident's own chat, what a group handed it says which group, above it.
-const handed = vm.runInContext('testPage()', context);
-handed.lines = [
-  { id: 'u1', role: 'user', kind: 'chat', text: '今晚吃什么\n[旦九] 火锅', at: null, via: 'group', group: '周末' },
-  { id: 'a1', role: 'assistant', kind: 'chat', text: '我也要', at: null, via: 'group' }
-];
-assert.deepEqual(copy(handed.rows().map((row) => [row.type, row.text ?? row.line.id])), [['why', '群聊「周末」'], ['line', 'u1'], ['line', 'a1']]);
-console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, bubbles as in the chat, pictures and stickers sent, only own stickers shown, a reply not fetched yet is not skipped, rounds and icon in the settings, marked in its own chat');
+console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, bubbles as in the chat, pictures and stickers sent, only own stickers shown, a reply not fetched yet is not skipped, rounds and icon in the settings');
 // Its latest reply has two icons under it: delete (asked first) and answer again (the dots show until the new one).
 const back = vm.runInContext('testPage()', context);
 const takes = [];

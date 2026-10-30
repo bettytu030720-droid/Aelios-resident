@@ -761,10 +761,6 @@ function resident() {
         if (line.role === 'assistant' && (line.via === 'checkin' || line.via === 'task') && lastVia !== line.via) {
           out.push({ key: 'why_' + line.id, type: 'why', text: (line.via === 'task' ? '线程交回' : '主动找你') + (line.at ? ' · ' + self.clock(line.at) : '') });
         }
-        // What a group chat handed it says which group, above it.
-        if (line.role === 'user' && line.via === 'group') {
-          out.push({ key: 'why_' + line.id, type: 'why', text: '群聊「' + (line.group || '') + '」' + (line.at ? ' · ' + self.clock(line.at) : '') });
-        }
         lastVia = line.role === 'user' ? null : line.via;
         var cards = (line.tasks || []).filter(function (task) { return newest[task.id] === line.id; });
         out.push({ key: line.id, type: 'line', line: line, cards: cards });
@@ -790,10 +786,9 @@ function resident() {
       var last = this.lines.filter(function (l) { return l.kind !== 'notice'; }).pop();
       return Boolean(last && last.id === line.id);
     },
-    // A check-in or a thread's report answers no message of hers, and a group chat's reply was posted there, so
-    // they can only be deleted.
+    // A check-in or a thread's report answers no message of hers, so it can only be deleted.
     answersHer(line) {
-      return line.via !== 'checkin' && line.via !== 'task' && line.via !== 'group';
+      return line.via !== 'checkin' && line.via !== 'task';
     },
     async takeBack(line, again) {
       if (!again && !confirm('删掉这条？')) return;

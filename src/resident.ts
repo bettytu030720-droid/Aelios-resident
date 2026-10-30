@@ -301,8 +301,6 @@ export type WebLine = {
   text: string;
   at: number | null;
   via: "telegram" | "wecom" | "web" | "checkin" | "task" | "group" | null;
-  /** The group chat this message of hers was handed to it from (group.ts). */
-  group?: string;
   activity?: Activity[];
   /** Stickers sent in this reply, shown after its words; or the one she sent from the web page. */
   stickers?: { url: string; video: boolean }[];
@@ -2502,7 +2500,9 @@ export class Resident extends Think<Env> {
     this.#spoke = null;
     this.#turnVoice = null;
     this.#draftActive = null;
-    if (ctx.requestId && !this.#letterPromptId) {
+    const lastSaid = this.messages.findLast((message) => message.role === "user")?.metadata as WebSaidMeta | undefined;
+    // A turn in a group chat shows on the group's page, not in this chat.
+    if (ctx.requestId && !this.#letterPromptId && !lastSaid?.group) {
       const via = ctx.messenger
         ? ctx.messenger.messengerId === "wecom"
           ? "wecom"
@@ -2514,8 +2514,7 @@ export class Resident extends Think<Env> {
       if (via === "web") {
         // A reply to a voice message she recorded there can be said in the voice too (speakOnWeb).
         if (this.#webTurns.size > 20) this.#webTurns.clear();
-        const lastUser = this.messages.findLast((message) => message.role === "user");
-        this.#webTurns.set(ctx.requestId, { voice: Boolean((lastUser?.metadata as WebSaidMeta | undefined)?.voice) });
+        this.#webTurns.set(ctx.requestId, { voice: Boolean(lastSaid?.voice) });
       }
       // activeTurn is async-context-local; a separate history RPC must check it inside the captured turn.
       const withinTurn = AsyncLocalStorage.snapshot();
@@ -3510,11 +3509,13 @@ export class Resident extends Think<Env> {
         }
         const own = message.metadata as WebSaidMeta | undefined;
         via = own?.group ? "group" : meta?.messenger ? (meta.messenger.messengerId === "wecom" ? "wecom" : "telegram") : "web";
+        // What a group chat handed it, and its answer, are on the group's page, not in this chat.
+        if (via === "group") continue;
         const pictures = message.parts.filter((part) => part.type === "file").length;
         // Pictures that aged out of the conversation before media were kept: only their mark is left.
         const gone = text.match(EVICTED_PICTURE)?.length ?? 0;
         let voice: WebLine["voice"];
-        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "").replace(GROUP_HEAD, "");
+        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "");
         if (own?.quote) said = said.replace(QUOTE_MARK, "");
         if (own?.sticker) said = said.replace(STICKER_MARK, "");
         said = said
@@ -3538,7 +3539,6 @@ export class Resident extends Think<Env> {
           ...(pictures ? { pictures } : {}),
           ...(voice ? { voice } : {}),
           ...(own?.quote ? { quote: own.quote } : {}),
-          ...(own?.group ? { group: own.group } : {}),
           ...(own?.sticker ? { stickers: [{ url: `${residentPrefix(this.residentId)}/stickers/${own.sticker}`, video: sticker?.video ?? false }] } : {})
         });
         continue;
@@ -3549,8 +3549,8 @@ export class Resident extends Think<Env> {
         about = null;
         continue;
       }
-      // A check-in or a group chat it passed on says nothing.
-      if ((via === "checkin" || via === "group") && text === SKIP) continue;
+      // A check-in it passed on says nothing; a group chat's answer was posted there.
+      if ((via === "checkin" && text === SKIP) || via === "group") continue;
       const stickers = this.sentStickers(message.parts as never);
       const tasks = this.taskCards(message.parts as never, about);
       about = null;

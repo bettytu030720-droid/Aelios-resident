@@ -62,10 +62,10 @@ const at = { names, round: 1, rounds: 3 };
 const heard = groupHeard([line(1, HER, "今晚吃什么"), line(2, "default", "火锅")], false, { ...at, group: "周末", me: "麻薯", others: ["旦九", "Kiki"] });
 assert.equal(
   heard,
-  '[group chat "周末" with them, 旦九 and Kiki, where you are 麻薯. What was said there since you last spoke, oldest first; a line without a [name] is theirs. Your reply is posted there: write only your own message. This is round 1 of at most 3 on their latest message; if you have nothing more to add, reply with just SKIP to end]\n今晚吃什么\n[旦九] 火锅'
+  '[group chat "周末" with them, 旦九 and Kiki, where you are 麻薯. What was said there since you last spoke, oldest first, each line after who said it ([them] is them). Your reply is posted there: write only your own message. This is round 1 of at most 3 on their latest message; if you have nothing more to add, reply with just SKIP to end]\n[them] 今晚吃什么\n[旦九] 火锅'
 );
 assert.match(groupHeard([line(1, HER, "在吗")], false, { ...at, round: 2, group: "两个人", me: "麻薯", others: ["旦九"] }), /^\[group chat "两个人" with them and 旦九, where you are 麻薯\..* This is round 2 of at most 3 /);
-assert.match(groupHeard([line(9, HER, "嗯")], true, { ...at, group: "a", me: "麻薯", others: ["旦九"] }), /\]\n\(Earlier messages of this group are not shown\.\)\n嗯$/);
+assert.match(groupHeard([line(9, HER, "嗯")], true, { ...at, group: "a", me: "麻薯", others: ["旦九"] }), /\]\n\(Earlier messages of this group are not shown\.\)\n\[them\] 嗯$/);
 assert.match(groupHeard([line(1, HER, "长".repeat(2500))], false, { ...at, group: "a", me: "麻薯", others: ["旦九"] }), /…\(cut here: 2500 characters in all\)$/);
 assert.match(groupHeard([], false, { ...at, group: 'a "b"]\nc', me: "麻薯", others: ["旦九"] }), /^\[group chat "a  b   c" with/, "a name cannot end the head early");
 const marked = groupHeard(
@@ -73,12 +73,12 @@ const marked = groupHeard(
   false,
   { ...at, group: "a", me: "麻薯", others: ["旦九"] }
 );
-assert.deepEqual(marked.split("\n").slice(1), ["看这个 [sticker 🤗 A hug.] [picture] [picture]", "[旦九] [sticker 👋 Say hi.]"], "stickers and pictures marked where they were");
+assert.deepEqual(marked.split("\n").slice(1), ["[them] 看这个 [sticker 🤗 A hug.] [picture] [picture]", "[旦九] [sticker 👋 Say hi.]"], "stickers and pictures marked where they were");
 // It is a message of hers, not one of the system's notes: Aelios recalls for it and records it.
 const stamped = `[10-30 Fri 01:40] ${heard}`;
 assert.equal(isAuxiliary({ messages: [{ role: "user", content: stamped }] }), false);
-assert.equal(stamped.replace(/^\[\d\d-\d\d [^\]]*\]\s*/, "").replace(GROUP_HEAD, ""), "今晚吃什么\n[旦九] 火锅", "the web page shows only what was said");
-console.log("PASS what a member is handed: who is there, hers without a name, the others with theirs, cut where it says so, recorded by Aelios");
+assert.equal(stamped.replace(/^\[\d\d-\d\d [^\]]*\]\s*/, "").replace(GROUP_HEAD, ""), "[them] 今晚吃什么\n[旦九] 火锅", "the search shows only what was said");
+console.log("PASS what a member is handed: who is there, every line after who said it (hers as [them]), cut where it says so, recorded by Aelios");
 
 // Rounds: when everyone in one has had a turn and someone said something, the next starts, up to the setting.
 const round = { ...ROUND_IDLE, root: 5, order: ["default", "mochi"], queue: ["mochi"], running: true, speaking: "default" };

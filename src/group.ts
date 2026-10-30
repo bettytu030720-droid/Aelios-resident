@@ -151,7 +151,7 @@ export const GROUP_HEAD = /^\[group chat "[^"\n]*"[^\n]*\]\n?/;
 
 /**
  * What member `me` is handed on its turn in a group: what the others said there since it last spoke, oldest
- * first, hers without a name and the residents' with theirs, stickers and pictures marked (the pictures go with it).
+ * first, each line after who said it ([them] for her), stickers and pictures marked (the pictures go with it).
  * It goes into its own conversation as a message of hers (not one of the system's notes), so Aelios recalls for it
  * and records it.
  */
@@ -162,11 +162,11 @@ export function groupHeard(
 ): string {
   const plain = (text: string) => text.replace(/["\]\n]/g, " ");
   const company = others.map((name, i) => `${i === others.length - 1 ? " and" : ","} ${plain(name)}`).join("");
-  const head = `[group chat "${plain(group)}" with them${company}, where you are ${plain(me)}. What was said there since you last spoke, oldest first; a line without a [name] is theirs. Your reply is posted there: write only your own message. This is round ${round} of at most ${rounds} on their latest message; if you have nothing more to add, reply with just ${SKIP} to end]`;
+  const head = `[group chat "${plain(group)}" with them${company}, where you are ${plain(me)}. What was said there since you last spoke, oldest first, each line after who said it ([them] is them). Your reply is posted there: write only your own message. This is round ${round} of at most ${rounds} on their latest message; if you have nothing more to add, reply with just ${SKIP} to end]`;
   const said = lines.map((line) => {
     const words = line.text.length > LINE_MAX ? `${line.text.slice(0, LINE_MAX)}…(cut here: ${line.text.length} characters in all)` : line.text;
     const text = [words, ...(line.stickers ?? []).map((sticker) => sticker.mark), ...Array(line.pictures ?? 0).fill("[picture]")].filter(Boolean).join(" ");
-    return line.author === HER ? text : `[${names[line.author] ?? line.author}] ${text}`;
+    return `[${line.author === HER ? "them" : (names[line.author] ?? line.author)}] ${text}`;
   });
   return [head, ...(cut ? ["(Earlier messages of this group are not shown.)"] : []), ...said].join("\n");
 }
