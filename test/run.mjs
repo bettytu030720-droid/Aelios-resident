@@ -1836,6 +1836,9 @@ if (phase === "tasks" || phase === "tasks-quiet" || phase === "tasks-roles") {
         });
       const brief = [{ role: "system", content: "You are the resident's background hands for small jobs." }, { role: "user", content: "title: 接通测试\n\nsay hi" }];
       assert.equal((await think(brief, "0".repeat(32))).status, 403);
+      // A step the model takes too long over is a 504 that says so, which the run tries once more.
+      const slow = await think([brief[0], { role: "user", content: "title: 接通测试\n\n模型超时" }]);
+      assert.deepEqual([slow.status, await slow.json()], [504, { error: { message: "the model did not answer within 5 minutes" } }]);
       const first = await (await think(brief)).json();
       assert.equal(first.object, "chat.completion");
       assert.equal(first.choices[0].finish_reason, "tool_calls");
