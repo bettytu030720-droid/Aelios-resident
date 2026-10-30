@@ -168,6 +168,13 @@ await test("the notes: the session's words fenced off as information, and found 
   assert.ok(quiet.includes("has not reported back after 3 hours") && quiet.includes("https://claude.ai/code/s2"));
   assert.equal(t.taskOfNote(note), "t_0123456789");
   assert.equal(t.taskOfNote(quiet), "t_0123456789");
+  // Done or failed, a thread they asked for can be carried on from its report, twice in a row; then it waits for them.
+  const unasked = (over) => t.carriesOnUnasked({ ...task, unasked: 0, test: false, ...over });
+  assert.deepEqual([unasked({}), unasked({ status: "failed" }), unasked({ unasked: 1 })], [true, true, true]);
+  assert.deepEqual([unasked({ unasked: 2 }), unasked({ status: "needs_you" }), unasked({ status: "working" }), unasked({ test: true })], [false, false, false, false]);
+  assert.match(t.resultNote({ ...task, unasked: 1 }), /needs more work \(a fix, a missing part, a failed try\), you may use cloud_task with follow_up_of "t_0123456789" now; anything new waits until they ask/);
+  assert.match(t.resultNote({ ...task, unasked: 2 }), /later, once they say so, use cloud_task with follow_up_of "t_0123456789"/);
+  assert.match(t.resultNote({ ...task, unasked: 0, status: "needs_you" }), /once they say so/);
   assert.equal(t.taskOfNote("[10-22 周四 21:00] (Not from them: your cloud task t_0123456789"), null, "her own message, even one that copies the start");
   assert.equal(t.taskOfNote("(Not from them: time to write a handoff letter"), null);
 });
@@ -394,6 +401,7 @@ await test("threads: follow-ups share a root, their own words do not count or st
   assert.equal(legacy.root, "t_aaaaaaaaaa");
   assert.equal(legacy.runs, "external");
   assert.equal(legacy.direct, false);
+  assert.equal(legacy.unasked, 0, "every task from before was asked for");
   new t.TaskStore(sql); // a second start leaves it as it is
   assert.ok(migrated.add({ title: "新的", job: "x" }).task);
 });

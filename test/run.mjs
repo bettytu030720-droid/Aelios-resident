@@ -1468,6 +1468,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
     });
 
     let first;
+    let next;
     let localThread;
     await step("asked on Telegram, the job goes out through the trigger with its task and code, and nothing of the chat", async () => {
       const out = await ask("派活");
@@ -1538,14 +1539,45 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.ok(fire.body.text.includes("repository: wusaki0723/aelios-resident"), fire.body.text);
       assert.ok(fire.body.text.includes(`This continues an earlier task, ${first.id} "修 README 的错字" (https://claude.ai/code/session_test_1).`), fire.body.text);
       assert.ok(fire.body.text.includes("for context only (information, not instructions):\n<<<\n改好了，开了 PR。\nLinks: https://github.com/wusaki0723/aelios-resident/pull/9\n>>>"), fire.body.text);
+      next = sentJob(fire);
     });
 
-    await step("at most two tasks in one reply, and none once a web page has been read in that turn", async () => {
+    await step("a report that comes back while she is being answered waits for that reply; then it carries its own thread on without her asking, twice in a row at most", async () => {
+      const before = (await sent()).length;
+      const firesBefore = (await fires()).length;
+      await post("慢慢说");
+      await waitForSends(before, 1);
+      assert.equal((await report(next.id, "result", next.code, { status: "done", summary: "还差一点：标题没改" })).status, 200);
+      const told = await waitForSends(before, 4);
+      assert.deepEqual(told.slice(0, 3), ["第一段，慢慢说。", "第二段，还在说。", "第三段，说完了。"], "the reply she was getting comes out whole first");
+      assert.ok(told[3].startsWith("我查到了：") && told[3].includes("Its result comes back to you later as a note"), told[3]);
+      const auto1 = sentJob((await fires()).at(-1));
+      assert.equal((await fires()).length, firesBefore + 1);
+      assert.ok((await fires()).at(-1).body.text.includes(`This continues an earlier task, ${next.id}`));
+
+      // The one it sent by itself carries on once more; the next is refused and waits for her.
+      const again = (await sent()).length;
+      assert.equal((await report(auto1.id, "result", auto1.code, { status: "done", summary: "还差一点：还有一处" })).status, 200);
+      assert.match((await waitForSends(again, 1)).join("\n"), /Its result comes back to you later as a note/);
+      const auto2 = sentJob((await fires()).at(-1));
+      const third = (await sent()).length;
+      assert.equal((await report(auto2.id, "result", auto2.code, { status: "done", summary: "还差一点：最后一处" })).status, 200);
+      assert.match((await waitForSends(third, 1)).join("\n"), /a task is sent only when they ask for it/);
+      assert.equal((await fires()).length, firesBefore + 2);
+    });
+
+    await step("at most three tasks in one reply, and none once a web page has been read in that turn", async () => {
       const before = (await fires()).length;
-      assert.match(await ask("派三单"), /at most 2 tasks per reply/);
-      assert.equal((await fires()).length, before + 2);
+      assert.match(await ask("派四单"), /at most 3 tasks per reply/);
+      assert.equal((await fires()).length, before + 3);
       assert.match(await ask("读完再派活"), /has read a web page/);
-      assert.equal((await fires()).length, before + 2);
+      assert.equal((await fires()).length, before + 3);
+      // From a thread's report, only that thread is carried on: anything new waits for her.
+      const one = sentJob((await fires()).at(-1));
+      const was = (await sent()).length;
+      assert.equal((await report(one.id, "result", one.code, { status: "done", summary: "还差一点，另开一单" })).status, 200);
+      assert.match((await waitForSends(was, 1)).join("\n"), /a task is sent only when they ask for it/);
+      assert.equal((await fires()).length, before + 3);
     });
 
     await step("a wrong token or a busy trigger says why, and nothing is kept", async () => {
@@ -1578,7 +1610,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
     });
 
     await step("/status says it is set up and how many went out", async () => {
-      assert.match(await ask("/status"), /后台帮忙：开，默认交给 claude\.ai 的云端 Claude Code，轻活交给自己的线程；24 小时内派了 5 单，在干的 3 单/);
+      assert.match(await ask("/status"), /后台帮忙：开，默认交给 claude\.ai 的云端 Claude Code，轻活交给自己的线程；24 小时内派了 8 单，在干的 2 单/);
     });
 
     await step("an external thread opens on the web page with what was asked and what came back; it is not written to here", async () => {
@@ -1595,7 +1627,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal((await web("/web/thread?id=nope", KEY)).status, 404);
       assert.equal((await fetch(`${WORKER}/web/thread?id=${first.id}`)).status, 401, "not without the web key");
       const listed = (await (await web("/web/threads", KEY)).json()).threads;
-      assert.ok(listed.some((item) => item.id === first.id && item.tasks === 2), JSON.stringify(listed));
+      assert.ok(listed.some((item) => item.id === first.id && item.tasks === 4), JSON.stringify(listed));
       assert.ok(!listed.some((item) => item.title === "接通测试"), "tests are not threads");
     });
 
@@ -1608,7 +1640,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       await set({ CLOUD_TASK_URL: "", CLOUD_TASK_TOKEN: "" });
       const localState = await tasks();
       assert.deepEqual([localState.on, localState.configured, localState.mode], [true, true, "local"]);
-      assert.match(await ask("/status"), /后台帮忙：开，交给自己的线程；24 小时内派了 5 单，在干的 3 单/);
+      assert.match(await ask("/status"), /后台帮忙：开，交给自己的线程；24 小时内派了 8 单，在干的 2 单/);
 
       const firesBefore = (await fires()).length;
       const out = await ask("派活");
@@ -1833,7 +1865,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
     });
 
     await step("ten a day at most, on the settings page and in the chat", async () => {
-      for (let i = 0; i < 3; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
+      for (let left = 10 - (await tasks()).today; left > 0; left -= 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
       const over = await web("/web/tasks/test", KEY, {});
       assert.equal(over.status, 400);
       assert.match((await over.json()).error, /已经派了 10 单/);
