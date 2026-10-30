@@ -497,7 +497,25 @@ export type NewTask = {
   direct?: boolean;
 };
 
+/** A GitHub pull request link: github.com/<owner>/<repo>/pull/<n>. */
+const PR_LINK = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/;
+/** How long a pull request's state is trusted before it is asked again. */
+export const PR_CHECK_SECONDS = 300;
+const GITHUB_API = "https://api.github.com";
+
+/** The first pull request among a task's links, as an API path; null when there is none. */
+export function prPath(links: string[]): string | null {
+  for (const link of links) {
+    const m = PR_LINK.exec(link.trim());
+    if (m) return `/repos/${m[1]}/${m[2]}/pulls/${m[3]}`;
+  }
+  return null;
+}
+
 export class TaskStore {
+  /** When each task's pull request was last asked about (this isolate only: a restart asks once more). */
+  readonly #prChecked = new Map<string, number>();
+
   constructor(private readonly sql: Sql) {
     sql`CREATE TABLE IF NOT EXISTS res_tasks (id TEXT PRIMARY KEY, code TEXT NOT NULL, title TEXT NOT NULL, job TEXT NOT NULL,
       repo TEXT NOT NULL, follows TEXT NOT NULL, status TEXT NOT NULL, session_url TEXT NOT NULL, progress TEXT NOT NULL,
@@ -603,6 +621,48 @@ export class TaskStore {
       choices = ${JSON.stringify(result.choices ?? [])}, chosen = ${""}, settled = ${0}, updated_at = ${Date.now()}, notices = notices + 1 WHERE id = ${id}`;
     const [row] = this.sql<{ notices: number; test: number; direct: number }>`SELECT notices, test, direct FROM res_tasks WHERE id = ${id}`;
     return Boolean(row && !row.test && !row.direct && row.notices <= NOTICES_MAX);
+  }
+
+  /** A task's state moved by the world outside (a pull request merged): not a report, so no notice and no turn. */
+  moved(id: string, status: TaskStatus, summary: string): void {
+    this.sql`UPDATE res_tasks SET status = ${status}, summary = ${summary}, choices = ${"[]"}, chosen = ${""}, updated_at = ${Date.now()} WHERE id = ${id}`;
+  }
+
+  /**
+   * Tasks that wait for them on a pull request: the newest of their thread, needs_you, with a pull request link.
+   * Each pull request is asked about at most once every PR_CHECK_SECONDS, and one that cannot be asked is left as it
+   * is. Merged: the task is done, and its summary says when. Closed without merging: it failed, and says so.
+   * Never throws.
+   */
+  async syncPrs(token: string, apiBase?: string, doFetch: typeof fetch = fetch): Promise<void> {
+    if (!token) return;
+    const base = apiBase?.trim() ? apiBase.trim().replace(/\/+$/, "") : GITHUB_API;
+    const now = Date.now();
+    const waiting = this.sql<Row>`SELECT * FROM res_tasks WHERE test = 0 AND status = 'needs_you' ORDER BY created_at DESC, rowid DESC LIMIT 20`
+      .map(taskOf)
+      .filter((task) => this.latest(task.root)?.id === task.id);
+    await Promise.all(
+      waiting.map(async (task) => {
+        const path = prPath(task.links);
+        if (!path || now - (this.#prChecked.get(task.id) ?? 0) < PR_CHECK_SECONDS * 1000) return;
+        this.#prChecked.set(task.id, now);
+        try {
+          const response = await doFetch(`${base}${path}`, {
+            headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aelios-resident" },
+            signal: AbortSignal.timeout(10_000)
+          });
+          if (!response.ok) return;
+          const pr = (await response.json()) as { state?: string; merged?: boolean; merged_at?: string | null; closed_at?: string | null };
+          if (pr.merged || pr.merged_at) {
+            this.moved(task.id, "done", `${task.summary}\nPR 已于 ${pr.merged_at ?? "刚才"} 合并`.trim());
+          } else if (pr.state === "closed") {
+            this.moved(task.id, "failed", `${task.summary}\nPR 已关闭，没有合并${pr.closed_at ? `（${pr.closed_at}）` : ""}`.trim());
+          }
+        } catch {
+          // Leave the task as it was; the next listing asks again.
+        }
+      })
+    );
   }
 
   /** The answer they picked on a card that waits for their decision; false when it waits for none (or no longer). */

@@ -498,6 +498,7 @@ await test("find_threads: a thread whose files could not be listed is asked agai
   const host = {
     store: tasks,
     tz: "Asia/Shanghai",
+    syncPrs: async () => {},
     threadStarted: (root) => root === page.id,
     threadFiles: async () => (asked++, answers.shift() ?? null),
     threadFile: async () => null,
@@ -628,4 +629,38 @@ await test("the task payload carries arbitrary model IDs without choosing a subs
   const picked = parseJobPayload(t.payload(task, "c", null, "my-provider/my-model"));
   assert.equal(picked.model, "my-provider/my-model");
   assert.equal(picked.repository, "octo/hello");
+});
+
+await test("a task waiting on a pull request follows it: merged is done, closed is failed, errors change nothing, answers are cached", async () => {
+  const PR = "https://github.com/octo/hello/pull/7";
+  const { tasks } = store();
+  const open = (title) => {
+    const { task } = tasks.add({ title, job: "j" });
+    tasks.result(task.id, { status: "needs_you", summary: "开了 PR", links: [PR.replace("/7", `/${title}`)] });
+    return task.id;
+  };
+  const merged = open("7"), closed = open("8"), broken = open("9");
+  const plain = tasks.add({ title: "p", job: "j" }).task.id;
+  tasks.result(plain, { status: "needs_you", summary: "没有 PR", links: ["https://example.com/pull/1"] });
+  const calls = fakeFetch((url) => {
+    if (url.endsWith("/pulls/7")) return Response.json({ state: "closed", merged: true, merged_at: "2026-10-30T01:02:03Z" });
+    if (url.endsWith("/pulls/8")) return Response.json({ state: "closed", merged: false, closed_at: "2026-10-30T02:00:00Z" });
+    return new Response("nope", { status: 500 });
+  });
+  await tasks.syncPrs("tok", undefined, globalThis.fetch);
+  assert.equal(calls.length, 3, "only tasks with a pull request link are asked");
+  assert.equal(calls[0].init.headers.authorization, "Bearer tok");
+  assert.equal(tasks.get(merged).status, "done");
+  assert.match(tasks.get(merged).summary, /PR 已于 2026-10-30T01:02:03Z 合并$/);
+  assert.equal(tasks.get(closed).status, "failed");
+  assert.match(tasks.get(closed).summary, /PR 已关闭/);
+  assert.equal(tasks.get(broken).status, "needs_you", "a failed check leaves the task alone");
+  assert.equal(tasks.get(plain).status, "needs_you");
+  await tasks.syncPrs("tok", undefined, globalThis.fetch);
+  assert.equal(calls.length, 3, "asked again only after the cache runs out");
+  await tasks.syncPrs("", undefined, globalThis.fetch);
+  const thrower = async () => { throw new Error("offline"); };
+  const second = open("10");
+  await tasks.syncPrs("tok", undefined, thrower);
+  assert.equal(tasks.get(second).status, "needs_you", "a network error neither changes the task nor throws");
 });

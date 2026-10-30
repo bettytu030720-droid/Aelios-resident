@@ -39,6 +39,8 @@ export const SEARCH_CHAT_DESCRIPTION =
 export type FindHost = {
   store: TaskStore;
   tz: string;
+  /** Brings tasks that wait on a pull request up to date with GitHub; never throws. */
+  syncPrs(): Promise<void>;
   /** A thread here's files; null when it could not be asked. */
   threadFiles(root: string): Promise<ThreadFileEntry[] | null>;
   /** A file of a thread here; null when there is none, it is too big, or the thread never started. */
@@ -81,6 +83,7 @@ export function findTools(host: FindHost): ToolSet {
 /** Threads with the words. A thread here that did something since its files were last looked at is looked at first. */
 async function findThreads(host: FindHost, words: string): Promise<Record<string, unknown>> {
   const { store } = host;
+  await host.syncPrs();
   await Promise.all(
     store.staleFiles().map(async (root) => {
       // A thread that never started has no files; one that could not be asked is asked again next time.
