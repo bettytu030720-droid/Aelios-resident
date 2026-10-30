@@ -1,8 +1,11 @@
 // Telegram pieces the Think messenger does not do the way we want:
 //   - bubbles: a blank line in the reply starts a new Telegram message, posted as soon as
 //     the paragraph is finished, instead of one message edited as it streams;
+//   - a sticker its reply names with a mark (sticker-marks.ts) goes right after its paragraph;
 //   - a reply that goes out as one voice message instead (voice.ts);
 //   - the Worker's own Bot API calls (slash commands, webhook setup, stickers, voice messages).
+
+import { stickerMarks } from "./sticker-marks";
 
 const DEFAULT_API_BASE = "https://api.telegram.org";
 // sendMessage allows 4096 UTF-16 code units; leave room for markdown escapes.
@@ -53,13 +56,16 @@ export type VoiceOut = {
  * with no words, when a sticker is the reply); `after` posts what goes after the words (a sticker). `voice` sends the
  * whole reply as one voice message instead of bubbles. `instead` gives the message that already was the reply (a
  * voice message from send_voice) when the text is only the placeholder: nothing is posted, and that message stands
- * for the reply.
+ * for the reply. `sticker` posts the sticker a mark names (pack/name), null when it could not go; `nothing` is posted
+ * when nothing at all went out (a reply that was only the mark of a sticker that could not go).
  */
 export type BubbleEnd = {
   keepLast?(threadId: string, text: string): boolean;
   after?(threadId: string): Promise<PostedMessage | null>;
   voice?(threadId: string): VoiceOut | null;
   instead?(threadId: string, text: string): PostedMessage | null;
+  sticker?(threadId: string, handle: string): Promise<PostedMessage | null>;
+  nothing?: string;
 };
 
 // Telegram shows "recording a voice message" for about 5 seconds per call.
@@ -79,8 +85,20 @@ export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
   ): Promise<PostedMessage | null> => {
     let buffer = "";
     let last: PostedMessage | null = null;
+    let stuck = false;
+    const stick = async (handles: string[]) => {
+      for (const handle of handles) {
+        if (stuck || !end.sticker) return;
+        const posted = await end.sticker(threadId, handle).catch(() => null);
+        if (posted) [last, stuck] = [posted, true];
+      }
+    };
     const post = async (text: string) => {
-      for (const bubble of splitIntoBubbles(text)) last = await adapter.postMessage(threadId, { markdown: bubble });
+      for (const bubble of splitIntoBubbles(text)) {
+        const marked = stickerMarks(bubble);
+        if (marked.text) last = await adapter.postMessage(threadId, { markdown: marked.text });
+        await stick(marked.stickers);
+      }
     };
     const voice = end.voice?.(threadId) ?? null;
     const recording = () => void voice?.recording().catch(() => undefined);
@@ -102,10 +120,12 @@ export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
       if (instead) last = instead;
       const keep = !instead && (end.keepLast?.(threadId, buffer) ?? true);
       if (keep && voice) {
-        const said = await voice.send(buffer);
+        const marked = stickerMarks(buffer);
+        const said = marked.text ? await voice.send(marked.text) : { posted: null, text: "" };
         if (said.posted) last = said.posted;
         clearInterval(timer);
         if (said.text) await post(said.text);
+        await stick(marked.stickers);
       } else if (keep) await post(buffer);
       if (!options?.signal?.aborted && end.after) {
         const after = await end.after(threadId).catch(() => null);
@@ -113,6 +133,7 @@ export function useBubbles(adapter: BubbleAdapter, end: BubbleEnd = {}): void {
         // The sticker that was to be the whole reply did not go out: say so after all.
         else if (!keep && !instead) await post(buffer);
       }
+      if (!last && end.nothing && !options?.signal?.aborted) last = await adapter.postMessage(threadId, { markdown: end.nothing });
       return last;
     } finally {
       clearInterval(timer);

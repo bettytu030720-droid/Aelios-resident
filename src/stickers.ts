@@ -449,14 +449,20 @@ export async function stillSticker(file: StickerFile, background: Rgb | null = n
 
 // ---- what the model is told ----
 
-export const SEND_STICKER_DESCRIPTION =
-  "Send one of your stickers, as people do in a chat: now and then, when it fits the moment, not in every reply. " +
-  "At most one per reply, and none while they are upset or talking about something serious. It shows after your " +
-  "words, and can also be the whole reply. Your stickers (pack/name, emoji, when to use it):\n";
+/** How it sends a sticker (a mark in its reply, sticker-marks.ts) and which it has: in the system prompt. */
+export function stickerRules(lines: readonly string[]): string {
+  return (
+    "You can send one of your stickers, as people do in a chat: now and then, when it fits the moment, not in every " +
+    "reply. At most one per reply, and none while they are upset or talking about something serious. To send one, " +
+    "write [sticker: pack/name] at the end of a paragraph: it is taken out of your words and the sticker shows right " +
+    "after that paragraph. It can also be the whole reply. Your stickers (pack/name, emoji, when to use it):\n" +
+    lines.join("\n")
+  );
+}
 
 export const MAKE_STICKER_DESCRIPTION =
   "Draw a new sticker of your own as pixel art. It is kept in your own pack as mine/<name>, to send again later " +
-  "with send_sticker, and is sent now (as this reply's one sticker) unless send is false. Draw one when they ask " +
+  "with [sticker: mine/<name>], and is sent now (as this reply's one sticker) unless send is false. Draw one when they ask " +
   "for it or when an idea is worth keeping; drawing under a name you already used redraws it. frames: 1 to 8 " +
   "frames shown in a loop, each 8 to 32 rows of the same 8 to 32 characters, one character per pixel: '.' is " +
   'transparent, every other character a colour from palette (up to 15, like {"o": "#DA7758", "k": "#000000"}). ' +
