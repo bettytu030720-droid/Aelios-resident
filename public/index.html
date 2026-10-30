@@ -69,21 +69,21 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <label for="web-key">网页钥匙</label>
         <div class="field-box">
           <input id="web-key" x-model="keyInput" :type="showKey ? 'text' : 'password'" autocomplete="current-password" autocapitalize="off" spellcheck="false">
-          <button class="icon-btn" type="button" @click="showKey = !showKey" :aria-label="showKey ? '藏起钥匙' : '显示钥匙'">
+          <button class="icon-btn" type="button" @click="showKey = !showKey" :aria-label="showKey ? '藏起钥匙' : '显示钥匙'" :title="showKey ? '藏起钥匙' : '显示钥匙'">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
         </div>
-        <button class="btn primary" type="submit">进门</button>
+        <button class="btn primary" type="submit" title="进门" aria-label="进门"><i class="i i-enter" aria-hidden="true"></i></button>
         <span class="safe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>只存在这台设备上</span>
       </form>
-      <button class="btn" x-show="miniApp && loginError" type="button" @click="window.location.reload()">重新连接</button>
+      <button class="icon-btn sm" x-show="miniApp && loginError" type="button" @click="window.location.reload()" title="重新连接" aria-label="重新连接"><i class="i i-refresh" aria-hidden="true"></i></button>
       <p class="error" x-show="loginError" x-text="loginError"></p>
     </div>
   </template>
 
   <!-- ===== the conversation ===== -->
   <header class="top" x-show="authed && view === 'chat'">
-    <button class="icon-btn rail-open" type="button" x-show="!miniApp && residents.list.length" @click="residents.open = true" aria-label="住户们">
+    <button class="icon-btn rail-open" type="button" x-show="!miniApp && residents.list.length" @click="residents.open = true" aria-label="住户们" title="住户们">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       <span class="badge-dot small" x-show="anyResidentDot()" aria-hidden="true"></span>
     </button>
@@ -98,14 +98,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <svg x-show="!replying()" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
       </button>
     </div>
-    <button class="icon-btn" type="button" @click="openSearch()" aria-label="搜聊天记录">
+    <button class="icon-btn" type="button" @click="openSearch()" aria-label="搜聊天记录" title="搜聊天记录">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
     </button>
-    <button class="icon-btn" type="button" x-show="cloud.on" @click="openThreads()" :aria-label="'线程' + (workingTasks() ? '，' + workingTasks() + ' 个在路上' : '')">
+    <button class="icon-btn" type="button" x-show="cloud.on" @click="openThreads()" :aria-label="'线程' + (workingTasks() ? '，' + workingTasks() + ' 个在路上' : '')" :title="'线程' + (workingTasks() ? '，' + workingTasks() + ' 个在路上' : '')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M4 12h16"/><path d="M4 17h12"/><circle cx="19" cy="7" r="2"/></svg>
       <span class="badge-dot" x-show="workingTasks()" x-text="workingTasks()"></span>
     </button>
-    <button class="icon-btn" type="button" @click="openConfig()" aria-label="设置">
+    <button class="icon-btn" type="button" @click="openConfig()" aria-label="设置" title="设置">
       <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
     </button>
   </header>
@@ -119,7 +119,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="ccard" style="align-self: center; width: min(340px, 92%)">
           <div class="t serif">关了这页，它也能找到你</div>
           <div class="note">它主动找你、线程做完、闹钟响了，都推到这台设备上。</div>
-          <div class="acts"><button class="btn primary small" type="button" @click="enablePush()" :disabled="push.busy">打开通知</button><button class="btn small text" type="button" @click="dismissPush()">以后再说</button></div>
+          <div class="acts"><button class="icon-btn sm primary" type="button" @click="enablePush()" :disabled="push.busy" title="打开通知" aria-label="打开通知"><i class="i i-bell" aria-hidden="true"></i></button><button class="icon-btn sm" type="button" @click="dismissPush()" title="以后再说" aria-label="以后再说"><i class="i i-x" aria-hidden="true"></i></button></div>
         </div>
       </template>
       <div class="empty" x-show="loaded && !lines.length && !outbox.length">还没有聊天。说句话吧。</div>
@@ -139,7 +139,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                 <b>交接信</b><span>更早的聊天收进了这封信</span>
               </div>
               <p :class="!openLetter[row.line.id] && 'clip'" x-text="row.line.text"></p>
-              <button type="button" @click="toggleLetter(row.line.id)" x-text="openLetter[row.line.id] ? '收起' : '读完整封'"></button>
+              <button type="button" @click="toggleLetter(row.line.id)" :title="openLetter[row.line.id] ? '收起' : '读完整封'" :aria-label="openLetter[row.line.id] ? '收起' : '读完整封'"><i class="i" :class="openLetter[row.line.id] ? 'i-up' : 'i-down'" aria-hidden="true"></i></button>
             </div>
           </template>
           <template x-if="row.type === 'typing'">
@@ -220,8 +220,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   <div class="big" x-text="a.rings"></div>
                   <div class="note" x-text="a.note"></div>
                   <div class="acts" x-show="a.alive">
-                    <button class="btn small" type="button" x-show="a.alarm && a.alarm.edit" @click="editAlarm(a.alarm)">改时间</button>
-                    <button class="btn small" type="button" :disabled="Boolean(alarmBusy)" @click="removeAlarm(a.alarm)">删掉</button>
+                    <button class="icon-btn sm" type="button" x-show="a.alarm && a.alarm.edit" @click="editAlarm(a.alarm)" title="改时间" aria-label="改时间"><i class="i i-clock" aria-hidden="true"></i></button>
+                    <button class="icon-btn sm" type="button" :disabled="Boolean(alarmBusy)" @click="removeAlarm(a.alarm)" title="删掉" aria-label="删掉"><i class="i i-trash" aria-hidden="true"></i></button>
                   </div>
                 </div>
               </template>
@@ -240,8 +240,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   </template>
                   <div class="sub" x-show="task.chosen" x-text="'你选了：' + task.chosen"></div>
                   <div class="acts">
-                    <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>
-                    <template x-if="task.waiting"><button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button></template>
+                    <button class="icon-btn sm" type="button" x-show="!task.test" @click="openThread(task.thread)" title="打开线程" aria-label="打开线程"><i class="i i-open" aria-hidden="true"></i></button>
+                    <template x-if="task.waiting"><button class="icon-btn sm end" type="button" :disabled="Boolean(choosing)" @click="settle(task)" title="不用了" aria-label="不用了"><i class="i i-x" aria-hidden="true"></i></button></template>
                   </div>
                 </div>
               </template>
@@ -336,7 +336,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <div class="attach">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
         <div class="txt"><b x-text="'回复 ' + quoteName(quote.who)"></b><span x-text="quote.text"></span></div>
-        <button class="icon-btn" type="button" @click="quote = null" aria-label="不引用了"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+        <button class="icon-btn" type="button" @click="quote = null" aria-label="不引用了" title="不引用了"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
       </div>
     </template>
     <template x-if="pics.length">
@@ -353,14 +353,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <template x-if="!recording">
         <div class="field">
           <textarea x-ref="input" rows="1" x-model="draft" @input="fit()" @keydown="keydown($event)" @focus="panel = ''" placeholder="说点什么…" aria-label="消息" maxlength="4000"></textarea>
-          <button class="icon-btn" :class="panel && panelTab === 'stickers' && 'on'" type="button" @click="togglePanel('stickers')" :aria-expanded="Boolean(panel && panelTab === 'stickers')" aria-label="表情包">
+          <button class="icon-btn" :class="panel && panelTab === 'stickers' && 'on'" type="button" @click="togglePanel('stickers')" :aria-expanded="Boolean(panel && panelTab === 'stickers')" aria-label="表情包" title="表情包">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1.8 2 5.2 2 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>
           </button>
         </div>
       </template>
       <template x-if="recording">
         <div class="rec" role="status"><span class="red" aria-hidden="true"></span><span>在录</span><span class="len" x-text="Math.floor(recording.seconds) + ' 秒'"></span><span class="spacer"></span>
-          <button class="btn small text" type="button" @click="stopRecord(false)">取消</button></div>
+          <button class="icon-btn sm" type="button" @click="stopRecord(false)" title="取消" aria-label="取消"><i class="i i-x" aria-hidden="true"></i></button></div>
       </template>
       <button class="round go" type="button" x-show="canSend() || recording" @click="recording ? stopRecord(true) : sendDraft()" :aria-label="recording ? '发出这段语音' : '发送'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/></svg>
@@ -402,9 +402,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
   <!-- ===== it: who it is ===== -->
   <header class="top plain" x-show="authed && view === 'profile'">
-    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天" title="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <span class="spacer"></span>
-    <button class="icon-btn" type="button" @click="openConfig()" aria-label="设置"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+    <button class="icon-btn" type="button" @click="openConfig()" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
   </header>
   <section class="page" x-show="authed && view === 'profile'">
     <div class="hero">
@@ -419,8 +419,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <template x-if="nameEdit.open">
         <form class="name-edit" @submit.prevent="saveName()">
           <input x-model="nameEdit.text" maxlength="20" aria-label="名字">
-          <button class="btn primary small" type="submit" :disabled="nameEdit.busy">好</button>
-          <button class="btn small text" type="button" @click="nameEdit.open = false">算了</button>
+          <button class="icon-btn sm primary" type="submit" :disabled="nameEdit.busy" title="好" aria-label="好"><i class="i i-check" aria-hidden="true"></i></button>
+          <button class="icon-btn sm" type="button" @click="nameEdit.open = false" title="算了" aria-label="算了"><i class="i i-x" aria-hidden="true"></i></button>
         </form>
       </template>
       <div class="pills">
@@ -428,10 +428,10 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <button class="pill" type="button" @click="openPicker()" :aria-label="'换模型，现在是 ' + shortName(currentModel())" x-text="shortName(currentModel())"></button>
         <span class="pill" x-show="voicePill()" x-text="voicePill()"></span>
       </div>
-      <button class="btn small text" type="button" x-show="identity.avatar" @click="removeAvatar()">不用头像</button>
+      <button class="icon-btn sm" type="button" x-show="identity.avatar" @click="removeAvatar()" title="不用头像" aria-label="不用头像"><i class="i i-trash" aria-hidden="true"></i></button>
     </div>
     <section class="card persona-card">
-      <div class="head"><h2>人设</h2><span class="spacer"></span><button class="icon-btn" type="button" @click="openSettings()" aria-label="改人设"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
+      <div class="head"><h2>人设</h2><span class="spacer"></span><button class="icon-btn" type="button" @click="openSettings()" aria-label="改人设" title="改人设"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
       <p x-text="persona.text || ('还没写，用的是默认的一句：' + persona.fallback)"></p>
       <span class="hint" x-text="persona.text ? persona.text.length + ' 字' + (persona.at ? ' · ' + fmt(persona.at) + ' 改过' : '') + ' · 下一句就生效' : '它是谁、怎么叫你、说话什么样，都写在这里'"></span>
     </section>
@@ -441,14 +441,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       <button class="li" type="button" @click="openThreads()"><span class="name">线程</span><span class="val" :class="workingTasks() && 'needs'" x-text="workingTasks() ? workingTasks() + ' 个在路上' : (cloud.on ? '看看' : '后台帮忙关着')"></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
       <button class="li" type="button" @click="openUsage()"><span class="name">用量</span><span class="val" x-text="usageToday()"></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
     </nav>
-    <button class="btn small text danger" type="button" x-show="resident !== 'default' && !miniApp" @click="removeResident()" :disabled="residents.busy">删除这个住户</button>
+    <button class="icon-btn sm danger" type="button" x-show="resident !== 'default' && !miniApp" @click="removeResident()" :disabled="residents.busy" title="删除这个住户" aria-label="删除这个住户"><i class="i i-trash" aria-hidden="true"></i></button>
   </section>
 
   <!-- ===== the persona ===== -->
   <header class="top plain" x-show="authed && view === 'persona'">
-    <button class="icon-btn" type="button" @click="goBack()" aria-label="回去"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回去" title="回去"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <h1 class="title">人设</h1>
-    <button class="btn primary small" type="button" @click="savePersona()" :disabled="savingPersona || !personaDirty" style="margin-right: 8px">保存</button>
+    <button class="icon-btn sm primary" type="button" @click="savePersona()" :disabled="savingPersona || !personaDirty" style="margin-right: 8px" title="保存" aria-label="保存"><i class="i i-check" aria-hidden="true"></i></button>
   </header>
   <section class="page" x-show="authed && view === 'persona'">
     <p class="hint">它是谁、怎么叫你、说话什么样。只存在你自己的 Worker 里；留空保存就回到默认的一句。</p>
@@ -461,7 +461,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="version">
           <span class="when" x-text="fmt(version.at)"></span>
           <span class="text" x-text="version.text"></span>
-          <button class="btn small" type="button" @click="personaDraft = version.text">放回去</button>
+          <button class="icon-btn sm" type="button" @click="personaDraft = version.text" title="放回去" aria-label="放回去"><i class="i i-undo" aria-hidden="true"></i></button>
         </div>
       </template>
     </details>
@@ -469,10 +469,10 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
   <!-- ===== searching the conversation ===== -->
   <header class="top plain" x-show="authed && view === 'search'">
-    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天" title="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <form class="search-bar" @submit.prevent="runSearch()">
       <input type="search" x-ref="searchInput" x-model="search.q" maxlength="50" placeholder="搜聊天记录" aria-label="搜聊天记录" enterkeyhint="search" autocomplete="off">
-      <button class="btn primary small" type="submit" :disabled="search.busy || !search.q.trim()">搜</button>
+      <button class="icon-btn sm primary" type="submit" :disabled="search.busy || !search.q.trim()" title="搜" aria-label="搜"><i class="i i-search" aria-hidden="true"></i></button>
     </form>
   </header>
   <section class="page" x-show="authed && view === 'search'">
@@ -495,17 +495,17 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                 <div class="text"><template x-for="(part, i) in markedParts(line.text)" :key="i"><span :class="part.hit && 'mark'" x-text="part.text"></span></template></div>
               </div>
             </template>
-            <button class="btn small" type="button" x-show="inChat(hit.id)" @click="showInChat(hit.id)">在聊天里看</button>
+            <button class="icon-btn sm" type="button" x-show="inChat(hit.id)" @click="showInChat(hit.id)" title="在聊天里看" aria-label="在聊天里看"><i class="i i-chat" aria-hidden="true"></i></button>
           </div>
         </template>
       </div>
     </template>
-    <button class="btn" type="button" x-show="search.next" :disabled="search.busy" @click="runSearch(true)">更早的</button>
+    <button class="icon-btn sm" type="button" x-show="search.next" :disabled="search.busy" @click="runSearch(true)" title="更早的" aria-label="更早的" :aria-busy="String(search.busy)"><i class="i i-more-down" aria-hidden="true"></i></button>
   </section>
 
   <!-- ===== threads ===== -->
   <header class="top plain" x-show="authed && (view === 'threads' || view === 'thread')">
-    <button class="icon-btn" type="button" @click="goBack()" :aria-label="backText()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon-btn" type="button" @click="goBack()" :aria-label="backText()" :title="backText()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <div class="who" x-show="view === 'thread'"><span class="name" x-text="thread.title || '线程'"></span><span class="hint" style="font-size: 12px" x-text="threadSub()"></span></div>
     <h1 class="title" x-show="view === 'threads'">线程</h1>
   </header>
@@ -541,14 +541,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="text" x-show="line.text && line.direct" x-text="line.text"></div>
         <div class="text md" x-show="line.text && !line.direct" x-markdown="line.text"></div>
         <div class="links" x-show="(line.links && line.links.length) || line.sessionUrl || waitingFor(line)">
-          <a class="btn small" x-show="line.sessionUrl" :href="line.sessionUrl || '#'" target="_blank" rel="noopener noreferrer">打开会话</a>
+          <a class="icon-btn sm" x-show="line.sessionUrl" :href="line.sessionUrl || '#'" target="_blank" rel="noopener noreferrer" title="打开会话" aria-label="打开会话"><i class="i i-open" aria-hidden="true"></i></a>
           <template x-for="link in line.links || []" :key="link"><a class="btn small" :href="link" target="_blank" rel="noopener noreferrer" x-text="linkText(link)"></a></template>
           <template x-if="waitingFor(line)">
             <span class="links-end">
               <template x-for="(choice, i) in waitingFor(line).choices || []" :key="i">
                 <button class="btn small" :class="i === 0 && 'primary'" type="button" :disabled="Boolean(choosing)" @click="choose(waitingFor(line), choice)" x-text="choice"></button>
               </template>
-              <button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>
+              <button class="icon-btn sm end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))" title="不用了" aria-label="不用了"><i class="i i-x" aria-hidden="true"></i></button>
             </span>
           </template>
         </div>
@@ -556,8 +556,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     </template>
     <div class="card" x-ref="fileView" x-show="fileView.path">
       <div class="inline" style="margin-bottom: 8px"><strong style="min-width: 0; font-size: 14px; overflow-wrap: anywhere" x-text="fileView.path"></strong><span class="spacer"></span>
-        <button class="btn small" type="button" @click="saveFile(fileView)">下载</button>
-        <button class="btn small" type="button" @click="closeFile()">关掉</button>
+        <button class="icon-btn sm" type="button" @click="saveFile(fileView)" title="下载" aria-label="下载"><i class="i i-download" aria-hidden="true"></i></button>
+        <button class="icon-btn sm" type="button" @click="closeFile()" title="关掉" aria-label="关掉"><i class="i i-x" aria-hidden="true"></i></button>
       </div>
       <p class="hint" x-show="fileView.busy">在读…</p>
       <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
@@ -575,7 +575,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="file-row">
           <button class="file-name" type="button" @click="viewFile(file)" x-text="file.path"></button>
           <span class="file-size" x-text="sizeText(file.size)"></span>
-          <button class="btn small" type="button" @click="saveFile(file)">下载</button>
+          <button class="icon-btn sm" type="button" @click="saveFile(file)" title="下载" aria-label="下载"><i class="i i-download" aria-hidden="true"></i></button>
         </div>
       </template>
     </div>
@@ -590,7 +590,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
   <!-- ===== usage ===== -->
   <header class="top plain" x-show="authed && view === 'usage'">
-    <button class="icon-btn" type="button" @click="goBack()" aria-label="回去"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回去" title="回去"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <h1 class="title">用量</h1>
   </header>
   <section class="page" x-show="authed && view === 'usage'">
@@ -620,12 +620,12 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </div>
     </template>
     <div class="empty" x-show="usage.loaded && !usage.rows.length">还没有记录。每次调模型都会记一条。</div>
-    <button class="btn" type="button" style="align-self: center" x-show="usage.more" :disabled="usage.busy" @click="moreUsage()">再往前看</button>
+    <button class="icon-btn sm" type="button" style="align-self: center" x-show="usage.more" :disabled="usage.busy" @click="moreUsage()" title="再往前看" aria-label="再往前看" :aria-busy="String(usage.busy)"><i class="i i-more-down" aria-hidden="true"></i></button>
   </section>
 
   <!-- ===== settings ===== -->
   <header class="top plain" x-show="authed && view === 'config'">
-    <button class="icon-btn" type="button" @click="goBack()" :aria-label="backText()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon-btn" type="button" @click="goBack()" :aria-label="backText()" :title="backText()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
     <h1 class="title" x-text="configSection ? sectionTitle() : '设置'"></h1>
   </header>
   <section class="page" x-ref="config" x-show="authed && view === 'config'">
@@ -664,14 +664,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
           <div class="li">
             <span class="name">外观</span>
             <div class="seg" role="group" aria-label="外观">
-              <button type="button" :aria-pressed="themePref === 'dark'" @click="setTheme('dark')">夜</button>
-              <button type="button" :aria-pressed="themePref === 'light'" @click="setTheme('light')">昼</button>
-              <button type="button" :aria-pressed="themePref === 'auto'" @click="setTheme('auto')">跟系统</button>
+              <button type="button" :aria-pressed="themePref === 'dark'" @click="setTheme('dark')" title="夜" aria-label="夜"><i class="i i-moon" aria-hidden="true"></i></button>
+              <button type="button" :aria-pressed="themePref === 'light'" @click="setTheme('light')" title="昼" aria-label="昼"><i class="i i-sun" aria-hidden="true"></i></button>
+              <button type="button" :aria-pressed="themePref === 'auto'" @click="setTheme('auto')" title="跟系统" aria-label="跟系统"><i class="i i-auto" aria-hidden="true"></i></button>
             </div>
           </div>
         </div>
         <p class="hint">这里存的优先；空着的用 Cloudflare 里同名的变量，再没有就用默认。key 和 bot token 只能填不能看。</p>
-        <button class="btn danger" type="button" @click="logout()">锁上网页门</button>
+        <button class="icon-btn sm danger" type="button" @click="logout()" title="锁上网页门" aria-label="锁上网页门"><i class="i i-lock" aria-hidden="true"></i></button>
       </div>
     </template>
 
@@ -690,9 +690,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             <template x-if="!miniApp && push.supported">
               <div class="inline">
                 <span x-text="push.on ? '这台设备：开着' : '这台设备：没开'"></span><span class="spacer"></span>
-                <button class="btn primary small" type="button" x-show="!push.on" :disabled="push.busy" @click="enablePush()">打开通知</button>
-                <button class="btn small" type="button" x-show="push.on" @click="testPush()">试一下</button>
-                <button class="btn small text" type="button" x-show="push.on" :disabled="push.busy" @click="disablePush()">关掉</button>
+                <button class="icon-btn sm primary" type="button" x-show="!push.on" :disabled="push.busy" @click="enablePush()" title="打开通知" aria-label="打开通知"><i class="i i-bell" aria-hidden="true"></i></button>
+                <button class="icon-btn sm" type="button" x-show="push.on" @click="testPush()" title="试一下" aria-label="试一下"><i class="i i-send" aria-hidden="true"></i></button>
+                <button class="icon-btn sm" type="button" x-show="push.on" :disabled="push.busy" @click="disablePush()" title="关掉通知" aria-label="关掉通知"><i class="i i-bell-off" aria-hidden="true"></i></button>
               </div>
             </template>
             <p class="hint" x-show="push.devices" x-text="'一共 ' + push.devices + ' 台设备开着通知。'"></p>
@@ -702,7 +702,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
         <template x-if="configSection === 'thinking'">
           <div class="mini-row" aria-live="polite">
-            <div class="top-line"><span class="t">写信和 Aelios 送达</span><button class="btn small" type="button" :disabled="Boolean(letterBusy) || Boolean(configBusy)" @click="loadLetter()" x-text="letterBusy === 'load' ? '读取中…' : '刷新'"></button></div>
+            <div class="top-line"><span class="t">写信和 Aelios 送达</span><button class="icon-btn sm" type="button" :disabled="Boolean(letterBusy) || Boolean(configBusy)" @click="loadLetter()" :title="letterBusy === 'load' ? '读取中…' : '刷新'" :aria-label="letterBusy === 'load' ? '读取中…' : '刷新'" :aria-busy="String(letterBusy === 'load')"><i class="i i-refresh" aria-hidden="true"></i></button></div>
             <p class="status-line" x-text="letterWriteStatus()"></p>
             <p class="hint" x-text="'最近写信时间：' + letterTime(letter.write && letter.write.at)"></p>
             <p class="error" x-show="letter.write && letter.write.error" x-text="letter.write && letter.write.error"></p>
@@ -716,7 +716,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
 重试同步只重发已写好的信，不调用模型、不重写信。确认送达不等同于 Aelios 后台记忆处理已完成。当前接收接口不去重；若已保存但成功响应丢失，重试可能产生重复原文。</p>
             </details>
-            <div class="inline" x-show="letterCanRetry()"><span class="spacer"></span><button class="btn primary small" type="button" :disabled="Boolean(letterBusy) || Boolean(configBusy)" @click="retryLetter()" x-text="letterBusy === 'retry' ? '同步中…' : '重试同步'"></button></div>
+            <div class="inline" x-show="letterCanRetry()"><span class="spacer"></span><button class="icon-btn sm primary" type="button" :disabled="Boolean(letterBusy) || Boolean(configBusy)" @click="retryLetter()" :title="letterBusy === 'retry' ? '同步中…' : '重试同步'" :aria-label="letterBusy === 'retry' ? '同步中…' : '重试同步'" :aria-busy="String(letterBusy === 'retry')"><i class="i i-refresh" aria-hidden="true"></i></button></div>
             <p class="error" x-show="letterError" x-text="letterError"></p>
           </div>
         </template>
@@ -748,14 +748,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   <template x-for="h in 24" :key="h"><option :value="h - 1" :selected="h - 1 === hoursPart(meta, 'end')" x-text="(h - 1) + ' 点'"></option></template>
                 </select>
                 <span class="spacer"></span>
-                <button class="btn primary small" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)" @click="saveHours(meta)">保存</button>
+                <button class="icon-btn sm primary" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)" @click="saveHours(meta)" title="保存" aria-label="保存"><i class="i i-check" aria-hidden="true"></i></button>
               </div>
             </template>
             <template x-if="field(meta.key) && field(meta.key).kind !== 'choice' && !meta.hours">
               <div class="inline">
                 <input x-model="configDraft[meta.key]" :type="field(meta.key).kind === 'secret' ? 'password' : 'text'" :placeholder="placeholderFor(meta)" autocomplete="off" autocapitalize="off" spellcheck="false" :aria-label="meta.label" @keydown.enter.prevent="saveConfig(meta.key, configDraft[meta.key])">
-                <button class="btn primary small" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, configDraft[meta.key])">保存</button>
-                <button class="btn small" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, '')">清掉</button>
+                <button class="icon-btn sm primary" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, configDraft[meta.key])" title="保存" aria-label="保存"><i class="i i-check" aria-hidden="true"></i></button>
+                <button class="icon-btn sm" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, '')" title="清掉" aria-label="清掉"><i class="i i-clear" aria-hidden="true"></i></button>
               </div>
             </template>
             <div class="choices" x-show="picksFor(meta).length">
@@ -778,8 +778,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
               <div class="mini-row">
                 <div class="top-line"><span class="t" x-text="alarm.note"></span><span class="pill" x-text="alarm.when"></span></div>
                 <div class="inline"><span class="hint" x-text="'下次 ' + alarm.next"></span><span class="spacer"></span>
-                  <button class="btn small" type="button" x-show="alarm.edit" @click="editAlarm(alarm)">改时间</button>
-                  <button class="btn small" type="button" :disabled="Boolean(alarmBusy)" @click="removeAlarm(alarm)">删掉</button></div>
+                  <button class="icon-btn sm" type="button" x-show="alarm.edit" @click="editAlarm(alarm)" title="改时间" aria-label="改时间"><i class="i i-clock" aria-hidden="true"></i></button>
+                  <button class="icon-btn sm" type="button" :disabled="Boolean(alarmBusy)" @click="removeAlarm(alarm)" title="删掉" aria-label="删掉"><i class="i i-trash" aria-hidden="true"></i></button></div>
               </div>
             </template>
             <p class="error" x-show="alarmError" x-text="alarmError"></p>
@@ -794,7 +794,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 左边名字、右边值，不够就点 ＋ 加一行。Cloudflare 门禁：点「Cloudflare 门禁」，服务令牌的 Client ID 和 Client Secret 各粘一格，还要在那个应用里加一条动作是 Service Auth 的策略。GitHub 私库：网站填 raw.githubusercontent.com，点「一串 token」，粘一个 Contents 只读的 fine-grained token。别在聊天里发钥匙。</p>
             <template x-for="site in sites" :key="site.host">
               <div class="inline"><span style="font-size: 14px; overflow-wrap: anywhere" x-text="site.host"></span><span class="pill" x-text="site.names.join('、')"></span><span class="spacer"></span>
-                <button class="btn small" type="button" :disabled="Boolean(siteBusy)" @click="removeSite(site)">拿掉</button></div>
+                <button class="icon-btn sm" type="button" :disabled="Boolean(siteBusy)" @click="removeSite(site)" title="拿掉" aria-label="拿掉"><i class="i i-trash" aria-hidden="true"></i></button></div>
             </template>
             <div class="inline"><input x-model="siteDraft.site" type="text" :placeholder="sitePlaceholder()" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="网站"></div>
             <div class="choices"><button type="button" class="choice small" @click="sitePreset('access')">Cloudflare 门禁</button><button type="button" class="choice small" @click="sitePreset('token')">一串 token</button></div>
@@ -806,7 +806,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
               </div>
             </template>
             <div class="inline"><button class="line-btn" type="button" x-show="siteDraft.lines.length < 6" @click="siteDraft.lines.push({ name: '', value: '' })" aria-label="加一行">＋</button><span class="spacer"></span>
-              <button class="btn primary small" type="button" :disabled="Boolean(siteBusy) || !siteDraft.site.trim() || !siteKeyText()" @click="addSite()" x-text="siteBusy === 'add' ? '存…' : '存上'"></button></div>
+              <button class="icon-btn sm primary" type="button" :disabled="Boolean(siteBusy) || !siteDraft.site.trim() || !siteKeyText()" @click="addSite()" :title="siteBusy === 'add' ? '存…' : '存上'" :aria-label="siteBusy === 'add' ? '存…' : '存上'" :aria-busy="String(siteBusy === 'add')"><i class="i i-check" aria-hidden="true"></i></button></div>
             <p class="error" x-show="siteError" x-text="siteError"></p>
           </div>
         </template>
@@ -818,8 +818,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
               <div class="inline">
                 <span style="white-space: nowrap">GitHub Actions</span><span class="spacer"></span>
                 <a class="pill ok" x-show="cloud.github.repo" :href="cloud.github.url" target="_blank" rel="noopener noreferrer" x-text="cloud.github.repo"></a>
-                <button class="btn small" type="button" x-show="cloud.github.repo" :disabled="Boolean(cloudBusy)" @click="testTask('linux')" x-text="cloudBusy === 'linux' ? '派出去…' : '试一下'"></button>
-                <button class="btn small" type="button" x-show="!cloud.github.repo" :disabled="Boolean(cloudBusy)" @click="setUpGitHub()" x-text="cloudBusy === 'github' ? '接…' : '接上'"></button>
+                <button class="icon-btn sm" type="button" x-show="cloud.github.repo" :disabled="Boolean(cloudBusy)" @click="testTask('linux')" :title="cloudBusy === 'linux' ? '派出去…' : '试一下'" :aria-label="cloudBusy === 'linux' ? '派出去…' : '试一下'" :aria-busy="String(cloudBusy === 'linux')"><i class="i i-send" aria-hidden="true"></i></button>
+                <button class="icon-btn sm" type="button" x-show="!cloud.github.repo" :disabled="Boolean(cloudBusy)" @click="setUpGitHub()" :title="cloudBusy === 'github' ? '接…' : '接上'" :aria-label="cloudBusy === 'github' ? '接…' : '接上'" :aria-busy="String(cloudBusy === 'github')"><i class="i i-link" aria-hidden="true"></i></button>
               </div>
             </template>
             <p class="error" x-show="cloud.on && cloud.github.problem" x-text="cloud.github.problem"></p>
@@ -832,9 +832,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
               </ol>
               <textarea class="copy-box" readonly x-show="cloud.prompt" :value="cloud.prompt" aria-label="定时任务的提示词" @focus="$event.target.select()"></textarea>
               <p class="hint" x-show="!cloud.prompt">先在网页上发一句话，这里才有提示词。</p>
-              <button class="btn small" type="button" x-show="cloud.prompt" @click="copyPrompt()">复制提示词</button>
+              <button class="icon-btn sm" type="button" x-show="cloud.prompt" @click="copyPrompt()" title="复制提示词" aria-label="复制提示词"><i class="i i-copy" aria-hidden="true"></i></button>
             </details>
-            <div class="inline"><span class="spacer"></span><button class="btn primary small" type="button" :disabled="!cloud.on || Boolean(cloudBusy)" @click="testTask()" x-text="cloudBusy === true ? '派出去…' : '试一下'"></button></div>
+            <div class="inline"><span class="spacer"></span><button class="icon-btn sm primary" type="button" :disabled="!cloud.on || Boolean(cloudBusy)" @click="testTask()" :title="cloudBusy === true ? '派出去…' : '试一下'" :aria-label="cloudBusy === true ? '派出去…' : '试一下'" :aria-busy="String(cloudBusy === true)"><i class="i i-send" aria-hidden="true"></i></button></div>
             <p class="error" x-show="cloudError" x-text="cloudError"></p>
             <template x-if="cloud.tasks.length">
               <div class="section">
@@ -844,7 +844,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                     <div class="top-line"><span class="t" x-text="task.title"></span><span class="pill" :class="taskPill(stateOf(task))" x-text="taskStatusText(stateOf(task))"></span></div>
                     <p class="hint" x-show="task.summary || task.progress" x-text="task.summary || task.progress"></p>
                     <div class="choices">
-                      <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>
+                      <button class="icon-btn sm" type="button" x-show="!task.test" @click="openThread(task.thread)" title="打开线程" aria-label="打开线程"><i class="i i-open" aria-hidden="true"></i></button>
                       <template x-for="link in taskLinks(task)" :key="link.url"><a class="btn small" :href="link.url" target="_blank" rel="noopener noreferrer" x-text="link.text"></a></template>
                     </div>
                   </div>
@@ -884,14 +884,14 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   </div>
                   <div class="body">
                     <div class="t"><b x-text="step.title"></b><span class="spacer"></span>
-                      <button class="btn small text" type="button" x-show="step.state !== 'now'" @click="toggleStep(door, step.id)" x-text="step.open ? '收起' : step.state === 'done' ? '改' : step.state === 'extra' ? '看看' : '先填'"></button></div>
+                      <button class="icon-btn sm" type="button" x-show="step.state !== 'now'" @click="toggleStep(door, step.id)" :title="step.open ? '收起' : step.state === 'done' ? '改' : step.state === 'extra' ? '看看' : '先填'" :aria-label="step.open ? '收起' : step.state === 'done' ? '改' : step.state === 'extra' ? '看看' : '先填'"><i class="i" :class="step.open ? 'i-up' : step.state === 'done' ? 'i-pencil' : 'i-down'" aria-hidden="true"></i></button></div>
                     <div class="s" x-show="step.state === 'done' && !step.open" x-text="stepSummary(step)"></div>
                     <template x-if="step.open">
                       <div class="section" style="gap: 0">
                         <template x-if="step.url">
                           <div class="set" style="border: 0; padding-top: 0">
                             <span class="hint">企业微信「接收消息」里的 URL 填：</span>
-                            <div class="copy-url"><span x-text="wecomUrl()"></span><button class="btn small" type="button" @click="copyText(wecomUrl())">复制</button></div>
+                            <div class="copy-url"><span x-text="wecomUrl()"></span><button class="icon-btn sm" type="button" @click="copyText(wecomUrl())" title="复制" aria-label="复制"><i class="i i-copy" aria-hidden="true"></i></button></div>
                           </div>
                         </template>
                         <template x-for="meta in step.fields" :key="meta.key">
@@ -913,8 +913,8 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                             <template x-if="field(meta.key).kind !== 'choice'">
                               <div class="inline">
                                 <input x-model="configDraft[meta.key]" :type="field(meta.key).kind === 'secret' ? 'password' : 'text'" :placeholder="placeholderFor(meta)" autocomplete="off" autocapitalize="off" spellcheck="false" :aria-label="meta.label" @keydown.enter.prevent="saveConfig(meta.key, configDraft[meta.key])">
-                                <button class="btn primary small" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, configDraft[meta.key])">保存</button>
-                                <button class="btn small" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, '')">清掉</button>
+                                <button class="icon-btn sm primary" type="button" x-show="configDirty(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, configDraft[meta.key])" title="保存" aria-label="保存"><i class="i i-check" aria-hidden="true"></i></button>
+                                <button class="icon-btn sm" type="button" x-show="!configDirty(meta.key) && savedHere(meta.key)" :disabled="Boolean(configBusy)" @click="saveConfig(meta.key, '')" title="清掉" aria-label="清掉"><i class="i i-clear" aria-hidden="true"></i></button>
                               </div>
                             </template>
                             <div class="choices" x-show="picksFor(meta).length">
@@ -933,7 +933,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             </ol>
             <div class="door-body" x-show="door === 'telegram' && config.telegram && config.telegram.from">
               <div class="inline"><span class="hint">换了域名，或者 bot 不回了</span><span class="spacer"></span>
-                <button class="btn small" type="button" :disabled="Boolean(configBusy)" @click="reconnectTelegram()" x-text="configBusy === 'telegram' ? '接着呢…' : '重新接一次'"></button></div>
+                <button class="icon-btn sm" type="button" :disabled="Boolean(configBusy)" @click="reconnectTelegram()" :title="configBusy === 'telegram' ? '接着呢…' : '重新接一次'" :aria-label="configBusy === 'telegram' ? '接着呢…' : '重新接一次'" :aria-busy="String(configBusy === 'telegram')"><i class="i i-refresh" aria-hidden="true"></i></button></div>
             </div>
           </section>
         </template>
@@ -951,10 +951,10 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             <span class="hint" style="font-size: 12px; overflow-wrap: anywhere" x-text="server.url"></span>
             <p class="error" x-show="server.error && server.state !== 'ready'" x-text="server.error"></p>
             <div class="inline">
-              <a class="btn primary small" x-show="server.authUrl" :href="server.authUrl || '#'" target="_blank" rel="noopener noreferrer" @click="openAuth(server, $event)">去授权</a>
-              <button class="btn small" type="button" x-show="server.state !== 'ready'" :disabled="Boolean(mcpBusy)" @click="retryMcp(server)" x-text="mcpBusy === server.id ? '连接中…' : (server.state === 'not-connected' || server.state === 'failed' ? '重连' : '刷新')"></button>
+              <a class="icon-btn sm primary" x-show="server.authUrl" :href="server.authUrl || '#'" target="_blank" rel="noopener noreferrer" @click="openAuth(server, $event)" title="去授权" aria-label="去授权"><i class="i i-key" aria-hidden="true"></i></a>
+              <button class="icon-btn sm" type="button" x-show="server.state !== 'ready'" :disabled="Boolean(mcpBusy)" @click="retryMcp(server)" :title="mcpBusy === server.id ? '连接中…' : (server.state === 'not-connected' || server.state === 'failed' ? '重连' : '刷新')" :aria-label="mcpBusy === server.id ? '连接中…' : (server.state === 'not-connected' || server.state === 'failed' ? '重连' : '刷新')" :aria-busy="String(mcpBusy === server.id)"><i class="i i-refresh" aria-hidden="true"></i></button>
               <span class="spacer"></span>
-              <button class="btn small" type="button" :disabled="Boolean(mcpBusy)" @click="removeMcp(server)">断开</button>
+              <button class="icon-btn sm" type="button" :disabled="Boolean(mcpBusy)" @click="removeMcp(server)" title="断开" aria-label="断开"><i class="i i-unlink" aria-hidden="true"></i></button>
             </div>
           </div>
         </template>
@@ -966,7 +966,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             <input x-model="mcpDraft.key" type="password" placeholder="key，可不填" autocomplete="off" aria-label="key">
           </div>
           <p class="hint">key 默认当 Bearer 发；写成「x-api-key: 你的key」就放进那个头。别在聊天里发 key。</p>
-          <div class="inline"><span class="spacer"></span><button class="btn primary small" type="button" :disabled="Boolean(mcpBusy) || !mcpDraft.url.trim()" @click="addMcp()" x-text="mcpBusy === 'add' ? '连接中…' : '接上'"></button></div>
+          <div class="inline"><span class="spacer"></span><button class="icon-btn sm primary" type="button" :disabled="Boolean(mcpBusy) || !mcpDraft.url.trim()" @click="addMcp()" :title="mcpBusy === 'add' ? '连接中…' : '接上'" :aria-label="mcpBusy === 'add' ? '连接中…' : '接上'" :aria-busy="String(mcpBusy === 'add')"><i class="i i-link" aria-hidden="true"></i></button></div>
           <p class="error" x-show="mcpError" x-text="mcpError"></p>
         </div>
       </div>
@@ -989,9 +989,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             <span class="hint" style="font-size: 12px" x-text="packText(pack)"></span>
             <p class="hint" x-show="pack.description || pack.license" x-text="[pack.description, pack.license].filter(Boolean).join(' ')"></p>
             <div class="inline">
-              <a class="btn small" x-show="pack.homepage" :href="pack.homepage || '#'" target="_blank" rel="noopener noreferrer">出处</a>
+              <a class="icon-btn sm" x-show="pack.homepage" :href="pack.homepage || '#'" target="_blank" rel="noopener noreferrer" title="出处" aria-label="出处"><i class="i i-open" aria-hidden="true"></i></a>
               <span class="spacer"></span>
-              <button class="btn small" type="button" :disabled="Boolean(stickerBusy)" @click="removePack(pack)">删掉</button>
+              <button class="icon-btn sm" type="button" :disabled="Boolean(stickerBusy)" @click="removePack(pack)" title="删掉" aria-label="删掉"><i class="i i-trash" aria-hidden="true"></i></button>
             </div>
             <details @toggle="openPack = $event.target.open ? pack.id : (openPack === pack.id ? '' : openPack)">
               <summary x-text="'看看这 ' + pack.stickers.length + ' 张，改「什么时候用」'"></summary>
@@ -1019,7 +1019,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
           <p class="help" x-show="helpOpen.packs">Telegram 的贴纸包：在聊天里点一下那张贴纸，弹出整包后点右上角「复制链接」，贴到下面。自己做的：把 GIF（PNG、WebP 也行）打成一个 zip，文件名就是什么时候用，比如「开心.gif」；要写细一点放一个 pack.json，格式见 README。同名的包再导一次会替换旧的。</p>
           <div class="inline">
             <input x-model="stickerLink" type="url" placeholder="t.me/addstickers/… 或 zip 的网址" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="贴纸包链接" @keydown.enter.prevent="importStickerLink()">
-            <button class="btn primary small" type="button" :disabled="Boolean(stickerBusy) || !stickerLink.trim()" @click="importStickerLink()" x-text="stickerBusy === 'link' ? '导入中…' : '导入'"></button>
+            <button class="icon-btn sm primary" type="button" :disabled="Boolean(stickerBusy) || !stickerLink.trim()" @click="importStickerLink()" :title="stickerBusy === 'link' ? '导入中…' : '导入'" :aria-label="stickerBusy === 'link' ? '导入中…' : '导入'" :aria-busy="String(stickerBusy === 'link')"><i class="i i-import" aria-hidden="true"></i></button>
           </div>
           <label class="btn small" style="align-self: flex-start; cursor: pointer; position: relative">
             <input class="sr" type="file" accept=".zip,application/zip" @change="importStickerFile($event)" :disabled="Boolean(stickerBusy)">
@@ -1037,7 +1037,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     <section class="sheet" role="dialog" aria-label="换模型" style="height: min(640px, calc(100dvh - 60px))">
       <span class="grab" aria-hidden="true"></span>
       <div class="sheet-head"><h2>换模型</h2>
-        <button class="icon-btn" type="button" @click="closePicker()" aria-label="关上"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+        <button class="icon-btn" type="button" @click="closePicker()" aria-label="关上" title="关上"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
         <input x-model="picker.q" @input="picker.active = 0; picker.error = ''" @keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)" @keydown.enter.prevent="chooseActive()"
@@ -1081,7 +1081,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="inline"><input x-model="residents.add.id" maxlength="24" placeholder="代号，比如 mochi" aria-label="代号" autocapitalize="off" autocomplete="off" spellcheck="false"></div>
         <p class="hint">代号用在网址和 Aelios 身份上，小写英文字母开头。人设、模型、设置、聊天都是它自己的。</p>
         <p class="error" x-show="residents.add.error" x-text="residents.add.error"></p>
-        <div class="inline"><span class="spacer"></span><button class="btn text" type="button" @click="residents.add.open = false">算了</button><button class="btn primary" type="submit" :disabled="residents.add.busy">建好</button></div>
+        <div class="inline"><span class="spacer"></span><button class="icon-btn sm" type="button" @click="residents.add.open = false" title="算了" aria-label="算了"><i class="i i-x" aria-hidden="true"></i></button><button class="icon-btn sm primary" type="submit" :disabled="residents.add.busy" title="建好" aria-label="建好"><i class="i i-check" aria-hidden="true"></i></button></div>
       </form>
     </section>
   </div>
@@ -1098,7 +1098,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         </div>
         <p class="hint" x-show="alarmEdit.kind === 'time'">每次都在这个钟点响。</p>
         <p class="error" x-show="alarmEdit.error" x-text="alarmEdit.error"></p>
-        <div class="inline"><span class="spacer"></span><button class="btn text" type="button" @click="alarmEdit.open = false">算了</button><button class="btn primary" type="submit" :disabled="alarmEdit.busy">好</button></div>
+        <div class="inline"><span class="spacer"></span><button class="icon-btn sm" type="button" @click="alarmEdit.open = false" title="算了" aria-label="算了"><i class="i i-x" aria-hidden="true"></i></button><button class="icon-btn sm primary" type="submit" :disabled="alarmEdit.busy" title="好" aria-label="好"><i class="i i-check" aria-hidden="true"></i></button></div>
       </form>
     </section>
   </div>
@@ -1107,7 +1107,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     <section class="sheet" role="dialog" :aria-label="answer.title">
       <span class="grab" aria-hidden="true"></span>
       <div class="sheet-head"><h2 x-text="answer.title"></h2>
-        <button class="icon-btn" type="button" x-show="!answer.busy" @click="answer.open = false" aria-label="关上"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+        <button class="icon-btn" type="button" x-show="!answer.busy" @click="answer.open = false" aria-label="关上" title="关上"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
       <div class="sheet-body">
         <div class="typing" x-show="answer.busy" role="status" aria-label="正在写"><span></span><span></span><span></span></div>
         <div class="answer" x-show="!answer.busy" x-text="answer.text"></div>
@@ -1129,7 +1129,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 
   <div class="lightbox" x-show="lightbox" @click="lightbox = ''" @keydown.escape.window="lightbox = ''" role="dialog" aria-label="大图">
     <img :src="lightbox || ''" alt="">
-    <button class="icon-btn" type="button" aria-label="关上"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    <button class="icon-btn" type="button" aria-label="关上" title="关上"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
   </div>
 
   <div class="toast" x-show="toast" x-text="toast" x-transition.opacity role="status"></div>
