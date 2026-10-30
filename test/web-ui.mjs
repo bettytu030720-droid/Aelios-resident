@@ -1380,7 +1380,8 @@ await grouper.saveGroupEdit();
 assert.deepEqual(copy(groupCalls.find((call) => call[0].startsWith('/web/group/config'))), ['/web/group/config?g=g1', { name: '周末', members: ['default', 'mochi', 'kiki'], reply: 'one', order: 'list', rounds: 2 }]);
 assert.equal(grouper.groupEdit, null, 'closed once saved');
 console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, bubbles as in the chat, pictures and stickers sent, only own stickers shown, a reply not fetched yet is not skipped, a picture asked again after switching residents, rounds and icon in the settings');
-// Its latest reply has two icons under it: delete (asked first) and answer again (the dots show until the new one).
+// Its latest reply can be taken back from its long-press menu: deleted (asked first), or answered again (the dots
+// show until the new one). Other messages' menus do not have the two.
 const back = vm.runInContext('testPage()', context);
 const takes = [];
 back.api = async (path, options) => { takes.push([path, copy(options.body)]); return path === '/web/take-back' && options.body.again ? { status: 'completed' } : { status: 'removed' }; };
@@ -1401,7 +1402,22 @@ assert.equal(back.takeBackable(back.lines[1]), false, 'not while it is still com
 delete back.lines[1].pending;
 assert.equal(back.answersHer(back.lines[1]), true);
 assert.equal(back.answersHer({ ...back.lines[1], via: 'checkin' }), false, 'a check-in can only be deleted');
-const again = back.takeBack(back.lines[1], true);
+assert.ok(!html.includes('class="take-back"'), 'nothing hangs under the reply any more');
+assert.match(html, /x-show="menuTakesBack\(\) && answersHer\(menuLine\(\)\)" @click="takeBackFromMenu\(true\)">[\s\S]*?重新生成<\/button>/);
+assert.match(html, /x-show="menuTakesBack\(\)" @click="takeBackFromMenu\(false\)">[\s\S]*?删掉<\/button>/);
+back.menu = { open: true, id: 'u1' };
+assert.equal(back.menuTakesBack(), false, 'her message\'s menu has neither');
+back.lines.unshift({ id: 'a0', role: 'assistant', text: '更早的', kind: 'chat', via: 'web' });
+back.menu = { open: true, id: 'a0' };
+assert.equal(back.menuTakesBack(), false, 'nor an earlier reply\'s');
+back.menu = { open: true, id: 'a1' };
+assert.equal(back.menuTakesBack(), true, 'the latest reply\'s menu has them');
+back.closeMenu();
+assert.equal(back.menuTakesBack(), false, 'not once the menu is shut');
+back.lines.shift();
+back.menu = { open: true, id: 'a1' };
+const again = back.takeBackFromMenu(true);
+assert.equal(back.menu.open, false, 'the menu shuts');
 assert.equal(back.waiting(), true, 'the old reply goes at once and the dots show');
 assert.equal(back.takeBackable(back.lines[1] || {}), false);
 await again;
@@ -1409,10 +1425,12 @@ assert.deepEqual(takes, [['/web/take-back', { id: 'a1', again: true }]]);
 assert.deepEqual([back.sending, back.takingBack], [0, false]);
 back.lines = [{ id: 'u1', role: 'user', text: '在吗', kind: 'chat', via: 'web' }, { id: 'a2', role: 'assistant', text: '��', kind: 'chat', via: 'web' }];
 context.confirm = () => false;
-await back.takeBack(back.lines[1], false);
+back.menu = { open: true, id: 'a2' };
+await back.takeBackFromMenu(false);
 assert.equal(takes.length, 1, 'a no to 删掉这条？ deletes nothing');
 context.confirm = () => true;
-await back.takeBack(back.lines[1], false);
+back.menu = { open: true, id: 'a2' };
+await back.takeBackFromMenu(false);
 assert.deepEqual(takes[1], ['/web/take-back', { id: 'a2', again: false }]);
-console.log('PASS taking back its latest reply: only the latest and when done, delete asks first, again shows the dots');
+console.log('PASS taking back its latest reply from its menu: only the latest and when done, delete asks first, again shows the dots');
 
