@@ -353,6 +353,8 @@ export function fakeModel(): LanguageModelV4 {
       const system = options.prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
       const prompt = textOf(options.prompt.map((m) => textOf(m.content)).join("\n"));
       if (system.includes("one of the resident's threads") || system.includes("You are the resident's background hands")) {
+        // A step that takes longer than the resident waits for it.
+        if (prompt.includes("模型超时")) throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
         const choice = decide(options);
         if ("delayMs" in choice && choice.delayMs) await new Promise((resolve) => setTimeout(resolve, choice.delayMs));
         if ("tool" in choice) {
