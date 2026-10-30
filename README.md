@@ -133,7 +133,7 @@ WeCom (optional) ──▶ Worker (signature, decrypt, allowlist) ────�
 
 ### The web door
 
-Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors.
+Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors. Its buttons are small icons; hover over one, or press and hold it on a phone, to see its name (the names in 「」 below).
 
 - **Saying something**: type, or tap **+** for pictures (up to 4 at a time, from the album or the camera), a handoff letter or another model; the smiley in the box opens your stickers. Hold the microphone to record a voice message (up to a minute); it is heard like one on Telegram.
 - **Long-press** a message (right-click with a mouse) to quote it in your reply, copy it, save it to Aelios' **Precious** (「珍贵」), or have it read aloud (「念给我听」) once a voice provider is set.
