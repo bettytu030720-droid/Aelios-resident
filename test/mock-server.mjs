@@ -205,6 +205,8 @@ const server = http.createServer(async (req, res) => {
         const media = method === "sendSticker" ? { sticker: { file_id: id } } : method === "sendAnimation" ? { animation: { file_id: id }, document: { file_id: id } } : { photo: [{ file_id: `${id}-s` }, { file_id: id }] };
         return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, ...media } });
       }
+      case "sendDocument":
+        return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, document: { file_id: `up-doc-${nextMessageId}`, file_name: json?.document?.file ?? "" } } });
       case "sendVoice":
         return reply({ ok: true, result: { message_id: nextMessageId++, date: Math.floor(Date.now() / 1000), chat, voice: { file_id: `up-voice-${nextMessageId}`, duration: Number(json?.duration ?? 0) } } });
       case "setWebhook":

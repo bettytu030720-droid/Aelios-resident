@@ -133,7 +133,7 @@ WeCom (optional) ──▶ Worker (signature, decrypt, allowlist) ────�
 
 ### The web door
 
-Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors.
+Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors. Its buttons are small icons; hover over one, or press and hold it on a phone, to see its name (the names in 「」 below).
 
 - **Saying something**: type, or tap **+** for pictures (up to 4 at a time, from the album or the camera), a handoff letter or another model; the smiley in the box opens your stickers. Hold the microphone to record a voice message (up to a minute); it is heard like one on Telegram.
 - **Long-press** a message (right-click with a mouse) to quote it in your reply, copy it, save it to Aelios' **Precious** (「珍贵」), or have it read aloud (「念给我听」) once a voice provider is set.
@@ -466,7 +466,9 @@ You do not have to keep track of threads yourself. Bring up earlier work in your
 
 **Roles** save the resident writing the same instructions into every job. Three come with it, under background help on the settings page: `coder` (works on a new branch, runs typecheck and tests, opens a PR; never merges, pushes to the default branch or deploys), `reviewer` (reads only, runs the tests, sorts what it finds into must fix, should fix and nits with file and place, and ends with whether it can be merged) and `researcher` (gives a source for each point and marks what it is unsure of). You can change them, remove them and add your own, and pick each one's model from a list: threads on the resident and on GitHub Actions use the role's model (on claude.ai your subscription's model does the work). The resident names a role in `cloud_task` (its `role`, not another tool); the role's instructions go before the job, and a follow-up keeps its thread's role.
 
-With background help off the resident has neither `find` nor `cloud_task`: one kept just for chatting stays as it was. The descriptions never change, so connecting or disconnecting a place does not break the cache.
+It can also hand you a file instead of a long text you would have to copy on a phone: a plan, a document, a list, a table. That is one more tool, `make_file` (at most 3 files a reply). The file goes to the chat you wrote from (a document on Telegram, a file on WeCom) and shows under the reply on the web page, where you can open and download it. Files are kept with the voice messages and go when those do, the oldest first.
+
+With background help off the resident has none of `find`, `make_file` or `cloud_task`: one kept just for chatting stays as it was. The descriptions never change, so connecting or disconnecting a place does not break the cache.
 
 Connecting GitHub Actions:
 

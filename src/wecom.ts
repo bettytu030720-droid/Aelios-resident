@@ -441,14 +441,14 @@ export class WecomApi {
     return this.send(user, { msgtype: "text", text: { content: text } });
   }
 
-  /** A picture (JPG, PNG or GIF) or a voice message (AMR) as one message. */
-  async sendFile(user: string, kind: "image" | "voice", file: { bytes: Uint8Array; type: string; name: string }): Promise<string> {
+  /** A picture (JPG, PNG or GIF), a voice message (AMR) or a file as one message. */
+  async sendFile(user: string, kind: "image" | "voice" | "file", file: { bytes: Uint8Array; type: string; name: string }): Promise<string> {
     const mediaId = await this.reported(() => this.upload(kind, file));
     return this.send(user, { msgtype: kind, [kind]: { media_id: mediaId } });
   }
 
   /** A file into WeCom's temporary media (kept 3 days), for one message. Returns its media_id. */
-  private upload(kind: "image" | "voice", file: { bytes: Uint8Array; type: string; name: string }): Promise<string> {
+  private upload(kind: "image" | "voice" | "file", file: { bytes: Uint8Array; type: string; name: string }): Promise<string> {
     return this.withToken(async (token) => {
       // Built by hand: WeCom wants filelength in the part's header, and the relay gets one body of known length.
       const boundary = `----resident${crypto.randomUUID().replace(/-/g, "")}`;
