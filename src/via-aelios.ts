@@ -24,6 +24,11 @@ export const PURPOSE_HEADER = "x-aelios-purpose";
 export const AUXILIARY = { [PURPOSE_HEADER]: "auxiliary" };
 /** Aelios says here whether it handled memory: "off" when the model is not one of the identity's main models. */
 export const MEMORY_HEADER = "x-aelios-memory";
+/**
+ * Aelios tells exchanges apart by their request: the same request again is taken for the one it already recorded.
+ * A reply asked for again (take-back.ts) sends the same request, so it carries a fresh id here to be recorded too.
+ */
+export const REQUEST_ID_HEADER = "x-aelios-request-id";
 
 /** The model name as Aelios takes it. */
 export function aeliosName(id: string): string {
@@ -116,7 +121,10 @@ export type MemoryReport = (status: string) => void;
 /** How the conversation's calls think (thinking.ts); left out for work outside it, such as shrinking a web page. */
 export type Thinking = { effort: Effort | null };
 
-function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, thinking?: Thinking): typeof fetch {
+/** The id a reply asked for again goes out with (REQUEST_ID_HEADER), or null. */
+export type Redo = () => string | null;
+
+function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, thinking?: Thinking, redo?: Redo): typeof fetch {
   return async (input, init) => {
     // Like every request to Aelios: the key is not carried to a redirect target.
     if (typeof init?.body !== "string") return fetch(input, { ...init, redirect: "manual" });
@@ -124,6 +132,8 @@ function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, th
     const headers = new Headers(init.headers);
     const hers = !auxiliary && !isAuxiliary(body);
     if (!hers) headers.set(PURPOSE_HEADER, "auxiliary");
+    const again = redo?.();
+    if (again) headers.set(REQUEST_ID_HEADER, again);
     // Claude's earlier thinking goes back without its blocks, for the reason in claude-run.ts.
     if (messages) body = withoutOldThinkingIn(body);
     if (messages && thinking) body = withThinking(body, thinking.effort);
@@ -141,10 +151,10 @@ function sender(messages: boolean, auxiliary: boolean, report?: MemoryReport, th
 export function aeliosModel(
   memory: AeliosConfig,
   id: string,
-  { auxiliary = false, report, thinking }: { auxiliary?: boolean; report?: MemoryReport; thinking?: Thinking } = {}
+  { auxiliary = false, report, thinking, redo }: { auxiliary?: boolean; report?: MemoryReport; thinking?: Thinking; redo?: Redo } = {}
 ): LanguageModel {
   const name = aeliosName(id);
   const baseURL = aeliosBase(memory);
-  if (onMessages(id)) return createAnthropic({ baseURL, apiKey: memory.key, fetch: sender(true, auxiliary, report, thinking) })(name);
-  return createOpenAI({ baseURL, apiKey: memory.key, name: "aelios", fetch: sender(false, auxiliary, report) }).chat(name);
+  if (onMessages(id)) return createAnthropic({ baseURL, apiKey: memory.key, fetch: sender(true, auxiliary, report, thinking, redo) })(name);
+  return createOpenAI({ baseURL, apiKey: memory.key, name: "aelios", fetch: sender(false, auxiliary, report, undefined, redo) }).chat(name);
 }
