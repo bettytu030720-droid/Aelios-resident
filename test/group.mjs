@@ -12,7 +12,7 @@ const out = join(dir, "group.mjs");
 const via = join(dir, "via-aelios.mjs");
 await build({ entryPoints: ["src/group.ts"], bundle: true, platform: "node", format: "esm", outfile: out, logLevel: "error" });
 await build({ entryPoints: ["src/via-aelios.ts"], bundle: true, platform: "node", format: "esm", outfile: via, logLevel: "error" });
-const { GROUP_HEAD, GroupStore, HER, cleanReply, groupConfigFrom, groupHeard, membersOf, mentionsIn, speakersFor } = await import(pathToFileURL(join(process.cwd(), out)).href);
+const { GROUP_HEAD, GroupStore, HER, ROUND_IDLE, afterTurn, cleanReply, groupConfigFrom, groupHeard, membersOf, mentionsIn, speakersFor } = await import(pathToFileURL(join(process.cwd(), out)).href);
 const { isAuxiliary } = await import(pathToFileURL(join(process.cwd(), via)).href);
 rmSync(dir, { recursive: true, force: true });
 
@@ -47,31 +47,50 @@ console.log("PASS who answers: everyone in order, only those called (in the grou
 
 // A group's settings from the web page.
 const ids = ["default", "mochi", "kiki"];
-assert.deepEqual(groupConfigFrom({ name: " 周末 ", members: ["kiki", "default", "kiki"] }, ids), { config: { name: "周末", members: ["default", "kiki"], reply: "all", order: "list" } }, "who answers has defaults; the members in the sidebar's order, once each");
-assert.deepEqual(groupConfigFrom({ members: ["mochi", "kiki"], reply: "one", order: "random" }, ids).config, { name: "", members: ["mochi", "kiki"], reply: "one", order: "random" }, "a name left empty is the caller's to fill");
-for (const bad of [{ members: ["mochi"] }, { members: ["mochi", "nobody"] }, { members: "mochi,kiki" }, { reply: "some" }, { order: "abc" }, { name: "长".repeat(31) }]) {
+assert.deepEqual(groupConfigFrom({ name: " 周末 ", members: ["kiki", "default", "kiki"] }, ids), { config: { name: "周末", members: ["default", "kiki"], reply: "all", order: "list", rounds: 3 } }, "who answers and how many rounds have defaults; the members in the sidebar's order, once each");
+assert.deepEqual(groupConfigFrom({ members: ["mochi", "kiki"], reply: "one", order: "random", rounds: "5" }, ids).config, { name: "", members: ["mochi", "kiki"], reply: "one", order: "random", rounds: 5 }, "a name left empty is the caller's to fill");
+for (const bad of [{ members: ["mochi"] }, { members: ["mochi", "nobody"] }, { members: "mochi,kiki" }, { reply: "some" }, { order: "abc" }, { name: "长".repeat(31) }, { rounds: 0 }, { rounds: 6 }, { rounds: 1.5 }]) {
   assert.ok("error" in groupConfigFrom({ members: ["mochi", "kiki"], ...bad }, ids), JSON.stringify(bad));
 }
 assert.deepEqual(membersOf({ members: ["kiki", "gone", "default"] }, ids), ["default", "kiki"], "a deleted resident is not in it; the sidebar's order");
-console.log("PASS a group's settings: at least two residents there are, defaults for who answers, checked");
+console.log("PASS a group's settings: at least two residents there are, defaults for who answers and the rounds, checked");
 
 // What a member is handed on its turn: what the others said since it last spoke, hers without a name.
 const line = (seq, author, text) => ({ seq, author, text, at: seq, kind: "say" });
 const names = { default: "旦九", mochi: "麻薯", kiki: "Kiki" };
-const heard = groupHeard([line(1, HER, "今晚吃什么"), line(2, "default", "火锅")], false, { group: "周末", me: "麻薯", others: ["旦九", "Kiki"], names });
+const at = { names, round: 1, rounds: 3 };
+const heard = groupHeard([line(1, HER, "今晚吃什么"), line(2, "default", "火锅")], false, { ...at, group: "周末", me: "麻薯", others: ["旦九", "Kiki"] });
 assert.equal(
   heard,
-  '[group chat "周末" with them, 旦九 and Kiki, where you are 麻薯. What was said there since you last spoke, oldest first; a line without a [name] is theirs. Your reply is posted there: write only your own message, or SKIP to stay quiet]\n今晚吃什么\n[旦九] 火锅'
+  '[group chat "周末" with them, 旦九 and Kiki, where you are 麻薯. What was said there since you last spoke, oldest first, each line after who said it ([them] is them). Your reply is posted there: write only your own message. This is round 1 of at most 3 on their latest message; if you have nothing more to add, reply with just SKIP to end]\n[them] 今晚吃什么\n[旦九] 火锅'
 );
-assert.match(groupHeard([line(1, HER, "在吗")], false, { group: "两个人", me: "麻薯", others: ["旦九"], names }), /^\[group chat "两个人" with them and 旦九, where you are 麻薯\./);
-assert.match(groupHeard([line(9, HER, "嗯")], true, { group: "a", me: "麻薯", others: ["旦九"], names }), /\]\n\(Earlier messages of this group are not shown\.\)\n嗯$/);
-assert.match(groupHeard([line(1, HER, "长".repeat(2500))], false, { group: "a", me: "麻薯", others: ["旦九"], names }), /…\(cut here: 2500 characters in all\)$/);
-assert.match(groupHeard([], false, { group: 'a "b"]\nc', me: "麻薯", others: ["旦九"], names }), /^\[group chat "a  b   c" with/, "a name cannot end the head early");
+assert.match(groupHeard([line(1, HER, "在吗")], false, { ...at, round: 2, group: "两个人", me: "麻薯", others: ["旦九"] }), /^\[group chat "两个人" with them and 旦九, where you are 麻薯\..* This is round 2 of at most 3 /);
+assert.match(groupHeard([line(9, HER, "嗯")], true, { ...at, group: "a", me: "麻薯", others: ["旦九"] }), /\]\n\(Earlier messages of this group are not shown\.\)\n\[them\] 嗯$/);
+assert.match(groupHeard([line(1, HER, "长".repeat(2500))], false, { ...at, group: "a", me: "麻薯", others: ["旦九"] }), /…\(cut here: 2500 characters in all\)$/);
+assert.match(groupHeard([], false, { ...at, group: 'a "b"]\nc', me: "麻薯", others: ["旦九"] }), /^\[group chat "a  b   c" with/, "a name cannot end the head early");
+const marked = groupHeard(
+  [{ ...line(1, HER, "看这个"), pictures: 2, stickers: [{ url: "/stickers/x", video: false, mark: "[sticker 🤗 A hug.]" }] }, { ...line(2, "default", ""), stickers: [{ url: "/stickers/y", video: false, mark: "[sticker 👋 Say hi.]" }] }],
+  false,
+  { ...at, group: "a", me: "麻薯", others: ["旦九"] }
+);
+assert.deepEqual(marked.split("\n").slice(1), ["[them] 看这个 [sticker 🤗 A hug.] [picture] [picture]", "[旦九] [sticker 👋 Say hi.]"], "stickers and pictures marked where they were");
 // It is a message of hers, not one of the system's notes: Aelios recalls for it and records it.
 const stamped = `[10-30 Fri 01:40] ${heard}`;
 assert.equal(isAuxiliary({ messages: [{ role: "user", content: stamped }] }), false);
-assert.equal(stamped.replace(/^\[\d\d-\d\d [^\]]*\]\s*/, "").replace(GROUP_HEAD, ""), "今晚吃什么\n[旦九] 火锅", "the web page shows only what was said");
-console.log("PASS what a member is handed: who is there, hers without a name, the others with theirs, cut where it says so, recorded by Aelios");
+assert.equal(stamped.replace(/^\[\d\d-\d\d [^\]]*\]\s*/, "").replace(GROUP_HEAD, ""), "[them] 今晚吃什么\n[旦九] 火锅", "the search shows only what was said");
+console.log("PASS what a member is handed: who is there, every line after who said it (hers as [them]), cut where it says so, recorded by Aelios");
+
+// Rounds: when everyone in one has had a turn and someone said something, the next starts, up to the setting.
+const round = { ...ROUND_IDLE, root: 5, order: ["default", "mochi"], queue: ["mochi"], running: true, speaking: "default" };
+let after = afterTurn(round, { root: 5, said: true }, 3);
+assert.deepEqual([after.n, after.queue, after.spoke, after.speaking, after.running], [1, ["mochi"], true, "", true], "the round goes on");
+after = afterTurn({ ...after, queue: [] }, { root: 5, said: false }, 3);
+assert.deepEqual([after.n, after.queue, after.spoke, after.running], [2, ["default", "mochi"], false, true], "someone spoke: the next round");
+assert.deepEqual(afterTurn({ ...after, queue: [] }, { root: 5, said: false }, 3).running, false, "no one spoke in it: it ends");
+assert.deepEqual(afterTurn({ ...round, queue: [], n: 3 }, { root: 5, said: true }, 3).running, false, "not past the setting");
+assert.deepEqual(afterTurn({ ...round, queue: [] }, { root: 4, said: true }, 3).running, false, "a reply to her earlier message does not count for this one");
+assert.deepEqual(afterTurn({ ...round, queue: [], order: [] }, { root: 5, said: true }, 3).running, false, "stopped: no new round");
+console.log("PASS rounds: the next one starts when someone spoke, up to the setting; her new message and stop are respected");
 
 assert.equal(cleanReply("SKIP", "麻薯"), "");
 assert.equal(cleanReply(" skip. ", "麻薯"), "");
@@ -85,8 +104,8 @@ console.log("PASS a reply: SKIP passes, its own name in front is taken off");
 const db = new DatabaseSync(":memory:");
 const sql = (strings, ...values) => db.prepare(strings.join("?")).all(...values);
 const store = new GroupStore(sql);
-const weekend = store.create({ name: "周末", members: ["default", "mochi"], reply: "all", order: "list" });
-const work = store.create({ name: "work", members: ["mochi", "kiki"], reply: "one", order: "list" });
+const weekend = store.create({ name: "周末", members: ["default", "mochi"], reply: "all", order: "list", rounds: 3 });
+const work = store.create({ name: "work", members: ["mochi", "kiki"], reply: "one", order: "list", rounds: 2 });
 store.add(weekend.id, HER, "今晚吃什么");
 store.add(work.id, HER, "开会");
 store.add(weekend.id, "default", "火锅");
@@ -105,10 +124,29 @@ unheard = store.unheard(work.id, "kiki", 0);
 assert.deepEqual([unheard.lines.length, unheard.cut, unheard.lines.at(-1).text], [60, true, "第 69 句"], "the latest 60, saying earlier ones are left out");
 assert.deepEqual(store.lastSaid(weekend.id), { default: 3, mochi: 5 });
 assert.deepEqual(Object.fromEntries(Object.entries(store.latest()).map(([id, l]) => [id, l.text])), { [weekend.id]: "好", [work.id]: "第 69 句" });
-store.setRound(work.id, { queue: ["kiki"], speaking: "mochi", since: 1, epoch: 2, running: true });
-assert.deepEqual(store.get(work.id).round, { queue: ["kiki"], speaking: "mochi", since: 1, epoch: 2, running: true });
-store.update(work.id, { name: "工作", members: ["default", "kiki"], reply: "all", order: "random" });
-assert.deepEqual([store.get(work.id).name, store.get(work.id).members, store.get(work.id).order, store.get(work.id).round.speaking], ["工作", ["default", "kiki"], "random", "mochi"], "settings change, the round stays");
-store.remove(work.id);
+store.setRound(work.id, { ...ROUND_IDLE, root: 9, order: ["mochi", "kiki"], n: 2, queue: ["kiki"], speaking: "mochi", since: 1, epoch: 2, running: true });
+assert.deepEqual(store.get(work.id).round, { root: 9, order: ["mochi", "kiki"], n: 2, queue: ["kiki"], spoke: false, speaking: "mochi", since: 1, epoch: 2, running: true });
+store.update(work.id, { name: "工作", members: ["default", "kiki"], reply: "all", order: "random", rounds: 4 });
+assert.deepEqual([store.get(work.id).name, store.get(work.id).members, store.get(work.id).order, store.get(work.id).rounds, store.get(work.id).round.speaking], ["工作", ["default", "kiki"], "random", 4, "mochi"], "settings change, the round stays");
+// Pictures are kept as keys the page never sees; stickers as they are; an icon is some group's, or not.
+const sticker = { url: "/r/mochi/stickers/" + "a".repeat(24), video: false, mark: "[sticker 🤗 A hug.]" };
+const shown = store.add(work.id, HER, "看", "say", { pictures: ["k1", "k2"], stickers: [sticker] });
+assert.deepEqual([shown.pictures, shown.stickers], [2, [sticker]]);
+assert.ok(!JSON.stringify(store.page(work.id, null)).includes("k1"), "the page gets a count, not the keys");
+assert.deepEqual(store.pictures(work.id, shown.seq), ["k1", "k2"]);
+assert.equal(store.setIcon(work.id, "icon1"), "");
+assert.deepEqual([store.isIcon("icon1"), store.isIcon("k1"), store.isIcon(""), store.views(["default", "kiki"]).find((g) => g.id === work.id).icon], [true, false, false, "/avatar/icon1"]);
+assert.equal(store.setIcon(work.id, "icon2"), "icon1", "the old one is handed back to be thrown away");
+assert.deepEqual(store.remove(work.id).sort(), ["icon2", "k1", "k2"], "its icon and pictures are handed back too");
 assert.deepEqual([store.get(work.id), store.list().length, store.page(work.id, null).lines.length], [null, 1, 0], "a group goes with its lines");
-console.log("PASS the store: groups kept apart, notes and its own lines not handed back, only what is new, the latest 60, removed with its lines");
+// A table from the first group chats gets the new columns.
+const old = new DatabaseSync(":memory:");
+const oldSql = (strings, ...values) => old.prepare(strings.join("?")).all(...values);
+oldSql`CREATE TABLE grp_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, members TEXT NOT NULL, reply TEXT NOT NULL, ord TEXT NOT NULL, seen TEXT NOT NULL, round TEXT NOT NULL, at INTEGER NOT NULL)`;
+oldSql`CREATE TABLE grp_said (seq INTEGER PRIMARY KEY AUTOINCREMENT, grp TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL)`;
+oldSql`INSERT INTO grp_groups VALUES ('g1', '老群', '["default","mochi"]', 'all', 'list', '{}', '{"queue":[],"speaking":"","since":0,"epoch":3,"running":false}', 1)`;
+oldSql`INSERT INTO grp_said (grp, author, text, at, kind) VALUES ('g1', '', '以前的话', 1, 'say')`;
+const upgraded = new GroupStore(oldSql);
+assert.deepEqual([upgraded.get("g1").rounds, upgraded.get("g1").icon, upgraded.get("g1").round.n, upgraded.get("g1").round.epoch, upgraded.page("g1", null).lines[0].text], [3, "", 1, 3, "以前的话"]);
+new GroupStore(oldSql);
+console.log("PASS the store: groups kept apart, notes and its own lines not handed back, only what is new, the latest 60, pictures as hidden keys, stickers, icons, removed with what it held, an old table upgraded once");

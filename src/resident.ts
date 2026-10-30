@@ -75,7 +75,7 @@ import { resumeLetterCompaction } from "./letter-recovery";
 import { LetterStateStore, type WriteState } from "./letter-state";
 import { deliverLetter } from "./letter-delivery";
 import { letterDeliveryStatus, letterWriteStatus } from "./letter-status";
-import { PICTURE_SEND_BYTES, shrinkWith, withPictures, type Download } from "./pictures";
+import { PICTURE_SEND_BYTES, base64, shrinkWith, withPictures, type Download } from "./pictures";
 import { MEDIA_MAX_BYTES, MediaStore, type MediaFile } from "./media-store";
 import { makePushKeys, pushTargetOf, sendPush, type PushKeys, type PushTarget } from "./web-push";
 import { REFUSED_PICTURE, refusalOf, refusedNotice, withoutRefused } from "./refused-pictures";
@@ -145,18 +145,19 @@ import {
 } from "./cloud-tasks";
 import { TOKEN_PAGE, dispatchHands, fingerprint, setUpHands, WORKFLOW, type HandsRepo } from "./hands-repo";
 import { fromOpenAI, toOpenAI } from "./openai-chat";
+import { SENT_STICKER, stickerMarks, withoutStickerMarks } from "./sticker-marks";
 import {
   DEFAULT_WECOM_STICKER_BACKGROUND,
   MAKE_STICKER_DESCRIPTION,
   MAX_STICKERS_PER_PACK,
   MAX_WEB_BYTES,
   MAX_ZIP_BYTES,
-  SEND_STICKER_DESCRIPTION,
   drawSticker,
   emojiOf,
   isEmojiPackLink,
   readPack,
   slug,
+  stickerRules,
   hexColour,
   sniff,
   stillSticker,
@@ -198,7 +199,7 @@ import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, t
 import { effortOf } from "./thinking";
 import { takeBack } from "./take-back";
 import { activityOf, WebDraft, type Activity } from "./web/history";
-import { GROUPS_MAX, GROUP_HEAD, GROUP_TEXT_MAX, GroupStore, HER, cleanReply, groupConfigFrom, groupHeard, membersOf, named, speakersFor, type Group, type GroupLine, type Member } from "./group";
+import { GROUPS_MAX, GROUP_HEAD, GROUP_PICTURES_MAX, GROUP_TEXT_MAX, GroupStore, HER, afterTurn, cleanReply, groupConfigFrom, groupHeard, membersOf, named, speakersFor, type Group, type GroupLine, type GroupSticker, type Member } from "./group";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { findTools, type FindHost } from "./find-tools";
 import { RoleStore, unknownRole, withRole, type Role } from "./task-roles";
@@ -306,8 +307,6 @@ export type WebLine = {
   text: string;
   at: number | null;
   via: "telegram" | "wecom" | "web" | "checkin" | "task" | "group" | null;
-  /** The group chat this message of hers was handed to it from (group.ts). */
-  group?: string;
   activity?: Activity[];
   /** Stickers sent in this reply, shown after its words; or the one she sent from the web page. */
   stickers?: { url: string; video: boolean }[];
@@ -427,6 +426,7 @@ export type WebPersona = {
 const STAMP_PREFIX = /^\[\d\d-\d\d [^\]]*\]\s*/;
 // What Telegram gets for a reply with no words. A sticker can be the whole reply, and then this is not sent.
 const EMPTY_REPLY = "（我好像没说出话来，再发一次？）";
+// send_sticker: how replies sent a sticker before the marks (sticker-marks.ts); older replies still show theirs.
 const STICKER_TOOLS = new Set(["send_sticker", "make_sticker"]);
 // What Think leaves of a picture once it has aged out of the conversation (its media eviction).
 const EVICTED_PICTURE = /\[evicted image\/[^\]]*\]/g;
@@ -897,6 +897,8 @@ export class Resident extends Think<Env> {
       // A reply that is only a sticker: the sticker is the reply, not "I said nothing".
       keepLast: (thread, text) => !(text.trim() === EMPTY_REPLY && this.#outbox.get(`chat:${thread}`)?.length),
       after: (thread) => this.flushStickers(`chat:${thread}`, thread),
+      sticker: (thread, handle) => this.markedSticker(thread, handle),
+      nothing: EMPTY_REPLY,
       voice: (thread) => this.voiceReply(thread),
       // send_voice said it all and the model wrote nothing more: no "I said nothing" line after it.
       instead: (_thread, text) => (text.trim() === EMPTY_REPLY ? this.#spoke : null)
@@ -2069,12 +2071,10 @@ export class Resident extends Think<Env> {
   #stickerFetches = new Map<string, Promise<StickerFile | null>>();
   #stickerFailed = new Map<string, number>();
 
-  /** send_sticker and make_sticker, unless STICKERS is off. send_sticker lists every sticker of the packs that are on. */
+  /** make_sticker, unless STICKERS is off. It sends the others with a mark in its reply (stickerList). */
   private stickerTools(): ToolSet {
     if (!this.stickersOn()) return {};
-    // Held for the cache window: one it draws joins the list in the next window (sticker-store.ts).
-    const lines = this.stickers().menu(this.cacheWindow());
-    const tools: ToolSet = {
+    return {
       make_sticker: tool({
         description: MAKE_STICKER_DESCRIPTION,
         inputSchema: z.object({
@@ -2090,14 +2090,15 @@ export class Resident extends Think<Env> {
         execute: async (input) => this.makeSticker(input)
       })
     };
-    if (lines.length) {
-      tools.send_sticker = tool({
-        description: SEND_STICKER_DESCRIPTION + lines.join("\n"),
-        inputSchema: z.object({ sticker: z.string().describe("pack/name, as listed") }),
-        execute: async ({ sticker }) => this.sendSticker(sticker)
-      });
-    }
-    return tools;
+  }
+
+  /**
+   * Every sticker of the packs that are on and how to send one, for the system prompt; "" when there are none or
+   * STICKERS is off. Held for the cache window: one it draws joins the list in the next window (sticker-store.ts).
+   */
+  private stickerList(): string {
+    const lines = this.stickersOn() ? this.stickers().menu(this.cacheWindow()) : [];
+    return lines.length ? stickerRules(lines) : "";
   }
 
   /** Why no sticker can go out in this turn; null when one can. */
@@ -2128,15 +2129,6 @@ export class Resident extends Think<Env> {
     if (box) this.#outbox.set(box, [...(this.#outbox.get(box) ?? []), key]);
   }
 
-  private async sendSticker(handle: string): Promise<{ sent: string } | { error: string }> {
-    const refused = await this.stickerRefusal();
-    if (refused) return { error: refused };
-    const row = this.stickers().find(handle);
-    if (!row) return { error: `No sticker called ${handle}: pick one from the list, as pack/name.` };
-    this.queueSticker(row.key);
-    return { sent: `${row.pack}/${row.name}` };
-  }
-
   private async makeSticker(input: Drawing & { name: string; emoji: string; when: string; send?: boolean }): Promise<Record<string, unknown>> {
     const send = input.send !== false;
     const refused = this.#letterPromptId ? "Not now." : send ? await this.stickerRefusal() : null;
@@ -2153,15 +2145,11 @@ export class Resident extends Think<Env> {
     return { saved: saved.handle, sent: saved.handle, ...note };
   }
 
-  /** What to tell the model about a sticker it drew that send_sticker's list does not show yet. */
+  /** What to tell the model about a sticker it drew that its list does not show yet. */
   private listedLater(handle: string): { note?: string } {
     const lines = this.stickers().menu(this.cacheWindow());
     if (lines.some((line) => line === handle || line.startsWith(`${handle} `))) return {};
-    return {
-      note: lines.length
-        ? "send_sticker's list shows it from a later conversation; send_sticker takes this name already."
-        : "You can send it with send_sticker from a later conversation."
-    };
+    return { note: `Your sticker list shows it from a later conversation; [sticker: ${handle}] sends it already.` };
   }
 
   /** The stickers waiting in one box, to her chat (a Telegram or WeCom thread). Returns the last one posted. */
@@ -2169,19 +2157,35 @@ export class Resident extends Think<Env> {
     const keys = this.#outbox.get(box) ?? [];
     this.#outbox.delete(box);
     let last: { id: string; threadId: string } | null = null;
-    for (const key of keys) {
-      if (!threadId) break;
-      const chatId = chatIdOf(threadId);
-      const user = userOf(threadId);
-      if (chatId) {
-        const messageId = await this.deliverSticker(chatId, key);
-        if (messageId != null) last = { id: `${chatId}:${messageId}`, threadId };
-      } else if (user && this.wecomStickersOn()) {
-        const messageId = await this.deliverWecomSticker(user, key);
-        if (messageId != null) last = { id: messageId, threadId };
-      }
-    }
+    for (const key of keys) if (threadId) last = (await this.stickerTo(threadId, key)) ?? last;
     return last;
+  }
+
+  /**
+   * The sticker a mark in its reply named (sticker-marks.ts), to her chat now; null when it is not one it has, could
+   * not go, or this reply already has its one (make_sticker's). It counts as the reply's one, so make_sticker after
+   * it in the same reply sends nothing.
+   */
+  private async markedSticker(threadId: string, handle: string): Promise<{ id: string; threadId: string } | null> {
+    const turn = [...this.#turnThread].findLast(([, thread]) => thread === threadId)?.[0];
+    const taken = Boolean(this.#outbox.get(`chat:${threadId}`)?.length) || Boolean(turn && this.#stickerSent.has(turn));
+    const row = this.stickersOn() && !taken ? this.stickers().find(handle) : null;
+    if (!row) return null;
+    if (turn) this.#stickerSent.add(turn);
+    return this.stickerTo(threadId, row.key);
+  }
+
+  /** One sticker to her chat; null when it could not go out (or stickers are off on WeCom). */
+  private async stickerTo(threadId: string, key: string): Promise<{ id: string; threadId: string } | null> {
+    const chatId = chatIdOf(threadId);
+    const user = userOf(threadId);
+    if (chatId) {
+      const messageId = await this.deliverSticker(chatId, key);
+      return messageId == null ? null : { id: `${chatId}:${messageId}`, threadId };
+    }
+    if (!user || !this.wecomStickersOn()) return null;
+    const messageId = await this.deliverWecomSticker(user, key);
+    return messageId == null ? null : { id: messageId, threadId };
   }
 
   /**
@@ -2252,16 +2256,22 @@ export class Resident extends Think<Env> {
     return sent.messageId;
   }
 
-  /** The stickers a reply sent, as the web page shows them. */
-  private sentStickers(parts: readonly { type: string; toolName?: string; input?: unknown; output?: unknown }[]): WebLine["stickers"] {
-    const shown: NonNullable<WebLine["stickers"]> = [];
-    for (const part of parts) {
+  /**
+   * The stickers a reply sent, as the web page shows them: the one make_sticker sent (or send_sticker, before the
+   * marks; kept from a pack turned off since), else the first a mark in its words named that can go now, as on
+   * Telegram.
+   */
+  private sentStickers(parts: readonly { type: string; text?: string; toolName?: string; input?: unknown; output?: unknown }[]): WebLine["stickers"] {
+    const sent = parts.flatMap((part) => {
       const name = part.toolName ?? (part.type.startsWith("tool-") ? part.type.slice(5) : "");
-      const sent = (part.output as { sent?: unknown } | undefined)?.sent;
-      if (!STICKER_TOOLS.has(name) || typeof sent !== "string") continue;
-      const row = this.stickers().find(sent, false);
-      if (row) shown.push({ url: `${residentPrefix(this.residentId)}/stickers/${row.key}`, video: row.web_type === "video/webm" });
-    }
+      const handle = (part.output as { sent?: unknown } | undefined)?.sent;
+      return STICKER_TOOLS.has(name) && typeof handle === "string" ? [handle] : [];
+    });
+    const marked = parts.flatMap((part) => (part.type === "text" ? stickerMarks(part.text ?? "").stickers : []));
+    const rows = sent.length
+      ? sent.flatMap((handle) => this.stickers().find(handle, false) ?? [])
+      : this.stickersOn() ? marked.flatMap((handle) => this.stickers().find(handle) ?? []) : [];
+    const shown = (sent.length ? rows : rows.slice(0, 1)).map((row) => ({ url: `${residentPrefix(this.residentId)}/stickers/${row.key}`, video: row.web_type === "video/webm" }));
     return shown.length ? shown : undefined;
   }
 
@@ -2538,7 +2548,9 @@ export class Resident extends Think<Env> {
     this.#spoke = null;
     this.#turnVoice = null;
     this.#draftActive = null;
-    if (ctx.requestId && !this.#letterPromptId) {
+    const lastSaid = this.messages.findLast((message) => message.role === "user")?.metadata as WebSaidMeta | undefined;
+    // A turn in a group chat shows on the group's page, not in this chat.
+    if (ctx.requestId && !this.#letterPromptId && !lastSaid?.group) {
       const via = ctx.messenger
         ? ctx.messenger.messengerId === "wecom"
           ? "wecom"
@@ -2550,8 +2562,7 @@ export class Resident extends Think<Env> {
       if (via === "web") {
         // A reply to a voice message she recorded there can be said in the voice too (speakOnWeb).
         if (this.#webTurns.size > 20) this.#webTurns.clear();
-        const lastUser = this.messages.findLast((message) => message.role === "user");
-        this.#webTurns.set(ctx.requestId, { voice: Boolean((lastUser?.metadata as WebSaidMeta | undefined)?.voice) });
+        this.#webTurns.set(ctx.requestId, { voice: Boolean(lastSaid?.voice) });
       }
       // activeTurn is async-context-local; a separate history RPC must check it inside the captured turn.
       const withinTurn = AsyncLocalStorage.snapshot();
@@ -2590,10 +2601,11 @@ export class Resident extends Think<Env> {
     }
     const messages = this.windowHistory(ctx.messages);
     const boot = await this.boot();
+    const stickers = this.stickerList();
     // Only our own tools: Think's workspace file tools would cost tokens every turn and do nothing here.
     const own = Object.keys(this.getTools());
     return {
-      instructions: boot ? `${ctx.system}\n\n[长期记忆开机包]\n${boot}` : ctx.system,
+      instructions: [ctx.system, stickers, boot && `[长期记忆开机包]\n${boot}`].filter(Boolean).join("\n\n"),
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
       // Words after tools that only repeat the reply, or say there is nothing to say, never go out (after-tools.ts).
       experimental_transform: quietAfterTools(),
@@ -3302,7 +3314,9 @@ export class Resident extends Think<Env> {
       if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
       return;
     }
-    const reply = textOf(result.message).trim();
+    // A sticker it sent with a mark is not part of what it said (sticker-marks.ts).
+    const marked = stickerMarks(textOf(result.message).trim());
+    const reply = marked.text;
     // When it last said something, for the dot on its avatar in the sidebar (/web/residents).
     if (reply && reply !== SKIP) await this.ctx.storage.put("said_at", Date.now());
     const trigger = this.activeTurn?.trigger;
@@ -3327,6 +3341,9 @@ export class Resident extends Think<Env> {
       if (!voiced) this.ctx.waitUntil(this.speakOnWeb(result.message.id, reply, web.voice));
       if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
     }
+    // A sticker a check-in or a thread's report named goes after its words, as one make_sticker sent does.
+    const named = proactive && this.stickersOn() ? marked.stickers.map((handle) => this.stickers().find(handle)).find(Boolean) : null;
+    if (named && result.requestId && !this.#outbox.get(`req:${result.requestId}`)?.length) this.#outbox.set(`req:${result.requestId}`, [named.key]);
     if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
       const thread = await this.herThread();
       if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
@@ -3546,11 +3563,13 @@ export class Resident extends Think<Env> {
         }
         const own = message.metadata as WebSaidMeta | undefined;
         via = own?.group ? "group" : meta?.messenger ? (meta.messenger.messengerId === "wecom" ? "wecom" : "telegram") : "web";
+        // What a group chat handed it, and its answer, are on the group's page, not in this chat.
+        if (via === "group") continue;
         const pictures = message.parts.filter((part) => part.type === "file").length;
         // Pictures that aged out of the conversation before media were kept: only their mark is left.
         const gone = text.match(EVICTED_PICTURE)?.length ?? 0;
         let voice: WebLine["voice"];
-        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "").replace(GROUP_HEAD, "");
+        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "");
         if (own?.quote) said = said.replace(QUOTE_MARK, "");
         if (own?.sticker) said = said.replace(STICKER_MARK, "");
         said = said
@@ -3574,27 +3593,27 @@ export class Resident extends Think<Env> {
           ...(pictures ? { pictures } : {}),
           ...(voice ? { voice } : {}),
           ...(own?.quote ? { quote: own.quote } : {}),
-          ...(own?.group ? { group: own.group } : {}),
           ...(own?.sticker ? { stickers: [{ url: `${residentPrefix(this.residentId)}/stickers/${own.sticker}`, video: sticker?.video ?? false }] } : {})
         });
         continue;
       }
       if (message.role !== "assistant") continue;
       const activity = activityOf(message.parts);
-      if (!text && !activity.length) {
+      const stickers = this.sentStickers(message.parts as never);
+      const said = withoutStickerMarks(text);
+      if (!said && !activity.length && !stickers) {
         about = null;
         continue;
       }
-      // A check-in or a group chat it passed on says nothing.
-      if ((via === "checkin" || via === "group") && text === SKIP) continue;
-      const stickers = this.sentStickers(message.parts as never);
+      // A check-in it passed on says nothing; a group chat's answer was posted there.
+      if ((via === "checkin" && said === SKIP) || via === "group") continue;
       const tasks = this.taskCards(message.parts as never, about);
       about = null;
       lines.push({
         id: message.id,
         role: "assistant",
         kind: "chat",
-        text,
+        text: said,
         at,
         via,
         ...(activity.length ? { activity } : {}),
@@ -3619,7 +3638,7 @@ export class Resident extends Think<Env> {
       const finalUser = lines.findLastIndex((line) => line.role === "user");
       const partial = lines.slice(finalUser + 1).find((line) => line.role === "assistant" && line.kind === "chat");
       const activity = activityOf(draft.parts);
-      const text = textOf({ parts: draft.parts });
+      const text = withoutStickerMarks(textOf({ parts: draft.parts }));
       const stickers = this.sentStickers(draft.parts);
       const tasks = this.taskCards(draft.parts, null);
       if (partial) {
@@ -3628,7 +3647,7 @@ export class Resident extends Think<Env> {
         if (text) partial.text = text;
         if (stickers) partial.stickers = stickers;
         if (tasks) partial.tasks = tasks;
-      } else if (text || activity.length) {
+      } else if (text || activity.length || stickers) {
         lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true, ...(stickers ? { stickers } : {}), ...(tasks ? { tasks } : {}) });
       }
     }
@@ -3730,7 +3749,10 @@ export class Resident extends Think<Env> {
     const meta = message.metadata as { at?: number; messenger?: { message?: { createdAt?: string } } } | undefined;
     const sentAt = meta?.messenger?.message?.createdAt;
     const at = meta?.at ?? (sentAt ? new Date(sentAt).getTime() : createdAt);
-    if (message.role === "assistant") return text && text !== SKIP ? { id: message.id, role: "assistant", text, at, search: searchable(parts, []) } : null;
+    if (message.role === "assistant") {
+      const said = withoutStickerMarks(text);
+      return said && said !== SKIP ? { id: message.id, role: "assistant", text: said, at, search: searchable(parts, [SENT_STICKER]) } : null;
+    }
     if (isNote(text) || isCheckin(text) || taskOfNote(text)) return null;
     const said = text
       .replace(EVICTED_PICTURE, "[图片]")
@@ -3780,7 +3802,7 @@ export class Resident extends Think<Env> {
     if (input.quote) {
       const quoted = await this.session.getMessage(String(input.quote)).catch(() => null);
       if (quoted && (quoted.role === "user" || quoted.role === "assistant")) {
-        const words = textOf(quoted).trim().replace(STAMP_PREFIX, "").replace(QUOTE_MARK, "").replace(VOICE_MARK, "").replace(/\s+/g, " ").trim();
+        const words = textOf(quoted).trim().replace(STAMP_PREFIX, "").replace(QUOTE_MARK, "").replace(VOICE_MARK, "").replace(SENT_STICKER, "").replace(/\s+/g, " ").trim();
         const excerpt = words.length > QUOTE_MAX ? `${words.slice(0, QUOTE_MAX)}…` : words;
         if (excerpt) {
           metadata.quote = { who: quoted.role, text: excerpt };
@@ -4005,9 +4027,10 @@ export class Resident extends Think<Env> {
     return this.webIdentity();
   }
 
-  /** The avatar's picture, public (the key changes with every new avatar). */
+  /** The avatar's picture, or a group chat's icon, public (the key changes with every new one). */
   avatarFile(key: string): MediaFile | null {
-    return this.settings("avatar")?.value === key ? this.media().get(key) : null;
+    const ours = this.settings("avatar")?.value === key || (this.residentId === DEFAULT_RESIDENT && this.groupStore().isIcon(key));
+    return ours ? this.media().get(key) : null;
   }
 
   /** The web page's own notices, oldest first: a few weeks of them. */
@@ -4689,28 +4712,68 @@ export class Resident extends Think<Env> {
     return this.groupStore().view(id, this.everyResident(), after, before);
   }
 
-  /** A message of hers in a group: kept, and those who answer it lined up (groupTurn). */
-  async webGroupSay(id: string, text: string): Promise<{ line: GroupLine } | { error: string }> {
-    const said = text.trim();
-    if (!said) return { error: "要说什么？" };
+  /**
+   * A message of hers in a group (words, pictures, a sticker from the packs of resident `sticker.from`): kept, and
+   * those who answer it lined up (groupTurn). Whoever was still to answer her last message does not; one answering
+   * now finishes first.
+   */
+  async webGroupSay(id: string, input: { text?: unknown; pictures?: unknown; sticker?: unknown }): Promise<{ line: GroupLine } | { error: string }> {
+    const said = String(input.text ?? "").trim();
     if (said.length > GROUP_TEXT_MAX) return { error: `一条最多 ${GROUP_TEXT_MAX} 字` };
+    const shown = Array.isArray(input.pictures) ? input.pictures.slice(0, GROUP_PICTURES_MAX) : [];
+    const pictures: { type: string; bytes: Uint8Array }[] = [];
+    for (const picture of shown) {
+      const part = await this.webPicturePart(picture as { data?: unknown });
+      if ("error" in part) return part;
+      const { mediaType, url } = part as { mediaType: string; url: string };
+      pictures.push({ type: mediaType, bytes: Uint8Array.from(atob(url.slice(url.indexOf(",") + 1)), (c) => c.charCodeAt(0)) });
+    }
+    let sticker: GroupSticker | null = null;
+    const asked = input.sticker as { from?: unknown; key?: unknown } | undefined;
+    if (asked) {
+      const from = String(asked.from ?? "");
+      if (!this.everyResident().includes(from)) return { error: "这张表情包不在开着的包里了" };
+      const key = String(asked.key ?? "");
+      sticker = from === this.residentId ? this.groupSticker(key) : await (await getAgentByName(this.env.RESIDENT, from)).groupSticker(key);
+      if (!sticker) return { error: "这张表情包不在开着的包里了" };
+    }
+    if (!said && !pictures.length && !sticker) return { error: "要说什么？" };
     const everyone = await this.groupPeople();
     const store = this.groupStore();
     const group = store.get(id);
     if (!group) return { error: "没有这个群" };
-    const line = store.add(id, HER, said);
+    const keys: string[] = [];
+    for (const picture of pictures) {
+      const kept = this.media().put("picture", picture.type, picture.bytes);
+      if ("error" in kept) return kept;
+      keys.push(kept.key);
+    }
+    const line = store.add(id, HER, said, "say", { pictures: keys, stickers: sticker ? [sticker] : [] });
     const members = everyone.filter((person) => group.members.includes(person.id));
     const queue = speakersFor(said, members, group, store.lastSaid(id), { everyone });
-    // Whoever was still to answer her last message does not; one answering now finishes first.
-    const round = group.round;
+    const round = { ...group.round, root: line.seq, order: queue, n: 1, queue, spoke: false };
     const idle = !round.running || Date.now() - round.since > GROUP_STALE_MS;
     if (!idle || !queue.length) {
-      store.setRound(id, { ...round, queue });
+      store.setRound(id, round);
       return { line };
     }
-    store.setRound(id, { queue, speaking: "", since: Date.now(), epoch: round.epoch + 1, running: true });
+    store.setRound(id, { ...round, speaking: "", since: Date.now(), epoch: round.epoch + 1, running: true });
     await this.schedule(0, "groupTurn", { id });
     return { line };
+  }
+
+  /** One of the pictures of line `seq` in a group, for the web page. */
+  groupPicture(id: string, seq: number, n: number): MediaFile | null {
+    const key = this.groupStore().pictures(id, seq)[n];
+    return key ? this.media().get(key) : null;
+  }
+
+  /** A sticker of this resident's (in a pack that is on), as a group shows it and its residents read it. */
+  groupSticker(key: string): GroupSticker | null {
+    const sticker = this.stickers().byKey(key);
+    if (!sticker) return null;
+    const what = [sticker.emoji, sticker.when || sticker.handle.split("/")[1]].filter(Boolean).join(" ");
+    return { url: `${residentPrefix(this.residentId)}/stickers/${key}`, video: sticker.video, mark: `[sticker ${what.replace(/\]/g, "］")}]` };
   }
 
   webGroupStop(id: string): { ok: true } | { error: string } {
@@ -4725,15 +4788,35 @@ export class Resident extends Think<Env> {
     return this.webGroup(id, null, null);
   }
 
-  /** A group goes, and what was said in it; what its members heard stays in their own conversations. */
+  /** A group's icon from the web page: a square picture, made small there first, like the avatar. */
+  webGroupIcon(id: string, bytes: Uint8Array): ReturnType<Resident["webGroups"]> | { error: string } {
+    if (!this.groupStore().get(id)) return { error: "没有这个群" };
+    const type = sniff(bytes);
+    if (type !== "image/png" && type !== "image/jpeg" && type !== "image/webp") return { error: "图标要 PNG、JPEG 或 WebP" };
+    if (bytes.length > AVATAR_MAX_BYTES) return { error: `图标最多 ${AVATAR_MAX_BYTES / 1024} KB` };
+    const saved = this.media().put("avatar", type, bytes);
+    if ("error" in saved) return saved;
+    const before = this.groupStore().setIcon(id, saved.key);
+    if (before) this.media().remove(before);
+    return this.webGroups();
+  }
+
+  webGroupIconRemove(id: string): ReturnType<Resident["webGroups"]> {
+    const before = this.groupStore().setIcon(id, "");
+    if (before) this.media().remove(before);
+    return this.webGroups();
+  }
+
+  /** A group goes, with what was said in it, its pictures and icon; what its members heard stays in their own conversations. */
   webGroupRemove(id: string): ReturnType<Resident["webGroups"]> {
-    this.groupStore().remove(id);
+    for (const key of this.groupStore().remove(id)) this.media().remove(key);
     return this.webGroups();
   }
 
   /**
    * One answer in a group, then the next one is scheduled: the first in line is handed what it has not heard there,
-   * answers in its own conversation (groupHear), and its answer goes into the group.
+   * answers in its own conversation (groupHear), and its answer goes into the group. One with nothing new to hear (in
+   * a later round, the others passed) is not asked.
    */
   async groupTurn({ id }: { id: string }): Promise<void> {
     const store = this.groupStore();
@@ -4746,11 +4829,12 @@ export class Resident extends Think<Env> {
     const names = Object.fromEntries(everyone.map((person) => [person.id, person.name]));
     const group = store.get(id);
     const members = group ? membersOf(group, this.everyResident()) : [];
-    let reply: { text: string } | { error: string } = { text: "" };
-    if (group && members.includes(speaker)) {
-      const unheard = store.unheard(id, speaker, group.seen[speaker] ?? 0);
+    const unheard = group && members.includes(speaker) ? store.unheard(id, speaker, group.seen[speaker] ?? 0) : null;
+    let reply: { text: string; stickers?: GroupSticker[] } | { error: string } = { text: "" };
+    if (group && unheard?.lines.length) {
       const others = members.filter((member) => member !== speaker).map((member) => names[member]);
-      const heard = { group: group.name, text: groupHeard(unheard.lines, unheard.cut, { group: group.name, me: names[speaker], others, names }) };
+      const text = groupHeard(unheard.lines, unheard.cut, { group: group.name, me: names[speaker], others, names, round: start.n, rounds: group.rounds });
+      const heard = { group: group.name, text, pictures: this.groupPictures(id, unheard.lines) };
       store.setSeen(id, speaker, unheard.last);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -4767,29 +4851,45 @@ export class Resident extends Think<Env> {
     }
     const now = store.get(id);
     if (!now) return;
+    const said = "text" in reply && Boolean(reply.text || reply.stickers?.length);
     if ("error" in reply) store.add(id, speaker, `${names[speaker] ?? speaker} 没回上来：${reply.error}`, "note");
-    else if (reply.text) store.add(id, speaker, reply.text);
+    else if (said) store.add(id, speaker, reply.text, "say", { stickers: reply.stickers });
     // A round started again meanwhile (this one had stopped moving) is the new turn's to move on.
     if (now.round.epoch !== start.epoch) return;
-    store.setRound(id, { ...now.round, speaking: "", running: now.round.queue.length > 0 });
-    if (now.round.queue.length) await this.schedule(0, "groupTurn", { id });
+    const round = afterTurn(now.round, { root: start.root, said }, now.rounds);
+    store.setRound(id, round);
+    if (round.running) await this.schedule(0, "groupTurn", { id });
+  }
+
+  /** The pictures in lines a member is handed, the latest few, from the media store. */
+  private groupPictures(id: string, lines: readonly GroupLine[]): { type: string; bytes: Uint8Array }[] {
+    const keys = lines.flatMap((line) => (line.pictures ? this.groupStore().pictures(id, line.seq) : []));
+    return keys.slice(-GROUP_PICTURES_MAX).flatMap((key) => {
+      const file = this.media().get(key);
+      return file ? [{ type: file.type, bytes: file.bytes }] : [];
+    });
   }
 
   /**
-   * This resident's turn in a group, asked by the default resident: what was said there goes into its own
-   * conversation as a message of hers, it answers as in any turn (its tools and Aelios memory included; nothing
-   * goes to Telegram), and its answer goes back to the group: "" when it passes.
+   * This resident's turn in a group, asked by the default resident: what was said there (and its pictures) goes into
+   * its own conversation as a message of hers, it answers as in any turn (its tools and Aelios memory included;
+   * nothing goes to Telegram), and its answer and stickers go back to the group: "" when it passes.
    */
-  async groupHear(heard: { group: string; text: string }): Promise<{ text: string } | { error: string }> {
+  async groupHear(heard: { group: string; text: string; pictures?: { type: string; bytes: Uint8Array }[] }): Promise<{ text: string; stickers: GroupSticker[] } | { error: string }> {
     const at = Date.now();
     const id = `group_${crypto.randomUUID()}`;
-    const text = `[${stamp(new Date(at), this.tz)}] ${heard.text}`;
-    const { status } = await this.saveMessages([{ id, role: "user", parts: [{ type: "text", text }], metadata: { at, group: heard.group } } as UIMessage]);
+    const parts = [
+      { type: "text", text: `[${stamp(new Date(at), this.tz)}] ${heard.text}` },
+      ...(heard.pictures ?? []).map((picture) => ({ type: "file", mediaType: picture.type, url: `data:${picture.type};base64,${base64(picture.bytes)}` }))
+    ];
+    const { status } = await this.saveMessages([{ id, role: "user", parts, metadata: { at, group: heard.group } } as UIMessage]);
     if (status !== "completed") return { error: `这一轮没走完（${status}）` };
     const messages = this.messages;
     const asked = messages.findIndex((message) => message.id === id);
     const answer = asked < 0 ? undefined : messages.slice(asked + 1).find((message) => message.role === "assistant");
-    return { text: cleanReply(answer ? textOf(answer) : "", this.webIdentity().name) };
+    if (!answer) return { text: "", stickers: [] };
+    const stickers = (this.sentStickers(answer.parts as never) ?? []).map((shown) => this.groupSticker(shown.url.split("/").pop() ?? "") ?? { ...shown, mark: "[sticker]" });
+    return { text: cleanReply(withoutStickerMarks(textOf(answer)), this.webIdentity().name), stickers };
   }
 
   /** The MCP servers on the settings page: how each is doing and what its tools cost per turn. Never a key. */

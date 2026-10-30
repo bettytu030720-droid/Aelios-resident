@@ -3,6 +3,9 @@
 function groupPage() {
   var GROUP_MS = 3000;
   var groupTimer = 0;
+  var groupPicLoading = {};
+  // A sticker in a group is some resident's, shown from that resident's address.
+  var STICKER_URL = /^(\/r\/[a-z][a-z0-9-]{0,23})?\/stickers\/[0-9a-f]{24}$/;
   // `seen` is the latest line the server has handed the page: what to ask after. A line of hers the page put in
   // itself does not move it, so a reply that reached the server just before it is still fetched.
   function freshGroup(id) {
@@ -36,6 +39,9 @@ function groupPage() {
       this.residents.open = false;
       this.view = 'group';
       this.group = freshGroup(id);
+      // The box below is the chat's: pictures and the sticker panel start empty here.
+      this.pics = [];
+      this.panel = '';
       this.loadGroup();
     },
     groupPath(path, query) {
@@ -96,15 +102,21 @@ function groupPage() {
       var self = this;
       this.$nextTick(function () { var el = self.$refs && self.$refs.groupStream; if (el) el.scrollTop = el.scrollHeight; });
     },
-    async sayInGroup() {
+    canSayInGroup() {
+      return Boolean(this.group.draft.trim() || this.pics.length) && !this.group.busy;
+    },
+    // Words and the pictures picked below the box (the chat's own), or one sticker on its own.
+    async sayInGroup(sticker) {
       var group = this.group;
-      var text = group.draft.trim();
-      if (!text || group.busy) return;
+      var body = sticker ? { sticker: { from: this.resident, key: sticker.key } } : { text: group.draft.trim() };
+      if (!sticker && this.pics.length) body.pictures = this.pics.map(function (pic) { return { data: pic.data }; });
+      if (group.busy || !(sticker || body.text || body.pictures)) return;
       group.busy = true;
       group.error = '';
+      this.panel = '';
       try {
-        var data = await this.api(this.groupPath('group/say'), { method: 'POST', body: { text: text } });
-        group.draft = '';
+        var data = await this.api(this.groupPath('group/say'), { method: 'POST', body: body });
+        if (!sticker) { group.draft = ''; this.pics = []; }
         group.lines = merged(group.lines, [data.line]);
         group.running = true;
         this.groupToEnd();
@@ -113,6 +125,38 @@ function groupPage() {
       } finally {
         group.busy = false;
       }
+    },
+    // A resident's words in bubbles as in the chat (a blank line starts a new one); hers in one.
+    groupBubbles(line) {
+      if (!line.author) return String(line.text || '').trim() ? [{ text: line.text, first: true, last: true }] : [];
+      return this.bubblesOf({ role: 'assistant', text: line.text });
+    },
+    groupStickers(line) {
+      return (line.stickers || []).filter(function (sticker) { return STICKER_URL.test(String(sticker.url || '')); });
+    },
+    groupPics(line) {
+      var list = [];
+      for (var n = 0; n < Math.min(line.pictures || 0, 4); n++) list.push(n);
+      return list;
+    },
+    // A picture of hers in a group, read with the web key and shown from memory, like one in the chat. Asked once at a
+    // time: once it is in, picUrls holds it, and when switching residents empties that it is asked again.
+    groupPicUrl(line, n) {
+      var key = 'g:' + this.group.id + ':' + line.seq + ':' + n;
+      var url = this.picUrls[key];
+      if (url !== undefined || groupPicLoading[key]) return url || '';
+      groupPicLoading[key] = true;
+      var self = this;
+      this.api(this.groupPath('group/picture', '&seq=' + line.seq + '&n=' + n), { blob: true }).then(function (blob) {
+        var next = Object.assign({}, self.picUrls);
+        next[key] = URL.createObjectURL(blob);
+        self.picUrls = next;
+      }).catch(function () {
+        var next = Object.assign({}, self.picUrls);
+        next[key] = '';
+        self.picUrls = next;
+      }).finally(function () { delete groupPicLoading[key]; });
+      return '';
     },
     // As in the chat: Enter sends with a keyboard; on a phone it starts a new line and the button sends.
     groupKeydown(event) {
@@ -148,18 +192,46 @@ function groupPage() {
       this.residents.open = false;
       var on = {};
       this.residents.list.forEach(function (r) { on[r.id] = true; });
-      this.groupEdit = { id: '', name: '', on: on, reply: 'all', order: 'list', busy: false, error: '' };
+      this.groupEdit = { id: '', name: '', on: on, reply: 'all', order: 'list', rounds: 3, icon: null, busy: false, error: '' };
     },
     openGroupSettings() {
-      var config = this.group.config || { name: this.group.name, members: this.group.members, reply: 'all', order: 'list' };
+      var config = this.group.config || { name: this.group.name, members: this.group.members, reply: 'all', order: 'list', rounds: 3, icon: null };
       var on = {};
       this.residents.list.forEach(function (r) { on[r.id] = config.members.indexOf(r.id) >= 0; });
-      this.groupEdit = { id: this.group.id, name: config.name, on: on, reply: config.reply, order: config.order, busy: false, error: '' };
+      this.groupEdit = { id: this.group.id, name: config.name, on: on, reply: config.reply, order: config.order, rounds: config.rounds || 3, icon: config.icon || null, busy: false, error: '' };
+    },
+    // The icon: a square from the picture she picks, made 512 pixels, like the avatar.
+    async pickGroupIcon(event) {
+      var file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      var edit = this.groupEdit;
+      if (!file || !edit || edit.busy) return;
+      edit.busy = true;
+      edit.error = '';
+      try {
+        var blob = await shrinkPicture(file, 512, true);
+        this.takeGroups(await this.api('/web/group/icon?g=' + encodeURIComponent(edit.id), { method: 'POST', raw: blob, type: blob.type }), edit);
+      } catch (error) {
+        if (!error.moved) edit.error = error.message;
+      } finally {
+        edit.busy = false;
+      }
+    },
+    async removeGroupIcon() {
+      var edit = this.groupEdit;
+      try { this.takeGroups(await this.api('/web/group/icon/remove?g=' + encodeURIComponent(edit.id), { method: 'POST', body: {} }), edit); } catch (error) { if (!error.moved) edit.error = error.message; }
+    },
+    // The list with a group's new icon: the sidebar, the sheet and the open group take it.
+    takeGroups(data, edit) {
+      this.groups = data.groups || [];
+      var now = this.groups.find(function (g) { return g.id === edit.id; });
+      edit.icon = now ? now.icon : null;
+      if (this.group.config && this.group.id === edit.id) this.group.config = Object.assign({}, this.group.config, { icon: edit.icon });
     },
     async saveGroupEdit() {
       var edit = this.groupEdit;
       var members = this.residents.list.filter(function (r) { return edit.on[r.id]; }).map(function (r) { return r.id; });
-      var body = { name: edit.name, members: members, reply: edit.reply, order: edit.order };
+      var body = { name: edit.name, members: members, reply: edit.reply, order: edit.order, rounds: Number(edit.rounds) };
       edit.busy = true;
       edit.error = '';
       try {

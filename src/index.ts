@@ -223,11 +223,27 @@ async function handleGroup(request: Request, env: Env, url: URL): Promise<Respon
     const at = (key: string) => (url.searchParams.has(key) && Number.isSafeInteger(Number(url.searchParams.get(key))) ? Number(url.searchParams.get(key)) : null);
     return answer(await room.webGroup(id, at("after"), at("before")));
   }
+  if (request.method === "GET" && url.pathname === "/web/group/picture") {
+    const file = await room.groupPicture(id, Number(url.searchParams.get("seq")), Number(url.searchParams.get("n") ?? 0));
+    if (!file) return new Response("not found", { status: 404 });
+    return new Response(file.bytes, { headers: privateFile(file.type) });
+  }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-  if (Number(request.headers.get("content-length") ?? 0) > JSON_MAX_BYTES) return Response.json({ error: "发的东西太大了" }, { status: 413 });
+  // The icon comes as it is, like the avatar: a square the page has made small.
+  if (url.pathname === "/web/group/icon") {
+    if (Number(request.headers.get("content-length") ?? 0) > AVATAR_UPLOAD_MAX) return Response.json({ error: "图标太大了" }, { status: 413 });
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.length > AVATAR_UPLOAD_MAX) return Response.json({ error: "图标太大了" }, { status: 413 });
+    return answer(await room.webGroupIcon(id, bytes));
+  }
+  // A message can carry pictures, as in the chat.
+  if (Number(request.headers.get("content-length") ?? 0) > (url.pathname === "/web/group/say" ? SAY_MAX_BYTES : JSON_MAX_BYTES)) {
+    return Response.json({ error: "发的东西太大了" }, { status: 413 });
+  }
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   if (url.pathname === "/web/groups") return answer(await room.webGroupCreate(body));
-  if (url.pathname === "/web/group/say") return answer(await room.webGroupSay(id, String(body.text ?? "")));
+  if (url.pathname === "/web/group/say") return answer(await room.webGroupSay(id, body));
+  if (url.pathname === "/web/group/icon/remove") return answer(await room.webGroupIconRemove(id));
   if (url.pathname === "/web/group/stop") return answer(await room.webGroupStop(id));
   if (url.pathname === "/web/group/config") return answer(await room.webGroupConfig(id, body));
   if (url.pathname === "/web/group/remove") return answer(await room.webGroupRemove(id));

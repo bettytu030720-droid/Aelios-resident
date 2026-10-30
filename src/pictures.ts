@@ -48,7 +48,7 @@ export function shrinkWith(images: ImagesBinding | undefined): Shrink | null {
   };
 }
 
-function base64(bytes: Uint8Array): string {
+export function base64(bytes: Uint8Array): string {
   let binary = "";
   for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   return btoa(binary);
