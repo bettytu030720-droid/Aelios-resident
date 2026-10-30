@@ -1404,6 +1404,11 @@ export class Resident extends Think<Env> {
     };
   }
 
+  /** Tasks waiting on a pull request learn from GitHub that it was merged or closed (cached, failures ignored). */
+  private async syncPrs(): Promise<void> {
+    await this.cloudTasks().syncPrs(this.githubToken(), this.env.CLOUD_TASK_API_BASE).catch(() => {});
+  }
+
   /** What find_threads, read_thread_file and search_chat need (find-tools.ts). */
   private findHost(): FindHost {
     const started = (root: string) => this.dynamicAgents.has(TaskWorker, threadName(root));
@@ -1411,6 +1416,7 @@ export class Resident extends Think<Env> {
     return {
       store: this.cloudTasks(),
       tz: this.tz,
+      syncPrs: () => this.syncPrs(),
       threadStarted: started,
       threadFiles: async (root) => (started(root) ? (await thread(root)).listFiles().catch(() => null) : null),
       threadFile: async (root, path) => (started(root) ? (await thread(root)).fileBytes(path).catch(() => null) : null),
@@ -1834,7 +1840,8 @@ export class Resident extends Think<Env> {
   }
 
   /** The web page's 线程: the newest first. */
-  webThreads(): { on: boolean; threads: ThreadCard[] } {
+  async webThreads(): Promise<{ on: boolean; threads: ThreadCard[] }> {
+    await this.syncPrs();
     return { on: this.cloudTasksOn(), threads: this.cloudTasks().threads() };
   }
 
