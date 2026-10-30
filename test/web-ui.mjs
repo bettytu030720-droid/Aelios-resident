@@ -1348,6 +1348,23 @@ assert.deepEqual(copy(grouper.groupBubbles({ author: 'mochi', text: '好呀\n\n�
 assert.deepEqual(copy(grouper.groupBubbles({ author: '', text: '第一行\n\n第二行' }).map((b) => b.text)), ['第一行\n\n第二行'], 'hers stay in one');
 assert.equal(grouper.groupStickers({ stickers: [{ url: '/r/mochi/stickers/' + 'c'.repeat(24) }, { url: '/stickers/' + 'd'.repeat(24) }, { url: 'https://evil.example/x.png' }, { url: '/r/mochi/stickers/../x' }] }).length, 2);
 assert.deepEqual(copy(grouper.groupPics({ pictures: 6 })), [0, 1, 2, 3]);
+// A picture is asked for once while it loads; after switching residents empties the pictures, it is asked again and shown.
+let picAsked = 0;
+const groupApi = grouper.api;
+grouper.api = async (path, options) => {
+  if (!path.includes('group/picture')) return groupApi(path, options);
+  picAsked += 1;
+  return new Blob(['x'], { type: 'image/png' });
+};
+const pictured = { seq: 4, pictures: 1 };
+assert.deepEqual([grouper.groupPicUrl(pictured, 0), grouper.groupPicUrl(pictured, 0), picAsked], ['', '', 1], 'not asked twice while it loads');
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.match(grouper.groupPicUrl(pictured, 0), /^blob:/);
+grouper.picUrls = {};
+grouper.groupPicUrl(pictured, 0);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.deepEqual([/^blob:/.test(grouper.groupPicUrl(pictured, 0)), picAsked], [true, 2], 'asked again once the pictures were emptied, and shown');
+grouper.api = groupApi;
 grouper.openGroupSettings();
 assert.deepEqual(copy(grouper.groupEdit.on), { default: true, mochi: true, kiki: false }, 'its members ticked');
 grouper.groupEdit.on.kiki = true;
@@ -1362,7 +1379,7 @@ groupAnswer = { group: { id: 'g1', name: '周末', members: ['default', 'mochi',
 await grouper.saveGroupEdit();
 assert.deepEqual(copy(groupCalls.find((call) => call[0].startsWith('/web/group/config'))), ['/web/group/config?g=g1', { name: '周末', members: ['default', 'mochi', 'kiki'], reply: 'one', order: 'list', rounds: 2 }]);
 assert.equal(grouper.groupEdit, null, 'closed once saved');
-console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, bubbles as in the chat, pictures and stickers sent, only own stickers shown, a reply not fetched yet is not skipped, rounds and icon in the settings');
+console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, bubbles as in the chat, pictures and stickers sent, only own stickers shown, a reply not fetched yet is not skipped, a picture asked again after switching residents, rounds and icon in the settings');
 // Its latest reply has two icons under it: delete (asked first) and answer again (the dots show until the new one).
 const back = vm.runInContext('testPage()', context);
 const takes = [];
