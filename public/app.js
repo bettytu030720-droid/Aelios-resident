@@ -9,7 +9,7 @@ function emptyThread() {
   return { loaded: false, id: '', title: '', runs: 'local', status: 'done', tasks: [], lines: [], files: [], canSay: false };
 }
 function emptyFileView() {
-  return { path: '', size: 0, busy: false, kind: '', text: '', url: '' };
+  return { path: '', key: '', size: 0, busy: false, kind: '', text: '', url: '' };
 }
 
 // ---- recording a voice message: PCM from the microphone, made a 16 kHz WAV, which every speech model reads ----
@@ -1705,6 +1705,7 @@ function resident() {
       if (this.view === 'thread') return this.openThreads();
       if (this.view === 'persona') return this.closeSettings();
       if (this.view === 'usage') { this.view = 'profile'; return; }
+      if (this.view === 'file') this.closeFile();
       this.view = 'chat';
       this.scrollSoon(true);
     },
@@ -1837,16 +1838,19 @@ function resident() {
     sizeText(n) {
       return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
     },
-    fileBytes(path) {
-      return this.api('/web/thread/file?id=' + encodeURIComponent(this.thread.id) + '&path=' + encodeURIComponent(path), { bytes: true });
+    // A thread's file by its path, or a file a reply handed over by its key.
+    fileBytes(file) {
+      if (file.key) return this.api('/web/file?key=' + encodeURIComponent(file.key), { bytes: true });
+      return this.api('/web/thread/file?id=' + encodeURIComponent(this.thread.id) + '&path=' + encodeURIComponent(file.path), { bytes: true });
     },
     // Pictures as pictures, a page in a sandboxed frame (its scripts run apart from this page and its sign-in), text as text.
     async viewFile(file) {
       this.closeFile();
-      this.fileView = { path: file.path, size: file.size, busy: true, kind: '', text: '', url: '' };
+      var key = file.key || '';
+      this.fileView = { path: file.path, key: key, size: file.size, busy: true, kind: '', text: '', url: '' };
       try {
-        var bytes = await this.fileBytes(file.path);
-        if (this.fileView.path !== file.path) return;
+        var bytes = await this.fileBytes(file);
+        if (this.fileView.path !== file.path || this.fileView.key !== key) return;
         var ext = extOf(file.path);
         var kind = 'other';
         var text = '';
@@ -1863,7 +1867,7 @@ function resident() {
           }
           if (kind === 'other') text = '';
         }
-        this.fileView = { path: file.path, size: file.size, busy: false, kind: kind, text: text, url: url };
+        this.fileView = { path: file.path, key: key, size: file.size, busy: false, kind: kind, text: text, url: url };
         var card = this.$refs && this.$refs.fileView;
         if (card && card.scrollIntoView) this.$nextTick(function () { card.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
       } catch (error) {
@@ -1875,9 +1879,14 @@ function resident() {
       if (this.fileView.url) URL.revokeObjectURL(this.fileView.url);
       this.fileView = emptyFileView();
     },
+    // A file a reply handed over opens on a page of its own; back goes to the chat.
+    openChatFile(file) {
+      this.view = 'file';
+      this.viewFile({ path: file.name, key: file.key, size: file.size });
+    },
     async saveFile(file) {
       try {
-        var bytes = await this.fileBytes(file.path);
+        var bytes = await this.fileBytes(file);
         var url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
         var link = document.createElement('a');
         link.href = url;

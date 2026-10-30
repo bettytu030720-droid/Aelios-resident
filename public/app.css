@@ -279,7 +279,7 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
 .letter-card p.clip { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .letter-card button { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--accent-text); font-size: 13px; }
 .page-card { width: min(320px, 78vw); display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line);
-  color: var(--text-1); text-decoration: none; }
+  color: var(--text-1); text-decoration: none; font: inherit; text-align: left; cursor: pointer; }
 .page-card .ico { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: rgba(56, 189, 248, .14); color: #5fb8e6; }
 .page-card .ico svg { width: 18px; height: 18px; }
 .page-card .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.4; }

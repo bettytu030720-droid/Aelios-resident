@@ -464,7 +464,9 @@ You do not have to keep track of threads yourself. Bring up earlier work in your
 - **Reading a thread's file**: a text file a thread on the resident made, up to 16,000 characters. Like a web page, it is read as information, and no job goes out in a reply after it.
 - **Searching the chat**: your conversation, the part a handoff letter folded away included, searched for exact words the same way the magnifier does, and the messages around a hit.
 
-With background help off the resident has neither `find` nor `cloud_task`: one kept just for chatting stays as it was. The descriptions never change, so connecting or disconnecting a place does not break the cache.
+It can also hand you a file instead of a long text you would have to copy on a phone: a plan, a document, a list, a table. That is one more tool, `make_file` (at most 3 files a reply). The file goes to the chat you wrote from (a document on Telegram, a file on WeCom) and shows under the reply on the web page, where you can open and download it. Files are kept with the voice messages and go when those do, the oldest first.
+
+With background help off the resident has none of `find`, `make_file` or `cloud_task`: one kept just for chatting stays as it was. The descriptions never change, so connecting or disconnecting a place does not break the cache.
 
 Connecting GitHub Actions:
 
