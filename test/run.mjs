@@ -1719,6 +1719,27 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal((await tasks()).tasks.find((t) => t.id === id)?.status, "done");
       const thread = await (await web(`/web/thread?id=${id}`, KEY)).json();
       assert.equal(thread.lines[0].text, "只跑测试，写出哪些没过。\n\n看一下 README。");
+
+      // What she writes in that thread, and a follow-up after it with no role named, still use the role's model.
+      const until = async (done) => {
+        const end = Date.now() + 30000;
+        let seen;
+        while (Date.now() < end) {
+          seen = await (await web(`/web/thread?id=${id}`, KEY)).json();
+          if (done(seen)) return seen;
+          await sleep(300);
+        }
+        assert.fail(JSON.stringify(seen));
+      };
+      assert.equal((await web("/web/thread/say", KEY, { id, text: "再看看" })).status, 200);
+      const written = await until((seen) => seen.tasks.length === 2 && seen.status !== "sent" && seen.status !== "working");
+      assert.equal(written.status, "done", "the role's model did it, not the threads' one that cannot run");
+      const later = (await sent()).length;
+      await post(`角色线程接着做 ${id}`);
+      const [, back] = await waitForSends(later, 2, 30000);
+      assert.match(back, /reported back: it is done/);
+      const after = await until((seen) => seen.tasks.length === 3 && seen.status === "done");
+      assert.equal(after.lines.filter((line) => line.role === "user").at(-1).text, "只跑测试，写出哪些没过。\n\n再看一遍。", "the role's template too");
       await set({ CLOUD_TASK_MODEL: "" });
       const removed = await (await web("/web/tasks/roles/remove", KEY, { name: "tester" })).json();
       assert.deepEqual(removed.roles.map((role) => role.name), ["coder", "reviewer", "researcher"]);
@@ -1821,7 +1842,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal(over.status, 400);
       assert.match((await over.json()).error, /已经派了 10 单/);
       assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
-      assert.equal((await fires()).length, 9, "7 sent to the Claude trigger (2 ran locally, 1 on GitHub Actions), the wrong token and the busy trigger tried");
+      assert.equal((await fires()).length, 8, "6 sent to the Claude trigger (3 ran locally, 1 on GitHub Actions), the wrong token and the busy trigger tried");
     });
   }
 

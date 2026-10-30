@@ -499,6 +499,7 @@ export type NewTask = {
   execution?: TaskExecution;
   /** Written by them in the thread. */
   direct?: boolean;
+  /** Left out, a follow-up keeps its thread's (one they write in the thread too); "" for none. */
   role?: string;
 };
 
@@ -567,7 +568,7 @@ export class TaskStore {
     this.sql`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, role, status, session_url, progress,
       progress_at, progress_count, summary, links, notices, test, created_at, updated_at)
       VALUES (${id}, ${code}, ${title}, ${job}, ${repo}, ${input.follows ?? ""}, ${root}, ${input.execution ?? "external"},
-      ${input.direct ? 1 : 0}, ${input.role ?? ""}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
+      ${input.direct ? 1 : 0}, ${input.role ?? follows?.role ?? ""}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
     return { task: this.get(id)!, code };
   }
 

@@ -1492,7 +1492,7 @@ export class Resident extends Think<Env> {
     const id = this.activeTurn!.requestId;
     this.#turnTasks.set(id, (this.#turnTasks.get(id) ?? 0) + 1);
     const job = role ? withRole(role, input.job) : input.job;
-    const task = await this.startTask({ title: input.title, job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution, role: role?.name }, follows);
+    const task = await this.startTask({ title: input.title, job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution, role: role?.name ?? "" }, follows);
     if ("error" in task) return { error: task.error };
     return { task: task.id, title: task.title, runs: task.runs, session_url: task.sessionUrl, note: "Sent. Its result comes back to you later as a note." };
   }

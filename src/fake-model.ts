@@ -134,6 +134,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("后台接着读")) return { tool: "cloud_task", input: { title: "工作区读取测试", job: "workspace-read-test", execution: "local", follow_up_of: said.match(/t_[0-9a-f]{10}/)?.[0] } };
   if (said.includes("Linux派活")) return { tool: "cloud_task", input: { ...cloudJob("Linux测试"), execution: "linux" } };
   // A job with a role from the settings page (task-roles.ts): only what this job needs, the role says the rest.
+  if (said.includes("角色线程接着做")) return { tool: "cloud_task", input: { title: "接着干", job: "再看一遍。", execution: "local", follow_up_of: said.match(/t_[0-9a-f]{10}/)?.[0] } };
   if (said.includes("按角色派活")) return { tool: "cloud_task", input: { title: "按角色干", job: "看一下 README。", execution: "local", role: said.split("按角色派活")[1].trim() } };
   if (said.includes("派活")) return { tool: "cloud_task", input: { ...cloudJob("修 README 的错字"), repo: "wusaki0723/aelios-resident" } };
   if (said.includes("接着派")) {
