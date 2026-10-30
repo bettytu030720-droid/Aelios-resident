@@ -413,7 +413,7 @@ await test("threads: follow-ups share a root, their own words do not count or st
   assert.ok(migrated.add({ title: "新的", job: "x" }).task);
 });
 
-await test("pruning says which threads here have no task left, so they go with their files", () => {
+await test("pruning says which threads here or on GitHub Actions have no task left, so they go with their files", () => {
   const { db, tasks } = store();
   const gone = tasks.add({ title: "旧线程", job: "x", execution: "local" }).task;
   db.prepare("UPDATE res_tasks SET created_at = 1 WHERE id = ?").run(gone.id);
@@ -421,10 +421,13 @@ await test("pruning says which threads here have no task left, so they go with t
   db.prepare("UPDATE res_tasks SET created_at = 2 WHERE id = ?").run(kept.id);
   const elsewhere = tasks.add({ title: "云端的", job: "x", execution: "external" }).task;
   db.prepare("UPDATE res_tasks SET created_at = 3 WHERE id = ?").run(elsewhere.id);
+  // Files a run on GitHub Actions handed back are kept with its thread here too.
+  const onActions = tasks.add({ title: "Actions 上的", job: "x", execution: "linux" }).task;
+  db.prepare("UPDATE res_tasks SET created_at = 4 WHERE id = ?").run(onActions.id);
   for (let i = 0; i < 199; i += 1) tasks.add({ title: `${i}`, job: "x" });
   // A follow-up keeps the older thread alive.
   tasks.add({ title: "接着", job: "x", follows: kept.id, execution: "local" });
-  assert.deepEqual(tasks.prune(), [gone.id]);
+  assert.deepEqual(tasks.prune().sort(), [gone.id, onActions.id].sort());
   assert.equal(tasks.get(gone.id), null);
   assert.equal(tasks.get(kept.id), null, "its first task went, the thread did not");
   assert.equal(tasks.thread(kept.id).length, 1);

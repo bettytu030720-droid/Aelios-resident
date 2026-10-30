@@ -19,6 +19,7 @@
 //                                       (cloud-tasks.ts), with the task's one-time code in x-task-code
 //   POST /tasks/<id>/hands              a GitHub Actions run asking for the GitHub token (code in x-task-code)
 //   POST /tasks/<id>/model/chat/completions   its model calls, OpenAI format, the code as Bearer (hands-repo.ts)
+//   POST /tasks/<id>/files?path=<path>  a file the run made for them, the bytes as the body (code in x-task-code)
 //   everything else                     the web page itself (public/)
 //
 // More than one resident (residents.ts): every address above under /r/<id> is that resident's, the same as the
@@ -30,6 +31,7 @@ import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini
 import { MCP_CALLBACK_PATH } from "./mcp-servers";
 import { MAX_ZIP_BYTES } from "./stickers";
 import { REPORT_MAX_BYTES } from "./cloud-tasks";
+import { THREAD_FILE_MAX } from "./task-worker";
 import { TELEGRAM_WEBHOOK_PATH, commandOf, isAllowed, timingSafeEqual, type TelegramUpdate } from "./telegram";
 import { DEFAULT_RESIDENT, RESIDENTS_MAX, residentOfPath, residentPrefix } from "./residents";
 
@@ -568,6 +570,15 @@ export default {
         const code = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
         const answer = await agent.handsModel(hands[1], code, body);
         return new Response(answer.json, { status: answer.status, headers: { "content-type": "application/json" } });
+      }
+      // A file the run made for them, kept with the thread's files on the web page.
+      const handed = url.pathname.match(/^\/tasks\/(t_[0-9a-f]{10})\/files$/);
+      if (handed && request.method === "POST") {
+        if (Number(request.headers.get("content-length") ?? 0) > THREAD_FILE_MAX) return Response.json({ error: "too large" }, { status: 413 });
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (bytes.length > THREAD_FILE_MAX) return Response.json({ error: "too large" }, { status: 413 });
+        const answer = await (await residentOf(env, at)).handsFile(handed[1], request.headers.get("x-task-code") ?? "", url.searchParams.get("path") ?? "", bytes);
+        return Response.json(answer.body, { status: answer.status });
       }
       const report = url.pathname.match(/^\/tasks\/(t_[0-9a-f]{10})\/(progress|result)$/);
       if (report && request.method === "POST") {

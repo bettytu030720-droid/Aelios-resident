@@ -28,6 +28,17 @@ export type ThreadFile = { path: string; size: number; at: number };
 const FILES_MAX = 300;
 // What the web page can open or download at once.
 export const THREAD_FILE_MAX = 10 * 1024 * 1024;
+
+/**
+ * Where a file a run on GitHub Actions hands back goes among the thread's files: its path in the run's workspace,
+ * from the top. Null for one that is not a plain relative path (dot files, "..", control characters).
+ */
+export function handedPath(raw: string): string | null {
+  const parts = raw.split("/");
+  if (!raw || raw.length > 200 || /[\\\u0000-\u001f\u007f]/.test(raw) || parts.some((part) => !part || part.startsWith(".") || part === "node_modules")) return null;
+  return `/${raw}`;
+}
+
 const LINES_MAX = 200;
 const FINISHED = ["completed", "error", "aborted", "skipped"];
 
@@ -155,6 +166,14 @@ export class TaskWorker extends Think<Env> {
       if (files.length >= FILES_MAX) break;
     }
     return files.sort((a, b) => b.at - a.at);
+  }
+
+  /** A file a run on GitHub Actions made for them (handedPath): kept with the thread's own, a newer one over an older. */
+  async keepFile(path: string, bytes: Uint8Array): Promise<void> {
+    const fs = this.workspace.fs;
+    const folder = path.slice(0, path.lastIndexOf("/"));
+    if (folder) await fs.mkdir(folder, { recursive: true });
+    await fs.writeFile(path, bytes);
   }
 
   /** One file's bytes, for the web page to open or download; null when there is no such file or it is too big. */

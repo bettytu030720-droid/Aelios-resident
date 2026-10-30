@@ -47,7 +47,7 @@ import { EffectiveHistoryError, installEffectiveHistory } from "./effective-hist
 import { historyPathComplete } from "./history-path";
 import { readAuxiliaryAnswer, removeAuxiliaryTurn } from "./letter-auxiliary";
 import { fakeModel } from "./fake-model";
-import { TaskWorker, type ThreadFile, type ThreadLine } from "./task-worker";
+import { TaskWorker, handedPath, type ThreadFile, type ThreadLine } from "./task-worker";
 import { ALARM_PREFIX, CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, LETTER_PREFIX, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
 import { inQuietHours, quietHoursInWords, quietHoursOf } from "./quiet-hours";
 import {
@@ -230,6 +230,11 @@ const DEFAULT_MODEL = "@cf/zai-org/glm-4.7-flash";
 const DEFAULT_THREAD_MODEL = "@cf/zai-org/glm-4.7-flash";
 // Model calls one GitHub Actions run may make through the resident (hands.mjs stops at 30 steps).
 const HANDS_MODEL_CALLS = 40;
+// Files one run may hand back for them (hands.mjs, save_artifacts), and how much in all; each at most THREAD_FILE_MAX.
+const HANDS_FILES = 100;
+const HANDS_FILES_BYTES = 50 * 1024 * 1024;
+// A thread's report shows at most this many of the files its task made; the rest are in the list below it.
+const FILES_ON_REPORT = 8;
 const PERSONA_MAX_CHARS = 30000;
 // How many earlier personas the web page can bring back.
 const PERSONA_VERSIONS = 10;
@@ -361,6 +366,8 @@ export type WebThreadLine = {
   status?: TaskStatus;
   links?: string[];
   sessionUrl?: string;
+  /** On a report: the files its task made, to open from right there. */
+  files?: ThreadFile[];
 };
 
 /** A thread as the web page opens it. Its lines and files are there for a thread that ran here. */
@@ -1646,7 +1653,7 @@ export class Resident extends Think<Env> {
     const store = this.cloudTasks();
     const earlier = store.reporting(id, code);
     if (earlier && earlier !== "expired" && store.rerun(id)) {
-      await this.ctx.storage.delete(`hands_calls:${id}`);
+      await this.ctx.storage.delete([`hands_calls:${id}`, `hands_files:${id}`]);
       await this.schedule(this.quietMinutes() * 60, "taskQuiet", { id });
     }
     const task = this.handsTask(id, code);
@@ -1688,9 +1695,32 @@ export class Resident extends Think<Env> {
     }
   }
 
-  /** Keeps the newest tasks; a thread here with no task left goes too, with its files. */
+  /**
+   * A file a run of the hands made for them: kept with the thread's files, which its page opens and downloads, so
+   * nobody has to dig a zip out of the run's page on GitHub.
+   */
+  async handsFile(id: string, code: string, path: string, bytes: Uint8Array): Promise<{ status: number; body: { ok?: boolean; error?: string } }> {
+    const task = this.handsTask(id, code);
+    if ("error" in task) return { status: task.status, body: { error: task.error } };
+    const where = handedPath(path);
+    if (!where) return { status: 400, body: { error: "the path must be relative, without dot files or .." } };
+    if (!bytes.length) return { status: 400, body: { error: "the file is empty" } };
+    const sent = (await this.ctx.storage.get<{ files: number; bytes: number }>(`hands_files:${id}`)) ?? { files: 0, bytes: 0 };
+    if (sent.files >= HANDS_FILES || sent.bytes + bytes.length > HANDS_FILES_BYTES) {
+      return { status: 429, body: { error: `at most ${HANDS_FILES} files and ${HANDS_FILES_BYTES / 1024 / 1024} MB per task` } };
+    }
+    await this.ctx.storage.put(`hands_files:${id}`, { files: sent.files + 1, bytes: sent.bytes + bytes.length });
+    const thread = await this.dynamicAgents.get(TaskWorker, threadName(task.root));
+    await thread.keepFile(where, bytes);
+    // So find knows its name too.
+    this.cloudTasks().noteFiles(task.root, await thread.listFiles());
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** Keeps the newest tasks; a thread with no task left goes too, with its files. */
   private async pruneTasks(): Promise<void> {
     for (const root of this.cloudTasks().prune()) {
+      if (!this.dynamicAgents.has(TaskWorker, threadName(root))) continue;
       await this.dynamicAgents.delete(TaskWorker, threadName(root)).catch((error) => console.error("task: thread not deleted", { error: String(error) }));
     }
   }
@@ -1930,7 +1960,14 @@ export class Resident extends Think<Env> {
     const tasks = this.cloudTasks().thread(root).filter((task) => !task.test);
     const latest = tasks.at(-1);
     if (!latest) return { error: "没有这条线程，可能太旧被清掉了" };
+    let lines: WebThreadLine[] = [];
+    let files: ThreadFile[] = [];
     const asked = (task: Task): WebThreadLine => ({ id: `task_${task.id}`, role: "user", text: task.job, steps: [], task: task.id, direct: task.direct });
+    // A task's files are the ones written while it was the thread's newest; one written again later is the later one's.
+    const madeBy = (task: Task): ThreadFile[] => {
+      const next = tasks[tasks.indexOf(task) + 1];
+      return files.filter((file) => file.at >= task.createdAt && (!next || file.at < next.createdAt)).slice(0, FILES_ON_REPORT);
+    };
     const reported = (task: Task): WebThreadLine => ({
       id: `result_${task.id}`,
       role: "result",
@@ -1939,10 +1976,9 @@ export class Resident extends Think<Env> {
       task: task.id,
       status: task.status,
       links: task.links,
-      sessionUrl: task.sessionUrl
+      sessionUrl: task.sessionUrl,
+      files: madeBy(task)
     });
-    let lines: WebThreadLine[] = [];
-    let files: ThreadFile[] = [];
     if (this.dynamicAgents.has(TaskWorker, threadName(root))) {
       const child = await this.dynamicAgents.get(TaskWorker, threadName(root));
       const [view, found] = await Promise.all([child.threadView(), child.listFiles()]);

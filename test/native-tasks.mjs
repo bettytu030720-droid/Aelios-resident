@@ -45,12 +45,33 @@ if (process.argv[2] !== 'restart') {
   assert.deepEqual(thread.files.map(f => f.path), ['/draft.txt']);
   const file = await fetch(`${base}/web/thread/file?id=${task.id}&path=${encodeURIComponent('/draft.txt')}`, { headers });
   assert.equal(await file.text(), 'native-workspace-persisted');
+  assert.deepEqual(thread.lines.find(l => l.role === 'result').files.map(f => f.path), ['/draft.txt'], 'the report shows the file its task made');
   console.log('PASS native child writes a workspace file without dispatching Actions or leaking tool history; the web page lists and serves it');
   const linux = await say('Linux派活');
   assert.ok(linux.sessionUrl.includes('github.com/octo/resident-hands/actions/'));
   const dispatched = (await (await fetch(mock + '/__log')).json()).filter(e => e.kind === 'github.dispatch');
   assert.equal(dispatched.length, before + 1);
   console.log('PASS explicit Linux work goes to the repository the resident set up');
+
+  // What the run makes comes back here (hands.mjs, save_artifacts): kept with the thread's files, shown on its report.
+  const [, hid, hcode] = dispatched.at(-1).body.inputs.job.match(/^task: (t_[0-9a-f]{10})\ncode: ([0-9a-f]{32})\n/);
+  const hand = (path, body, code = hcode) => fetch(`${base}/tasks/${hid}/files?path=${encodeURIComponent(path)}`, { method: 'POST', headers: { 'x-task-code': code }, body });
+  assert.equal((await hand('out/zhilai.html', '<h1>知来</h1>', '0'.repeat(32))).status, 403);
+  for (const bad of ['../x.html', '.env', 'out/.git/config', '/etc/passwd', 'node_modules/a.js', '']) assert.equal((await hand(bad, 'x')).status, 400, bad);
+  assert.equal((await hand('out/zhilai.html', '')).status, 400, 'an empty file');
+  assert.equal((await hand('out/big.bin', new Uint8Array(10 * 1024 * 1024 + 1))).status, 413);
+  assert.equal((await hand('out/zhilai.html', '<h1>知来</h1>')).status, 200);
+  assert.equal((await hand('zhilai.svg', '<svg/>')).status, 200);
+  const result = await fetch(`${base}/tasks/${hid}/result`, { method: 'POST', headers: { 'x-task-code': hcode, 'content-type': 'application/json' }, body: JSON.stringify({ status: 'done', summary: '做好了' }) });
+  assert.equal(result.status, 200);
+  assert.equal((await hand('later.html', 'x')).status, 409, 'not after the task is done');
+  const ran = await api(`/web/thread?id=${hid}`);
+  assert.deepEqual(ran.files.map(f => f.path).sort(), ['/out/zhilai.html', '/zhilai.svg']);
+  assert.deepEqual(ran.lines.find(l => l.role === 'result').files.map(f => f.path).sort(), ['/out/zhilai.html', '/zhilai.svg']);
+  assert.equal(ran.canSay, false, 'still not one to write to here');
+  const page = await fetch(`${base}/web/thread/file?id=${hid}&path=${encodeURIComponent('/out/zhilai.html')}`, { headers });
+  assert.equal(await page.text(), '<h1>知来</h1>');
+  console.log('PASS a run on GitHub Actions hands its files back: kept with the thread, shown on its report, opened from the web page');
 
   // cloud_task is the same whatever is set up; a job that needs a shell goes to the place with one that is.
   const fires = async () => (await (await fetch(mock + '/__log')).json()).filter(e => e.kind === 'routine.fire').length;

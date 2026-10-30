@@ -32,12 +32,26 @@ assert.equal(rg.args[0], '--files');
 await runTool('search_files', { pattern: '$(bad)' }, { workdir, exec: async (bin, args) => { assert.ok(args.includes('$(bad)')); return { stdout: 'one' }; } });
 console.log('PASS search uses rg argument arrays and filters filename mode');
 const runUrl = 'https://github.com/owner/repo/actions/runs/123';
-const artifacts = saveArtifacts({ files: ['out/index.html'], workdir, task: 't_artifact', outputDir: join(root, 'artifacts'), runUrl, retentionDays: 30 });
-assert.equal(readFileSync(join(root, 'artifacts/t_artifact/out/index.html'), 'utf8'), '<h1>Hello</h1>');
-assert.deepEqual(artifacts.links, [runUrl]);
-assert.match(artifacts.note, /30 天/);
-assert.throws(() => saveArtifacts({ files: ['out/index.html'], workdir, task: 't_bad', outputDir: join(workdir, 'artifacts') }));
-console.log('PASS private artifact copy preserves paths outside workspace and includes retention/access note');
+// Files go back to the resident; the run's Artifacts only keep one that could not go.
+writeFileSync(join(workdir, 'out/big.bin'), Buffer.alloc(10 * 1024 * 1024 + 1));
+const delivered = [];
+const deliver = async (path, bytes) => { delivered.push([path, Buffer.from(bytes).toString()]); };
+const handed = await saveArtifacts({ files: ['out/index.html', 'out/design-tokens.css'], workdir, task: 't_artifact', deliver, outputDir: join(root, 'artifacts'), runUrl, retentionDays: 30 });
+assert.deepEqual(delivered, [['out/index.html', '<h1>Hello</h1>'], ['out/design-tokens.css', ':root { --a: 1px; }']]);
+assert.deepEqual([handed.handed, handed.onRunPage, handed.links], [['out/index.html', 'out/design-tokens.css'], [], []], 'all went back: no run page to dig in');
+assert.match(handed.note, /交回住户了：out\/index\.html、out\/design-tokens\.css。在这条线程里点文件名就能打开、下载/);
+assert.ok(!existsSync(join(root, 'artifacts/t_artifact')), 'nothing copied for the run page');
+const partly = await saveArtifacts({ files: ['out/index.html', 'out/big.bin'], workdir, task: 't_partly', deliver, outputDir: join(root, 'artifacts'), runUrl, retentionDays: 30 });
+assert.deepEqual([partly.handed, partly.onRunPage, partly.links], [['out/index.html'], ['out/big.bin'], [runUrl]]);
+assert.ok(existsSync(join(root, 'artifacts/t_partly/out/big.bin')) && !existsSync(join(root, 'artifacts/t_partly/out/index.html')));
+assert.match(partly.note, /out\/big\.bin（超过 10 MB）没交回住户，在这次运行页面底下的 Artifacts 里，保留 30 天/);
+const refused = await saveArtifacts({ files: ['out/index.html'], workdir, task: 't_refused', deliver: async () => { throw new Error('住户没收下，HTTP 429'); }, outputDir: join(root, 'artifacts'), runUrl });
+assert.deepEqual([refused.handed, refused.onRunPage], [[], ['out/index.html']]);
+assert.match(refused.note, /HTTP 429/);
+await assert.rejects(saveArtifacts({ files: ['out/index.html'], workdir, task: 't_bad', outputDir: join(workdir, 'artifacts') }), /outside workspace/);
+await assert.rejects(saveArtifacts({ files: ['out/index.html'], workdir, task: 't_alone' }), /No file was handed back: out\/index\.html \(没连着住户\)/);
+await assert.rejects(saveArtifacts({ files: ['.env'], workdir, task: 't_dot', deliver }), /Dot files/);
+console.log('PASS files go back to the resident; one too big or refused stays on the run page with why, and nothing private goes');
 const pagesCalls = [];
 const pagesExec = async (bin, args, options) => {
   pagesCalls.push({ bin, args, options });
@@ -168,6 +182,26 @@ try {
     if (savedGithub === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = savedGithub;
   }
   console.log('PASS through the resident: the model with the task code, the GitHub token for gh and git, redacted from reports');
+
+  // save_artifacts in a run: each file goes to the resident with the task's code, and the result says where it is.
+  const posted = [];
+  let step = 0;
+  globalThis.fetch = async (url, init) => {
+    const where = String(url);
+    if (where.includes('/files?')) { posted.push({ where, code: init.headers['x-task-code'], body: Buffer.from(init.body).toString() }); return Response.json({ ok: true }); }
+    if (where.includes('/tasks/')) { reports.push({ url: where, body: JSON.parse(init.body) }); return new Response('{}'); }
+    step += 1;
+    return Response.json({ choices: [{ message: step === 1
+      ? { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'save_artifacts', arguments: JSON.stringify({ files: ['out/index.html'] }) } }] }
+      : { role: 'assistant', content: '做好了' } }] });
+  };
+  reports = [];
+  const saved = await runHands({ ...base, outputDir: join(root, 'run-output'), runUrl });
+  assert.deepEqual(posted, [{ where: 'https://resident.example/tasks/t_demo/files?path=out%2Findex.html', code: 'sensitive-code', body: '<h1>Hello</h1>' }]);
+  assert.equal(saved.status, 'done');
+  assert.match(saved.summary, /^做好了\n做出来的文件交回住户了：out\/index\.html。/);
+  assert.deepEqual(saved.links, [], 'no run page link when everything went back');
+  console.log('PASS a run hands its files back to the resident with the task code, and the result says where they are');
 
   // On Actions the job comes from the event file; a run that reported leaves a mark, and only one that did not is
   // reported as stopped by the workflow's last step.
