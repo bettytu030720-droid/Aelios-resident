@@ -9,8 +9,8 @@
 //   /web/*                              the web page's API (same conversation as Telegram, the model, the persona,
 //                                       the settings and the usage timeline), behind WEB_KEY, or inside Telegram behind signed
 //                                       initData / a Mini App session and TG_ALLOWED (mini-app.ts); /web/search finds
-//                                       words in the whole conversation (chat-search.ts); /web/group is the group
-//                                       chat, the same on every resident's page (group.ts)
+//                                       words in the whole conversation (chat-search.ts); /web/groups and /web/group
+//                                       are the group chats, the same on every resident's page (group.ts)
 //   GET  /mcp/callback?code=…&state=…   where an MCP server's OAuth sign-in comes back to (mcp-servers.ts)
 //   GET  /stickers/<key>                a sticker's picture for the web page (stickers.ts); the key is long and random
 //   GET  /avatar/<key>                  the resident's avatar, put up on the web page (public, like a sticker)
@@ -211,20 +211,24 @@ async function handleResidents(request: Request, env: Env, url: URL, who: WebCal
   return Response.json(await residentList(env), { headers: { "cache-control": "no-store" } });
 }
 
-/** The group chat (group.ts): the same whichever resident's page asks, since it lives in the default resident. */
+/** Group chats (group.ts): the same whichever resident's page asks, since they live in the default resident. */
 async function handleGroup(request: Request, env: Env, url: URL): Promise<Response> {
   const room = await getAgentByName(env.RESIDENT, AGENT_NAME);
   const answer = (data: object) => Response.json(data, { status: "error" in data ? 400 : 200, headers: { "cache-control": "no-store" } });
+  if (request.method === "GET" && url.pathname === "/web/groups") return answer(await room.webGroups());
+  const id = url.searchParams.get("g") ?? "";
   if (request.method === "GET" && url.pathname === "/web/group") {
     const at = (key: string) => (url.searchParams.has(key) && Number.isSafeInteger(Number(url.searchParams.get(key))) ? Number(url.searchParams.get(key)) : null);
-    return answer(await room.webGroup(at("after"), at("before")));
+    return answer(await room.webGroup(id, at("after"), at("before")));
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   if (Number(request.headers.get("content-length") ?? 0) > JSON_MAX_BYTES) return Response.json({ error: "发的东西太大了" }, { status: 413 });
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-  if (url.pathname === "/web/group/say") return answer(await room.webGroupSay(String(body.text ?? "")));
-  if (url.pathname === "/web/group/stop") return answer(await room.webGroupStop());
-  if (url.pathname === "/web/group/config") return answer(await room.webGroupConfig(body));
+  if (url.pathname === "/web/groups") return answer(await room.webGroupCreate(body));
+  if (url.pathname === "/web/group/say") return answer(await room.webGroupSay(id, String(body.text ?? "")));
+  if (url.pathname === "/web/group/stop") return answer(await room.webGroupStop(id));
+  if (url.pathname === "/web/group/config") return answer(await room.webGroupConfig(id, body));
+  if (url.pathname === "/web/group/remove") return answer(await room.webGroupRemove(id));
   return new Response("not found", { status: 404 });
 }
 
@@ -232,7 +236,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
   const who = await webCaller(env, request, at);
   if (!who) return new Response("unauthorized", { status: 401 });
   if (url.pathname === "/web/residents" || url.pathname === "/web/residents/remove") return handleResidents(request, env, url, who);
-  if (url.pathname === "/web/group" || url.pathname.startsWith("/web/group/")) return handleGroup(request, env, url);
+  if (url.pathname === "/web/groups" || url.pathname === "/web/group" || url.pathname.startsWith("/web/group/")) return handleGroup(request, env, url);
   if (url.pathname === "/web/session") {
     // Only the Mini App gets sessions; WEB_KEY is used as it is.
     if (request.method !== "POST") return new Response("method not allowed", { status: 405 });

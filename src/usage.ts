@@ -33,7 +33,8 @@ export function usageLabel({
   letter,
   task,
   messenger,
-  proactive
+  proactive,
+  group
 }: {
   /** The last message in the turn's input. */
   asked: string;
@@ -45,9 +46,11 @@ export function usageLabel({
   messenger?: string;
   /** Started by a schedule or a submission rather than by a message. */
   proactive: boolean;
+  /** The message was handed to it from a group chat on the web page (group.ts). */
+  group?: boolean;
 }): UsageLabel {
-  const kind: UsageKind = letter ? "letter" : task ? "task" : (noteKind(asked) ?? "chat");
-  const via: UsageVia = messenger ? (messenger === "wecom" ? "wecom" : "telegram") : kind === "chat" && !proactive ? "web" : "";
+  const kind: UsageKind = letter ? "letter" : task ? "task" : group ? "group" : (noteKind(asked) ?? "chat");
+  const via: UsageVia = messenger ? (messenger === "wecom" ? "wecom" : "telegram") : (kind === "chat" || kind === "group") && !proactive ? "web" : "";
   return { kind, via };
 }
 

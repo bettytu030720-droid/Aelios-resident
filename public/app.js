@@ -588,6 +588,7 @@ function resident() {
       list.forEach(function (r) { if (!(r.id in self.residents.seen) || r.id === self.resident) self.residents.seen[r.id] = r.saidAt; });
       remember('resident.seen', JSON.stringify(this.residents.seen));
       if (!list.some(function (r) { return r.id === self.resident; })) return this.switchResident('default');
+      this.loadGroups().catch(function () {});
       if (list.length < 2) return;
       residentsTimer = setTimeout(function tick() {
         if (!self.authed) return;
@@ -605,6 +606,7 @@ function resident() {
     },
     async switchResident(id) {
       this.residents.open = false;
+      if (id === this.resident && this.view === 'group') { this.view = 'chat'; this.scrollSoon(true); }
       if (id === this.resident || !this.authed) return;
       clearTimeout(pollTimer);
       this.resident = id;
@@ -724,6 +726,7 @@ function resident() {
       this.letterError = '';
       this.picker.open = false;
       this.residents.list = [];
+      this.groups = [];
       this.search = freshSearch();
       clearTimeout(pollTimer);
       clearTimeout(residentsTimer);
@@ -751,6 +754,10 @@ function resident() {
         // A message it wrote without being asked says so once, above it.
         if (line.role === 'assistant' && (line.via === 'checkin' || line.via === 'task') && lastVia !== line.via) {
           out.push({ key: 'why_' + line.id, type: 'why', text: (line.via === 'task' ? '线程交回' : '主动找你') + (line.at ? ' · ' + self.clock(line.at) : '') });
+        }
+        // What a group chat handed it says which group, above it.
+        if (line.role === 'user' && line.via === 'group') {
+          out.push({ key: 'why_' + line.id, type: 'why', text: '群聊「' + (line.group || '') + '」' + (line.at ? ' · ' + self.clock(line.at) : '') });
         }
         lastVia = line.role === 'user' ? null : line.via;
         var cards = (line.tasks || []).filter(function (task) { return newest[task.id] === line.id; });

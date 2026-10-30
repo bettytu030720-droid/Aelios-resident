@@ -1,94 +1,88 @@
-// The group chat (多住户二期): she and the residents she picks talk in one room on the web door. The room lives in
-// the default resident, which decides who speaks (Resident.groupTurn); each resident answers from its own Durable
-// Object, with its own persona and model (Resident.groupReply). The rules follow mist's group chat design
-// (docs/design/group-chat-phase-0.md in mist-agent-harness/mist-agent, AGPL like this repository):
-// - The room keeps its own log. Nothing said here goes into a resident's own conversation or into Aelios: hearing
-//   is not remembering.
-// - The room decides who speaks, not the residents: @ calls only those named, otherwise the setting says who.
-// - A message of hers starts a round, and a round has a cap on replies, so residents calling each other stop by
-//   themselves. Her next message starts a new round; stopping is a separate button that does not wait in line.
-// - A resident sees a recent window of the room, cut where it says so, moved in steps so its cache holds.
+// Group chats (多住户二期): on the web door she makes groups of some of her residents and talks with them there.
+// The groups live in the default resident, which decides who speaks (Resident.groupTurn). As in sakios's group
+// chat, what is said in a group goes into each member's own conversation: on a member's turn, everything said
+// there since it last spoke is handed to it as one message (groupHeard), it answers in its own conversation, with
+// its own persona, model, tools and Aelios memory (Resident.groupHear), and its answer is posted to the group. So
+// a member sees the group's context in its own chat, keeps it in memory, and can talk about it in private later.
+// From mist's group chat design (docs/design/group-chat-phase-0.md in mist-agent-harness/mist-agent, AGPL like
+// this repository):
+// - The group decides who speaks, not the residents: @ calls only those named, otherwise the group's setting says
+//   who. Residents do not call each other, so a message of hers gets at most one reply from each member.
+// - Stopping is a separate button that does not wait in line.
+// - A member is shown a bounded number of lines, cut where it says so.
 
-import type { ModelMessage } from "ai";
 import { SKIP } from "./prompts";
 import type { Sql } from "./sticker-store";
 
 /** The author of her lines; a resident's id starts with a letter. */
 export const HER = "";
 export const GROUP_TEXT_MAX = 4000;
-export const TURNS_DEFAULT = 6;
-export const TURNS_MAX = 20;
+export const GROUPS_MAX = 20;
+export const GROUP_NAME_MAX = 30;
 /** Lines the page gets at a time. */
 export const GROUP_PAGE = 100;
-// A resident sees the latest 31 to 60 lines: the window moves 30 lines at a time, so its start, and what is read
-// from cache, stays the same for 30 lines.
-const WINDOW = 60;
-const STEP = 30;
-// A line longer than this is cut when a resident is shown it, saying so.
+// A member is handed at most the latest HEARD_MAX lines at once, each cut at LINE_MAX characters, saying so.
+const HEARD_MAX = 60;
 const LINE_MAX = 2000;
 
 export type GroupConfig = {
-  /** Who is in the group; null for every resident, new ones included. */
-  members: string[] | null;
+  name: string;
+  /** Its residents' ids. */
+  members: string[];
   /** Who answers a message of hers that names no one: everyone, one of them (whoever spoke least lately), or no one. */
   reply: "all" | "one" | "none";
   /** The order they answer in: the sidebar's, or shuffled each time. */
   order: "list" | "random";
-  /** Replies one message of hers can lead to at most, residents calling each other included. */
-  turns: number;
 };
+export type Group = GroupConfig & { id: string; at: number };
 
-/** A line in the room: hers, a resident's, or a note from the room itself. */
+/** A line in a group: hers, a resident's, or a note from the group itself. */
 export type GroupLine = { seq: number; author: string; text: string; at: number; kind: "say" | "note" };
 
 /**
- * The round in progress: the message of hers it answers (root), who is still to speak, the replies so far, who is
- * speaking now. `epoch` changes when she stops it, so a reply that comes back after that is dropped.
+ * A group's round in progress: who is still to answer her latest message, who is answering now and since when.
+ * `epoch` changes when a round that stopped moving is started again, so the old turn, if it ever comes back,
+ * leaves the new round alone.
  */
-export type GroupRound = { root: number; queue: string[]; calls: number; speaking: string; since: number; epoch: number; running: boolean };
-export const ROUND_IDLE: GroupRound = { root: 0, queue: [], calls: 0, speaking: "", since: 0, epoch: 0, running: false };
+export type GroupRound = { queue: string[]; speaking: string; since: number; epoch: number; running: boolean };
+export const ROUND_IDLE: GroupRound = { queue: [], speaking: "", since: 0, epoch: 0, running: false };
 
 export type Member = { id: string; name: string };
 
-/** The settings as saved, with the defaults for anything missing or out of range. */
-export function groupConfig(saved: unknown): GroupConfig {
-  const s = (saved && typeof saved === "object" ? saved : {}) as Partial<Record<keyof GroupConfig, unknown>>;
-  const turns = Number(s.turns);
-  return {
-    members: Array.isArray(s.members) ? s.members.filter((id): id is string => typeof id === "string") : null,
-    reply: s.reply === "one" || s.reply === "none" ? s.reply : "all",
-    order: s.order === "random" ? "random" : "list",
-    turns: Number.isInteger(turns) && turns >= 1 && turns <= TURNS_MAX ? turns : TURNS_DEFAULT
-  };
-}
-
-/** Settings from the web page, checked against the residents there are. */
+/**
+ * A group's settings from the web page, checked against the residents there are. Who answers and in what order
+ * have defaults; a name left empty is filled in by the caller.
+ */
 export function groupConfigFrom(body: Record<string, unknown>, ids: readonly string[]): { config: GroupConfig } | { error: string } {
-  const members = body.members === null ? null : Array.isArray(body.members) ? [...new Set(body.members.map(String))] : undefined;
-  if (members === undefined) return { error: "群里有谁没说" };
-  if (members && (!members.length || members.some((id) => !ids.includes(id)))) return { error: "群里至少要有一个住户，而且得是现有的住户" };
-  if (!["all", "one", "none"].includes(String(body.reply))) return { error: "没@人时谁回，没这个选项" };
-  if (!["list", "random"].includes(String(body.order))) return { error: "谁先说，没这个选项" };
-  const turns = Number(body.turns);
-  if (!Number.isInteger(turns) || turns < 1 || turns > TURNS_MAX) return { error: `一条最多引出几句，要 1 到 ${TURNS_MAX}` };
-  // Everyone ticked is everyone, new residents included.
-  const all = members && ids.every((id) => members.includes(id));
-  return { config: { members: all ? null : members, reply: body.reply as GroupConfig["reply"], order: body.order as GroupConfig["order"], turns } };
+  const name = String(body.name ?? "").trim();
+  if (name.length > GROUP_NAME_MAX) return { error: `群名最多 ${GROUP_NAME_MAX} 个字` };
+  const members = Array.isArray(body.members) ? [...new Set(body.members.map(String))] : [];
+  if (members.length < 2 || members.some((id) => !ids.includes(id))) return { error: "一个群至少要两个住户，而且得是现有的住户" };
+  const reply = body.reply ?? "all";
+  const order = body.order ?? "list";
+  if (reply !== "all" && reply !== "one" && reply !== "none") return { error: "没@人时谁回，没这个选项" };
+  if (order !== "list" && order !== "random") return { error: "谁先说，没这个选项" };
+  return { config: { name, members: membersOf({ members }, ids), reply, order } };
 }
 
-/** The members' ids, in the sidebar's order. */
-export function membersOf(config: GroupConfig, ids: readonly string[]): string[] {
-  return config.members ? ids.filter((id) => config.members?.includes(id)) : [...ids];
+/** A group left without a name is called by its members' names. */
+export function named(config: GroupConfig, people: readonly Member[]): GroupConfig {
+  if (config.name) return config;
+  return { ...config, name: config.members.map((id) => people.find((person) => person.id === id)?.name ?? id).join("、").slice(0, GROUP_NAME_MAX) };
+}
+
+/** The members still there, in the sidebar's order. */
+export function membersOf(group: Pick<GroupConfig, "members">, ids: readonly string[]): string[] {
+  return ids.filter((id) => group.members.includes(id));
 }
 
 /**
- * Whom a message calls with @, in the order they are called: a member's name or id right after an @ (letters in
+ * Whom a message calls with @, in the order they are called: a resident's name or id right after an @ (letters in
  * either case). The longest name wins, so @麻薯糖 is not @麻薯; a Latin name has to end there (@mochi2 is not
  * @mochi), and an @ inside a word (an email address) calls no one.
  */
-export function mentionsIn(text: string, members: readonly Member[], self = HER): string[] {
+export function mentionsIn(text: string, members: readonly Member[]): string[] {
   const keys = members
-    .filter((member) => member.id !== self)
     .flatMap((member) => [member.name, member.id].map((key) => ({ id: member.id, key: key.trim().toLowerCase() })))
     .filter((entry) => entry.key)
     .sort((a, b) => b.key.length - a.key.length);
@@ -105,12 +99,12 @@ export function mentionsIn(text: string, members: readonly Member[], self = HER)
 
 /**
  * Who answers a message of hers: the members it calls (a message calling only residents outside the group gets no
- * answer), or as the settings say. `lastSaid` is each one's latest line; `everyone` every resident there is.
+ * answer), or as the group's settings say. `lastSaid` is each one's latest line there; `everyone` every resident.
  */
 export function speakersFor(
   text: string,
   members: readonly Member[],
-  config: GroupConfig,
+  config: Pick<GroupConfig, "reply" | "order">,
   lastSaid: Readonly<Record<string, number>>,
   { everyone = members, random = Math.random }: { everyone?: readonly Member[]; random?: () => number } = {}
 ): string[] {
@@ -128,96 +122,161 @@ export function speakersFor(
   return [];
 }
 
+/** How a message handed to a member from a group starts, after its time stamp; the web page and search take it off. */
+export const GROUP_HEAD = /^\[group chat "[^"\n]*"[^\n]*\]\n?/;
+
 /**
- * What a reply does to the round: in the round it was asked for, the members it calls join the line; a round at
- * its cap with someone still in line ends there, with a note saying so.
+ * What member `me` is handed on its turn in a group: what the others said there since it last spoke, oldest
+ * first, hers without a name and the residents' with theirs. It goes into its own conversation as a message of
+ * hers (not one of the system's notes), so Aelios recalls for it and records it.
  */
-export function afterReply(round: GroupRound, reply: { root: number; speaker: string; text: string }, members: readonly Member[], turns: number): { round: GroupRound; note: string } {
-  if (round.root !== reply.root) return { round, note: "" };
-  const called = mentionsIn(reply.text, members, reply.speaker).filter((id) => !round.queue.includes(id));
-  const queue = [...round.queue, ...called];
-  if (round.calls >= turns && queue.length) return { round: { ...round, queue: [] }, note: `这一轮说了 ${turns} 句，先停在这里。你再说一句就接着聊。` };
-  return { round: { ...round, queue }, note: "" };
-}
-
-/** Where the window a resident sees starts, among `count` lines. */
-export function windowStart(count: number): number {
-  return count <= WINDOW ? 0 : Math.ceil((count - WINDOW) / STEP) * STEP;
-}
-
-/** What a resident is told about the group, after its persona. */
-export function groupRules(me: string, others: readonly string[]): string {
-  return [
-    `You are ${me}, in a group chat on the web door with the person you live with${others.length ? ` and ${others.length === 1 ? "another resident" : "other residents"}: ${others.join(", ")}` : ""}.`,
-    "Messages from the residents start with their name in brackets, like [name]; a message without a name is from the person you live with.",
-    "When you are given the group's messages it is your turn: write only your own next message, as in a group chat, in your own voice, without your name in front and without speaking for anyone else.",
-    `If you have nothing to add, reply with just the four letters ${SKIP}. To have another resident answer, write @ and their name.`,
-    "This group is not part of your one-to-one conversation with the person you live with."
-  ].join("\n");
-}
-
-/** The room as resident `me` sees it: its own lines as its turns, everyone else's as messages to it. */
-export function groupPrompt(lines: readonly GroupLine[], cut: boolean, me: string, names: Readonly<Record<string, string>>): ModelMessage[] {
-  const messages: { role: "user" | "assistant"; content: string }[] = [];
-  const put = (role: "user" | "assistant", content: string) => {
-    const last = messages.at(-1);
-    if (last?.role === role) last.content += `\n\n${content}`;
-    else messages.push({ role, content });
-  };
-  if (cut) put("user", "(Earlier messages of this group are not shown.)");
-  for (const line of lines) {
-    if (line.kind !== "say") continue;
+export function groupHeard(
+  lines: readonly GroupLine[],
+  cut: boolean,
+  { group, me, others, names }: { group: string; me: string; others: readonly string[]; names: Readonly<Record<string, string>> }
+): string {
+  const plain = (text: string) => text.replace(/["\]\n]/g, " ");
+  const company = others.map((name, i) => `${i === others.length - 1 ? " and" : ","} ${plain(name)}`).join("");
+  const head = `[group chat "${plain(group)}" with them${company}, where you are ${plain(me)}. What was said there since you last spoke, oldest first; a line without a [name] is theirs. Your reply is posted there: write only your own message, or ${SKIP} to stay quiet]`;
+  const said = lines.map((line) => {
     const text = line.text.length > LINE_MAX ? `${line.text.slice(0, LINE_MAX)}…(cut here: ${line.text.length} characters in all)` : line.text;
-    if (line.author === me) put("assistant", text);
-    else put("user", line.author === HER ? text : `[${names[line.author] ?? line.author}] ${text}`);
-  }
-  if (messages[0]?.role !== "user") messages.unshift({ role: "user", content: "(The group so far.)" });
-  // Its own line last only if it is called twice in a row; it still answers what was said.
-  if (messages.at(-1)?.role !== "user") messages.push({ role: "user", content: "(Your turn again.)" });
-  return messages;
+    return line.author === HER ? text : `[${names[line.author] ?? line.author}] ${text}`;
+  });
+  return [head, ...(cut ? ["(Earlier messages of this group are not shown.)"] : []), ...said].join("\n");
 }
 
-/** A resident's reply as it goes into the room: without its name in front; "" when it passes. */
+/** A member's reply as it goes into the group: without its name in front; "" when it passes. */
 export function cleanReply(text: string, name: string): string {
   const own = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const said = text.trim().replace(new RegExp(`^(\\[${own}\\]|${own}[:：])\\s*`), "").trim();
   return new RegExp(`^${SKIP}[.!。！]?$`, "i").test(said) ? "" : said.slice(0, GROUP_TEXT_MAX);
 }
 
-/** The room's lines, in the default resident's SQLite. */
+type GroupRow = { id: string; name: string; members: string; reply: GroupConfig["reply"]; ord: GroupConfig["order"]; seen: string; round: string; at: number };
+export type StoredGroup = Group & { seen: Record<string, number>; round: GroupRound };
+
+/** The groups and what was said in them, in the default resident's SQLite. */
 export class GroupStore {
   constructor(private readonly sql: Sql) {
-    sql`CREATE TABLE IF NOT EXISTS grp_lines (seq INTEGER PRIMARY KEY AUTOINCREMENT, author TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL)`;
+    sql`CREATE TABLE IF NOT EXISTS grp_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, members TEXT NOT NULL, reply TEXT NOT NULL, ord TEXT NOT NULL, seen TEXT NOT NULL, round TEXT NOT NULL, at INTEGER NOT NULL)`;
+    sql`CREATE TABLE IF NOT EXISTS grp_said (seq INTEGER PRIMARY KEY AUTOINCREMENT, grp TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL)`;
+    sql`CREATE INDEX IF NOT EXISTS grp_said_by_group ON grp_said (grp, seq)`;
   }
 
-  add(author: string, text: string, kind: GroupLine["kind"] = "say"): GroupLine {
+  private group(row: GroupRow): StoredGroup {
+    return {
+      id: row.id,
+      name: row.name,
+      members: JSON.parse(row.members) as string[],
+      reply: row.reply,
+      order: row.ord,
+      at: row.at,
+      seen: JSON.parse(row.seen) as Record<string, number>,
+      round: { ...ROUND_IDLE, ...(JSON.parse(row.round) as Partial<GroupRound>) }
+    };
+  }
+
+  list(): StoredGroup[] {
+    return this.sql<GroupRow>`SELECT * FROM grp_groups ORDER BY at`.map((row) => this.group(row));
+  }
+
+  get(id: string): StoredGroup | null {
+    const [row] = this.sql<GroupRow>`SELECT * FROM grp_groups WHERE id = ${id}`;
+    return row ? this.group(row) : null;
+  }
+
+  create(config: GroupConfig): Group {
+    const id = `g${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`;
     const at = Date.now();
-    const [row] = this.sql<{ seq: number }>`INSERT INTO grp_lines (author, text, at, kind) VALUES (${author}, ${text}, ${at}, ${kind}) RETURNING seq`;
+    this.sql`INSERT INTO grp_groups (id, name, members, reply, ord, seen, round, at) VALUES (${id}, ${config.name}, ${JSON.stringify(config.members)}, ${config.reply}, ${config.order}, '{}', '{}', ${at})`;
+    return { ...config, id, at };
+  }
+
+  update(id: string, config: GroupConfig): void {
+    this.sql`UPDATE grp_groups SET name = ${config.name}, members = ${JSON.stringify(config.members)}, reply = ${config.reply}, ord = ${config.order} WHERE id = ${id}`;
+  }
+
+  /** A group and everything said in it; what its members heard stays in their own conversations. */
+  remove(id: string): void {
+    this.sql`DELETE FROM grp_said WHERE grp = ${id}`;
+    this.sql`DELETE FROM grp_groups WHERE id = ${id}`;
+  }
+
+  setRound(id: string, round: GroupRound): void {
+    this.sql`UPDATE grp_groups SET round = ${JSON.stringify(round)} WHERE id = ${id}`;
+  }
+
+  /** The latest line `member` has been handed. */
+  setSeen(id: string, member: string, seq: number): void {
+    const group = this.get(id);
+    if (group) this.sql`UPDATE grp_groups SET seen = ${JSON.stringify({ ...group.seen, [member]: seq })} WHERE id = ${id}`;
+  }
+
+  add(grp: string, author: string, text: string, kind: GroupLine["kind"] = "say"): GroupLine {
+    const at = Date.now();
+    const [row] = this.sql<{ seq: number }>`INSERT INTO grp_said (grp, author, text, at, kind) VALUES (${grp}, ${author}, ${text}, ${at}, ${kind}) RETURNING seq`;
     return { seq: row.seq, author, text, at, kind };
   }
 
   /** Lines after the one the page has, oldest first. */
-  after(seq: number): GroupLine[] {
-    return this.sql<GroupLine>`SELECT seq, author, text, at, kind FROM grp_lines WHERE seq > ${seq} ORDER BY seq LIMIT ${GROUP_PAGE}`;
+  after(grp: string, seq: number): GroupLine[] {
+    return this.sql<GroupLine>`SELECT seq, author, text, at, kind FROM grp_said WHERE grp = ${grp} AND seq > ${seq} ORDER BY seq LIMIT ${GROUP_PAGE}`;
   }
 
   /** The latest lines, or the ones before `before`, oldest first; `more` when there are earlier ones. */
-  page(before: number | null): { lines: GroupLine[]; more: boolean } {
-    const rows = this.sql<GroupLine>`SELECT seq, author, text, at, kind FROM grp_lines WHERE seq < ${before ?? Number.MAX_SAFE_INTEGER} ORDER BY seq DESC LIMIT ${GROUP_PAGE + 1}`;
+  page(grp: string, before: number | null): { lines: GroupLine[]; more: boolean } {
+    const rows = this.sql<GroupLine>`SELECT seq, author, text, at, kind FROM grp_said WHERE grp = ${grp} AND seq < ${before ?? Number.MAX_SAFE_INTEGER} ORDER BY seq DESC LIMIT ${GROUP_PAGE + 1}`;
     return { lines: rows.slice(0, GROUP_PAGE).reverse(), more: rows.length > GROUP_PAGE };
   }
 
-  /** What a resident is shown: the window of things said (not the room's notes), and whether earlier ones are left out. */
-  window(): { lines: GroupLine[]; cut: boolean } {
-    const [{ count }] = this.sql<{ count: number }>`SELECT COUNT(*) AS count FROM grp_lines WHERE kind = 'say'`;
-    const start = windowStart(count);
-    const lines = this.sql<GroupLine>`SELECT seq, author, text, at, kind FROM grp_lines WHERE kind = 'say' ORDER BY seq LIMIT ${WINDOW} OFFSET ${start}`;
-    return { lines, cut: start > 0 };
+  /** The latest line of each group, for the list. */
+  latest(): Record<string, GroupLine> {
+    const rows = this.sql<GroupLine & { grp: string }>`SELECT s.grp, s.seq, s.author, s.text, s.at, s.kind FROM grp_said s JOIN (SELECT MAX(seq) AS seq FROM grp_said GROUP BY grp) m ON s.seq = m.seq`;
+    return Object.fromEntries(rows.map(({ grp, ...line }) => [grp, line]));
   }
 
-  /** Each resident's latest line, for whose turn it is when one answers. */
-  lastSaid(): Record<string, number> {
-    const rows = this.sql<{ author: string; seq: number }>`SELECT author, MAX(seq) AS seq FROM grp_lines WHERE kind = 'say' AND author != '' GROUP BY author`;
+  /**
+   * What `member` has not heard: the things others said after line `since` (not the group's notes), the latest
+   * HEARD_MAX of them; `cut` when earlier ones are left out; `last` is the group's latest line.
+   */
+  unheard(grp: string, member: string, since: number): { lines: GroupLine[]; cut: boolean; last: number } {
+    const rows = this.sql<GroupLine>`SELECT seq, author, text, at, kind FROM grp_said WHERE grp = ${grp} AND seq > ${since} AND kind = 'say' AND author != ${member} ORDER BY seq DESC LIMIT ${HEARD_MAX + 1}`;
+    const [{ last }] = this.sql<{ last: number | null }>`SELECT MAX(seq) AS last FROM grp_said WHERE grp = ${grp}`;
+    return { lines: rows.slice(0, HEARD_MAX).reverse(), cut: rows.length > HEARD_MAX, last: last ?? since };
+  }
+
+  /** The groups for the web page: each with its members still there (of `ids`) and its latest line. */
+  views(ids: readonly string[]): (GroupConfig & { id: string; last: GroupLine | null; running: boolean })[] {
+    const latest = this.latest();
+    return this.list().map((group) => ({ ...this.settingsOf(group, ids), last: latest[group.id] ?? null, running: group.round.running }));
+  }
+
+  /** A group for the web page: its latest lines (or those after `after`, or before `before`), its settings, who speaks. */
+  view(id: string, ids: readonly string[], after: number | null, before: number | null): Record<string, unknown> {
+    const group = this.get(id);
+    if (!group) return { error: "没有这个群" };
+    const page = after !== null ? { lines: this.after(id, after), more: false } : this.page(id, before);
+    return { ...page, group: this.settingsOf(group, ids), speaking: group.round.speaking, waiting: group.round.queue, running: group.round.running };
+  }
+
+  private settingsOf(group: StoredGroup, ids: readonly string[]): GroupConfig & { id: string } {
+    return { id: group.id, name: group.name, members: membersOf(group, ids), reply: group.reply, order: group.order };
+  }
+
+  /** Stop: no one still in line answers. The one answering now finishes; its answer is already in its own chat. */
+  stop(id: string): { ok: true } | { error: string } {
+    const group = this.get(id);
+    if (!group) return { error: "没有这个群" };
+    if (group.round.queue.length || group.round.speaking) {
+      this.setRound(id, { ...group.round, queue: [] });
+      this.add(id, HER, "你让大家先停一下。", "note");
+    }
+    return { ok: true };
+  }
+
+  /** Each resident's latest line in a group, for whose turn it is when one answers. */
+  lastSaid(grp: string): Record<string, number> {
+    const rows = this.sql<{ author: string; seq: number }>`SELECT author, MAX(seq) AS seq FROM grp_said WHERE grp = ${grp} AND kind = 'say' AND author != '' GROUP BY author`;
     return Object.fromEntries(rows.map((row) => [row.author, row.seq]));
   }
 }
