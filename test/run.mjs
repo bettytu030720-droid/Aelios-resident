@@ -38,7 +38,8 @@
 //            own settings, conversation, Aelios identity, Telegram bot, avatar and task reports, one push key for
 //            all, deleted and added again empty
 //   group    group chats (src/group.ts): made of some residents, who answers, @, what each member is handed and
-//            keeps in its own chat, the settings, stop, a member on Aelios, a group removed
+//            keeps in its own chat, rounds, pictures and stickers, the settings and icon, stop, a member on Aelios,
+//            a group removed
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -3476,8 +3477,8 @@ if (phase === "group") {
       await sleep(300);
     }
   };
-  const say = async (text) => {
-    const { status, data } = await json(`/web/group/say?g=${g}`, { text });
+  const say = async (what) => {
+    const { status, data } = await json(`/web/group/say?g=${g}`, typeof what === "string" ? { text: what } : what);
     assert.equal(status, 200, JSON.stringify(data));
     return data.line.seq - 1;
   };
@@ -3505,19 +3506,17 @@ if (phase === "group") {
   await step("a message of hers: the group's members answer in order, each hearing the ones before; not on Telegram", async () => {
     const before = (await sent()).length;
     const after = await say("今晚吃什么");
-    assert.deepEqual(await settled(after), ["her: 今晚吃什么", "default: 住户听到了：今晚吃什么", "mochi: 麻薯听到了：今晚吃什么 / [住户] 住户听到了：今晚吃什么"]);
+    assert.deepEqual(await settled(after), ["her: 今晚吃什么", "default: 住户听到了：[them] 今晚吃什么", "mochi: 麻薯听到了：[them] 今晚吃什么 / [住户] 住户听到了：[them] 今晚吃什么"]);
     assert.equal((await room("/r/kiki")).lines.length, 3, "the same group from another resident's page");
     assert.equal((await sent()).length, before, "nothing went to Telegram");
   });
 
-  await step("what is said in a group is in each member's own chat, marked with the group, and counted as the group's", async () => {
-    const mine = await own("");
-    assert.deepEqual(mine.map((line) => [line.role, line.via, line.group ?? null, line.text]), [
-      ["user", "group", "住户、麻薯", "今晚吃什么"],
-      ["assistant", "group", null, "住户听到了：今晚吃什么"]
-    ]);
-    assert.deepEqual((await own("/r/mochi")).map((line) => line.text), ["今晚吃什么\n[住户] 住户听到了：今晚吃什么", "麻薯听到了：今晚吃什么 / [住户] 住户听到了：今晚吃什么"]);
-    assert.equal((await own("/r/kiki")).length, 0, "not in the group, not handed anything");
+  await step("what is said in a group goes into each member's own conversation, not shown in its chat, and is counted as the group's", async () => {
+    assert.deepEqual(await own(""), [], "its chat shows none of it");
+    assert.deepEqual(await own("/r/mochi"), []);
+    const heard = (await json(`/r/mochi/web/search?q=${encodeURIComponent("今晚吃什么")}`)).data.results;
+    assert.deepEqual(heard.map((hit) => hit.role), ["assistant", "user"], "what it was handed and its answer are in its conversation");
+    assert.deepEqual((await json(`/r/kiki/web/search?q=${encodeURIComponent("今晚吃什么")}`)).data.results, [], "not in the group, not handed anything");
     const rows = (await json("/r/mochi/web/usage")).data.rows;
     assert.ok(rows.length > 0 && rows.every((row) => row.kind === "group" && row.via === "web"), JSON.stringify(rows.slice(0, 2)));
     const found = (await json(`/r/mochi/web/search?q=${encodeURIComponent("group chat")}`)).data;
@@ -3526,16 +3525,14 @@ if (phase === "group") {
 
   await step("@ calls only those named, and one called later is handed what it missed; passing says nothing", async () => {
     let after = await say("@麻薯 你呢");
-    assert.deepEqual(await settled(after), ["her: @麻薯 你呢", "mochi: 麻薯听到了：@麻薯 你呢"], "it had heard the rest");
+    assert.deepEqual(await settled(after), ["her: @麻薯 你呢", "mochi: 麻薯听到了：[them] @麻薯 你呢"], "it had heard the rest");
     after = await say("@住户 只叫你");
     const [, called] = await settled(after);
-    assert.match(called, /^default: 住户听到了：\[麻薯\] 麻薯听到了：今晚吃什么 .* \/ @麻薯 你呢 \/ \[麻薯\] 麻薯听到了：@麻薯 你呢 \/ @住户 只叫你$/);
+    assert.equal(called, "default: 住户听到了：[them] @麻薯 你呢 / [麻薯] 麻薯听到了：[them] @麻薯 你呢 / [them] @住户 只叫你");
     after = await say("@Kiki 你在吗");
     assert.deepEqual(await settled(after), ["her: @Kiki 你在吗"], "not in the group, not called");
     after = await say("都别说话");
     assert.deepEqual(await settled(after), ["her: 都别说话"], "both passed");
-    const last = (await own("/r/mochi")).at(-1);
-    assert.deepEqual([last.role, last.text.split("\n").at(-1)], ["user", "都别说话"], "a pass shows as nothing in its own chat");
   });
 
   await step("the settings: renamed, a member added (handed the group so far), one answering in turn; checked", async () => {
@@ -3546,7 +3543,7 @@ if (phase === "group") {
     assert.deepEqual([data.group.name, data.group.members, data.group.reply], ["小家", ["default", "mochi", "kiki"], "one"]);
     let after = await say("轮到谁");
     const first = await settled(after);
-    assert.match(first[1], /^kiki: Kiki听到了：今晚吃什么 \/ .* \/ 都别说话 \/ 轮到谁$/, "the newcomer, who has said least, hears the group so far");
+    assert.match(first[1], /^kiki: Kiki听到了：\[them\] 今晚吃什么 \/ .* \/ \[them\] 都别说话 \/ \[them\] 轮到谁$/, "the newcomer, who has said least, hears the group so far");
     after = (await room()).lines.at(-1).seq;
     await say("再轮一个");
     const second = await settled(after);
@@ -3559,12 +3556,71 @@ if (phase === "group") {
     const after = await say("大家慢慢说");
     const start = Date.now();
     while (!(await room()).speaking && Date.now() - start < 5000) await sleep(100);
+    await sleep(1500);
+    assert.deepEqual(await own(""), [], "an answer being written for the group is not shown in its chat either");
     assert.deepEqual((await json(`/web/group/stop?g=${g}`, {})).data, { ok: true });
     assert.deepEqual(await settled(after), ["her: 大家慢慢说", "note: 你让大家先停一下。", "default: 住户慢慢说完了"]);
     const again = await say("继续吧");
     const next = await settled(again);
     assert.equal(next.length, 3, `the next message is answered: ${next.join(" / ")}`);
-    assert.match(next[2], /^mochi: 麻薯听到了：大家慢慢说 \/ \[住户\] 住户慢慢说完了 \/ 继续吧 \/ /, "the one stopped hears what it missed");
+    assert.match(next[2], /^mochi: 麻薯听到了：\[them\] 大家慢慢说 \/ \[住户\] 住户慢慢说完了 \/ \[them\] 继续吧 \/ /, "the one stopped hears what it missed");
+  });
+
+  await step("rounds: after everyone has had a turn they go round again while someone has something to say, up to the setting", async () => {
+    let after = await say("接着聊");
+    let lines = await settled(after);
+    assert.equal(lines.length, 7, lines.join("\n"));
+    assert.deepEqual(lines.slice(1).map((l) => l.match(/^(\w+): \S+?(第 \d 轮)?听到了/)?.slice(1, 3).join(" ")), ["default ", "mochi ", "default 第 2 轮", "mochi 第 2 轮", "default 第 3 轮", "mochi 第 3 轮"], "told which round it is");
+    assert.equal((await json(`/web/group/config?g=${g}`, { name: "小家", members: ["default", "mochi"], rounds: 1 })).data.group.rounds, 1);
+    after = await say("接着聊");
+    lines = await settled(after);
+    assert.equal(lines.length, 3, "one round");
+    assert.equal((await json(`/web/group/config?g=${g}`, { name: "小家", members: ["default", "mochi"], rounds: 9 })).status, 400);
+    await json(`/web/group/config?g=${g}`, { name: "小家", members: ["default", "mochi"] });
+  });
+
+  await step("pictures and stickers: hers shown and handed to each member with the pictures; a member's sticker shown", async () => {
+    let after = await say({ text: "看图", pictures: [{ data: PNG.toString("base64") }] });
+    let lines = await settled(after);
+    assert.equal(lines.length, 3, lines.join("\n"));
+    assert.match(lines[1], /^default: 住户听到了：.* \/ \[them\] 看图 \[picture\]（看到 1 张图）$/, "the picture is marked where it was, and goes with it");
+    assert.match(lines[2], /^mochi: 麻薯听到了：\[them\] 看图 \[picture\] \/ \[住户\] .*（看到 1 张图）$/);
+    const sent = (await room()).lines.find((l) => l.seq === after + 1);
+    assert.deepEqual([sent.text, sent.pictures, JSON.stringify(sent).includes("key")], ["看图", 1, false]);
+    const picture = await web(`/web/group/picture?g=${g}&seq=${sent.seq}&n=0`, KEY);
+    assert.deepEqual([picture.status, picture.headers.get("content-type"), picture.headers.get("content-security-policy")], [200, "image/png", "sandbox"]);
+    assert.equal((await web(`/web/group/picture?g=${g}&seq=${sent.seq}&n=0`, "wrong")).status, 401);
+    assert.equal((await json(`/web/group/say?g=${g}`, { pictures: [{ data: Buffer.from("not a picture").toString("base64") }] })).status, 400);
+    const pack = zip([
+      { name: "pack.json", data: JSON.stringify({ format: "resident-stickers/1", name: "Mine", stickers: [{ id: "hug", file: "hug.png", emoji: "🤗", when: "A hug." }] }), deflate: true },
+      { name: "hug.png", data: PNG, deflate: true }
+    ]);
+    const imported = await fetch(`${WORKER}/r/mochi/web/stickers/import?name=mine.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body: pack });
+    assert.equal(imported.status, 200, await imported.clone().text());
+    const [packView] = (await json("/r/mochi/web/stickers")).data.packs;
+    const hug = packView.stickers[0];
+    after = await say({ sticker: { from: "mochi", key: hug.key } });
+    lines = await settled(after);
+    assert.deepEqual(lines.slice(0, 2), ["her: ", "default: 住户听到了：[them] [sticker 🤗 A hug.]"], "read as what it means");
+    const stuck = (await room()).lines.find((l) => l.seq === after + 1);
+    assert.deepEqual(stuck.stickers, [{ url: `/r/mochi/stickers/${hug.key}`, video: false, mark: "[sticker 🤗 A hug.]" }]);
+    assert.equal((await json(`/web/group/say?g=${g}`, { sticker: { from: "default", key: hug.key } })).status, 400, "only a sticker of the resident named");
+    after = await say(`@麻薯 发表情 ${packView.id}/${hug.name}`);
+    await settled(after);
+    const reply = (await room()).lines.find((l) => l.seq > after + 1 && l.author === "mochi");
+    assert.deepEqual([reply.text, reply.stickers], ["", [{ url: `/r/mochi/stickers/${hug.key}`, video: false, mark: "[sticker 🤗 A hug.]" }]], "a sticker alone is a reply");
+  });
+
+  await step("a group's icon: put up and taken down from the settings, public like an avatar, only while it is one", async () => {
+    const put = await fetch(`${WORKER}/web/group/icon?g=${g}`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "image/png" }, body: PNG });
+    const icon = (await put.json()).groups.find((group) => group.id === g).icon;
+    assert.match(icon, /^\/avatar\/[0-9a-f]{32}$/);
+    assert.equal((await fetch(`${WORKER}${icon}`)).status, 200);
+    assert.equal((await fetch(`${WORKER}/r/mochi${icon}`)).status, 404, "the first resident's, not another's");
+    const bad = await fetch(`${WORKER}/web/group/icon?g=${g}`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "text/plain" }, body: "no" });
+    assert.equal(bad.status, 400);
+    assert.equal((await json(`/web/group/icon/remove?g=${g}`, {})).data.groups.find((group) => group.id === g).icon, null);
+    assert.equal((await fetch(`${WORKER}${icon}`)).status, 404);
   });
 
   await step("a member on Aelios: its turn goes through Aelios as one of hers, recalled for and recorded", async () => {
@@ -3581,6 +3637,6 @@ if (phase === "group") {
     const left = (await json(`/web/group/remove?g=${g}`, {})).data.groups;
     assert.deepEqual(left.map((group) => group.name), ["周末"]);
     assert.match((await room()).error, /没有这个群/);
-    assert.ok((await own("/r/mochi")).length > 4);
+    assert.ok((await json(`/r/mochi/web/search?q=${encodeURIComponent("今晚吃什么")}`)).data.results.length > 0);
   });
 }
