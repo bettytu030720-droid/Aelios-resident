@@ -1714,6 +1714,24 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.equal((await web(`/web/file?key=${"0".repeat(32)}`, KEY)).status, 404);
     });
 
+    await step("a file made in a reply that then fails still shows under what was kept of that reply", async () => {
+      const docs = async () => (await log()).filter((e) => e.kind === "tg.sendDocument").length;
+      const sentBefore = await docs();
+      await post("做个文件然后出错");
+      const start = Date.now();
+      while ((await docs()) === sentBefore) {
+        assert.ok(Date.now() - start < 20000, "the file went to Telegram");
+        await sleep(200);
+      }
+      let shown = [];
+      while (shown.length < 2) {
+        assert.ok(Date.now() - start < 30000, JSON.stringify((await (await web("/web/messages", KEY)).json()).data.slice(-3)));
+        await sleep(300);
+        shown = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.files?.length);
+      }
+      assert.deepEqual(shown.map((line) => line.files.map((f) => f.name)), [["计划.md"], ["计划.md"]]);
+    });
+
     await step("GitHub Actions with one token: the resident sets up a private repository, starts runs there, and lends a run its GitHub token and model", async () => {
       // A token that cannot write workflow files says so on the settings page.
       await set({ CLOUD_TASK_GITHUB_TOKEN: "no-workflow-token" });

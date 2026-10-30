@@ -365,6 +365,10 @@ export function fakeModel(): LanguageModelV4 {
         const body = JSON.stringify({ type: "error", error: { type: "permission_error", message: "You tried to access something that you don't have permissions for." } });
         throw Object.assign(new Error("You tried to access something that you don't have permissions for."), { statusCode: 403, responseBody: body });
       }
+      // A file made, then the model fails before it says anything about it.
+      if (lastOf(options.prompt, "user").includes("做个文件然后出错") && options.prompt.at(-1)?.role === "tool") {
+        throw Object.assign(new Error("the model fell over after the file"), { statusCode: 400 });
+      }
       // The first time 卡住测试 is asked the model goes quiet and stays so, as a hung provider does, until the turn
       // is cut; the turn run again is answered.
       if (lastOf(options.prompt, "user").includes("卡住测试") && !stalledOnce) {

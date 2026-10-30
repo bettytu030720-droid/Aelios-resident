@@ -3196,6 +3196,8 @@ export class Resident extends Think<Env> {
       await this.finishLetter(letter, result.status, result.message.id);
       return;
     }
+    // Files make_file made go with this reply even when it did not finish: a file made stays made.
+    if (result.requestId) this.madeFiles().withReply(result.requestId, result.message.id);
     const asked = before?.text ?? "";
     // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
     const fromThem = Boolean(asked) && !isNote(asked);
@@ -3228,8 +3230,6 @@ export class Resident extends Think<Env> {
     const voiced = this.#turnVoice;
     this.#turnVoice = null;
     if (voiced) this.media().saySpoken(result.message.id, voiced);
-    // So do the files make_file made in it.
-    if (result.requestId) this.madeFiles().withReply(result.requestId, result.message.id);
     // A reply to Telegram or WeCom said as a voice message is made after this: it finds its reply here (voiceReply).
     if (door) this.#lastReply.set(door, { id: result.message.id, at: Date.now() });
     // A reply on the web page: said in the voice too when it should be, and pushed when the page has been left.

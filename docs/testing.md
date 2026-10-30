@@ -26,7 +26,7 @@ NO_PROXY=127.0.0.1 node test/run.mjs main
 | `mcp`、`mcp-2` | 接别的 MCP，重启后接回来 |
 | `stickers` | 表情包；话说完发了表情、表情回来后又把那段话说一遍或说「No response requested.」的，那段不发、不留 |
 | `voice` | 语音条，以及发到 Telegram 的语音（整条回复说出来的、`send_voice` 发的）网页上那条回复也带着、能播放，只念一次 |
-| `tasks` | 后台帮忙：住户自己的线程、GitHub Actions、claude.ai 三处派活和回报，网页上的线程页、文件和直接跟线程说话；关着时没有派活、找东西和出文件的工具，开了以后住户用 `make_file` 出文件（发到 Telegram 是文件，网页上挂在回复下面，`/web/file` 要钥匙、按附件下载），用一个 `find` 自己找线程（按交代的、交回的和文件名，测试单不算）、看线程的文件（没有的、不在住户这里的说清楚，看过以后这一轮不派活）、搜聊天记录（不算正在回的那句）和看一条的前后 |
+| `tasks` | 后台帮忙：住户自己的线程、GitHub Actions、claude.ai 三处派活和回报，网页上的线程页、文件和直接跟线程说话；关着时没有派活、找东西和出文件的工具，开了以后住户用 `make_file` 出文件（发到 Telegram 是文件，网页上挂在回复下面，做完文件后模型出错也照样挂着，`/web/file` 要钥匙、按附件下载），用一个 `find` 自己找线程（按交代的、交回的和文件名，测试单不算）、看线程的文件（没有的、不在住户这里的说清楚，看过以后这一轮不派活）、搜聊天记录（不算正在回的那句）和看一条的前后 |
 | `tasks-quiet` | 派出去的活没回音（带 `--var CLOUD_TASK_QUIET_MINUTES:0.05`） |
 | `sites` | 带钥匙的网站 |
 | `heartbeat` | 未达写信门槛时仍走心跳，夜里别问的时段里不问（带 `--var LETTER_IDLE_MINUTES:0.05 --var LETTER_TOKEN_THRESHOLD:100000 --var ALARM_MINUTE_SECONDS:0.05`） |
