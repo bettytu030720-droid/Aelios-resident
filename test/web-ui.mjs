@@ -18,6 +18,10 @@ const page = vm.runInContext('testPage()', context);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 // Nothing the model or anyone else wrote is put into the page as HTML: every message, card and tool call is bound with x-text.
 assert.ok(!html.includes('x-html'), 'the page never binds HTML');
+// Buttons that do something show a small icon, not a word: each says what it does in title and aria-label.
+assert.ok(!/">(保存|存上|删掉|拿掉|下载|关掉|清掉|改时间|打开线程|打开会话|试一下|断开|复制|复制提示词|不用了|取消|算了|好|建好|搜|更早的|再往前看|删掉这个群)<\/(button|a)>/.test(html), 'no word buttons for actions');
+for (const button of html.match(/<(button|a) class="icon-btn[^>]*>/g)) assert.ok(/ :?aria-label="/.test(button) && / :?title="/.test(button), button);
+assert.ok(readFileSync('public/app.css', 'utf8').includes('.i-trash { --i: url("data:image/svg+xml,'), 'icons are masks in the stylesheet');
 assert.ok(!code.includes('innerHTML') && !markdown.includes('innerHTML') && !markdown.includes('insertAdjacentHTML') && !markdown.includes('outerHTML'), 'the scripts never write HTML');
 assert.ok(html.indexOf('<script src="/markdown.js"></script>') < html.indexOf('<script src="/app.js"></script>') && html.indexOf('<script src="/app.js"></script>') < html.indexOf('alpine-3.14.9.min.js'), 'x-markdown is there before Alpine starts');
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
@@ -211,10 +215,10 @@ assert.equal(page.taskNote({ ...task, status: 'working', progress: '改到一半
 assert.equal(page.taskNote({ ...task, status: 'sent', progress: '', summary: '' }), '派出去了，等它开工');
 const taskCard = markup.slice(markup.indexOf('<template x-for="task in row.cards"'));
 assert.ok(markup.indexOf('<template x-for="task in row.cards"') > markup.indexOf("row.line.role === 'assistant'") && markup.indexOf('<template x-for="task in row.cards"') < markup.indexOf('<!-- her message -->'), "only under the resident's own lines");
-assert.ok(taskCard.includes('@click="openThread(task.thread)">打开线程</button>'), 'a card opens its thread');
+assert.ok(taskCard.includes('@click="openThread(task.thread)" title="打开线程" aria-label="打开线程"><i class="i i-open" aria-hidden="true"></i></button>'), 'a card opens its thread, by an icon with its name');
 // Every card has the same way in, whether or not the thread ran in a session elsewhere: the thread, which has the
 // session and the links.
-const cardActs = taskCard.slice(taskCard.indexOf('<div class="acts">\n                    <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>'));
+const cardActs = taskCard.slice(taskCard.indexOf('<div class="acts">\n                    <button class="icon-btn sm" type="button" x-show="!task.test" @click="openThread(task.thread)" title="打开线程" aria-label="打开线程"><i class="i i-open" aria-hidden="true"></i></button>'));
 assert.ok(cardActs.length > 0);
 assert.ok(!cardActs.slice(0, cardActs.indexOf('</div>')).includes('<a '), 'no link on the card itself');
 // A thread that needs her: its choices are buttons, and the one she picks is said back.
@@ -1069,12 +1073,12 @@ assert.equal(aside.lineState(report), 'needs_you');
 // 不用了 sits at the end of the row of buttons it already has (打开会话 on the thread page, 打开线程 in the chat),
 // with nothing written to explain it.
 const reportRow = html.slice(html.indexOf('<div class="links" x-show='), html.indexOf('<div class="card" x-ref="fileView"'));
-assert.ok(reportRow.indexOf('>打开会话</a>') < reportRow.indexOf('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>'));
+assert.ok(reportRow.indexOf('title="打开会话" aria-label="打开会话"><i class="i i-open" aria-hidden="true"></i></a>') < reportRow.indexOf('<button class="icon-btn sm end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))" title="不用了" aria-label="不用了">'));
 assert.ok(reportRow.includes('choose(waitingFor(line), choice)'));
 assert.ok(!html.includes('ask-bar') && !html.includes('这一单在等你拍板') && !html.includes('它就不再挂着等你'));
-const cardRow = markup.slice(markup.indexOf('>打开线程</button>'));
-assert.ok(cardRow.includes('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>'), 'and at the end of the card in the chat');
-assert.match(readFileSync('public/app.css', 'utf8'), /\.btn\.end \{ margin-left: auto; \}/, 'at the right end, also on a wrapped line');
+const cardRow = markup.slice(markup.indexOf('title="打开线程" aria-label="打开线程">'));
+assert.ok(cardRow.includes('<button class="icon-btn sm end" type="button" :disabled="Boolean(choosing)" @click="settle(task)" title="不用了" aria-label="不用了">'), 'and at the end of the card in the chat');
+assert.match(readFileSync('public/app.css', 'utf8'), /\.icon-btn\.end \{ margin-left: auto; \}/, 'at the right end, also on a wrapped line');
 console.log('PASS 不用了 puts aside a card that waits for her, on every card of it, in the thread list and on its page');
 
 // Its page: no row of shortcuts (they are in the chat), a pen for the persona, the model's pill opens the picker,
