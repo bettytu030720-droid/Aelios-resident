@@ -9,7 +9,7 @@ function emptyThread() {
   return { loaded: false, id: '', title: '', runs: 'local', status: 'done', tasks: [], lines: [], files: [], canSay: false };
 }
 function emptyFileView() {
-  return { path: '', size: 0, busy: false, kind: '', text: '', url: '' };
+  return { path: '', key: '', size: 0, busy: false, kind: '', text: '', url: '' };
 }
 
 // ---- recording a voice message: PCM from the microphone, made a 16 kHz WAV, which every speech model reads ----
@@ -384,7 +384,11 @@ function resident() {
     siteError: '',
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
     stickers: { on: true, packs: [], left: 0 },
-    cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] },
+    cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [], roles: [] },
+    // The role being written: its name, how it works, and its model ('' the threads' own, '…' one written in own).
+    roleEdit: null,
+    roleBusy: false,
+    roleError: '',
     threads: { loaded: false, on: false, threads: [] },
     search: freshSearch(),
     thread: emptyThread(),
@@ -649,7 +653,8 @@ function resident() {
       this.sites = [];
       this.search = freshSearch();
       this.stickers = { on: true, packs: [], left: 0 };
-      this.cloud = { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] };
+      this.cloud = { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [], roles: [] };
+      this.roleEdit = null;
       this.threads = { loaded: false, on: false, threads: [] };
       this.thread = emptyThread();
       this.alarms = { on: false, limit: 10, alarms: [] };
@@ -1705,6 +1710,7 @@ function resident() {
       if (this.view === 'thread') return this.openThreads();
       if (this.view === 'persona') return this.closeSettings();
       if (this.view === 'usage') { this.view = 'profile'; return; }
+      if (this.view === 'file') this.closeFile();
       this.view = 'chat';
       this.scrollSoon(true);
     },
@@ -1837,16 +1843,19 @@ function resident() {
     sizeText(n) {
       return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
     },
-    fileBytes(path) {
-      return this.api('/web/thread/file?id=' + encodeURIComponent(this.thread.id) + '&path=' + encodeURIComponent(path), { bytes: true });
+    // A thread's file by its path, or a file a reply handed over by its key.
+    fileBytes(file) {
+      if (file.key) return this.api('/web/file?key=' + encodeURIComponent(file.key), { bytes: true });
+      return this.api('/web/thread/file?id=' + encodeURIComponent(this.thread.id) + '&path=' + encodeURIComponent(file.path), { bytes: true });
     },
     // Pictures as pictures, a page in a sandboxed frame (its scripts run apart from this page and its sign-in), text as text.
     async viewFile(file) {
       this.closeFile();
-      this.fileView = { path: file.path, size: file.size, busy: true, kind: '', text: '', url: '' };
+      var key = file.key || '';
+      this.fileView = { path: file.path, key: key, size: file.size, busy: true, kind: '', text: '', url: '' };
       try {
-        var bytes = await this.fileBytes(file.path);
-        if (this.fileView.path !== file.path) return;
+        var bytes = await this.fileBytes(file);
+        if (this.fileView.path !== file.path || this.fileView.key !== key) return;
         var ext = extOf(file.path);
         var kind = 'other';
         var text = '';
@@ -1863,7 +1872,7 @@ function resident() {
           }
           if (kind === 'other') text = '';
         }
-        this.fileView = { path: file.path, size: file.size, busy: false, kind: kind, text: text, url: url };
+        this.fileView = { path: file.path, key: key, size: file.size, busy: false, kind: kind, text: text, url: url };
         var card = this.$refs && this.$refs.fileView;
         if (card && card.scrollIntoView) this.$nextTick(function () { card.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
       } catch (error) {
@@ -1875,9 +1884,14 @@ function resident() {
       if (this.fileView.url) URL.revokeObjectURL(this.fileView.url);
       this.fileView = emptyFileView();
     },
+    // A file a reply handed over opens on a page of its own; back goes to the chat.
+    openChatFile(file) {
+      this.view = 'file';
+      this.viewFile({ path: file.name, key: file.key, size: file.size });
+    },
     async saveFile(file) {
       try {
-        var bytes = await this.fileBytes(file.path);
+        var bytes = await this.fileBytes(file);
         var url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
         var link = document.createElement('a');
         link.href = url;
@@ -2659,6 +2673,66 @@ function resident() {
         this.cloudError = error.message;
       } finally {
         this.cloudBusy = false;
+      }
+    },
+
+    // ---- roles: job templates for threads, each with the model its threads use ----
+    // The models to pick from: the chat's, the recent ones, the usual ones, and the list kept in Aelios.
+    roleModels() {
+      var seen = {};
+      var list = [];
+      var add = function (id) { if (id && !seen[id]) { seen[id] = true; list.push(id); } };
+      add(this.model.model);
+      (this.model.recent || []).forEach(add);
+      FAVORITES.forEach(add);
+      if (this.aeliosModels.curated) this.aeliosModels.items.forEach(function (item) { add(item.id); });
+      return list;
+    },
+    // The roles as rows, and a row for a new one while it is being written; the one being edited shows its form.
+    roleRows() {
+      var rows = this.cloud.roles.map(function (role) { return { key: role.name, role: role }; });
+      if (this.roleEdit && this.roleEdit.fresh) rows.push({ key: ' new', role: null });
+      return rows;
+    },
+    editingRole(row) {
+      var edit = this.roleEdit;
+      return Boolean(edit) && (row.role ? !edit.fresh && edit.name === row.role.name : edit.fresh);
+    },
+    editRole(role) {
+      var model = role ? role.model : '';
+      var listed = !model || this.roleModels().indexOf(model) >= 0;
+      this.roleError = '';
+      this.roleEdit = { fresh: !role, name: role ? role.name : '', template: role ? role.template : '', pick: listed ? model : '…', own: listed ? '' : model };
+    },
+    roleModelText(role) {
+      return role.model ? this.shortName(role.model) : '线程的模型';
+    },
+    async saveRole() {
+      var edit = this.roleEdit;
+      if (!edit || this.roleBusy) return;
+      this.roleBusy = true;
+      this.roleError = '';
+      try {
+        var model = edit.pick === '…' ? edit.own.trim() : edit.pick;
+        var saved = await this.api('/web/tasks/roles', { method: 'POST', body: { name: edit.name, template: edit.template, model: model } });
+        this.cloud.roles = saved.roles;
+        this.roleEdit = null;
+      } catch (error) {
+        this.roleError = error.message;
+      } finally {
+        this.roleBusy = false;
+      }
+    },
+    async removeRole(role) {
+      if (this.roleBusy || !confirm('删掉 ' + role.name + '？派活时就不能再用它了。')) return;
+      this.roleBusy = true;
+      try {
+        this.cloud.roles = (await this.api('/web/tasks/roles/remove', { method: 'POST', body: { name: role.name } })).roles;
+        if (this.roleEdit && this.roleEdit.name === role.name) this.roleEdit = null;
+      } catch (error) {
+        this.roleError = error.message;
+      } finally {
+        this.roleBusy = false;
       }
     },
 

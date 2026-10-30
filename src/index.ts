@@ -306,6 +306,8 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
           subscription?: unknown;
           endpoint?: string;
           execution?: string;
+          template?: string;
+          model?: string;
         })
       : {};
   switch (`${request.method} ${url.pathname}`) {
@@ -353,6 +355,15 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       const file = /^[0-9a-f]{32}$/.test(key) ? await agent.webMedia(key) : null;
       if (!file) return new Response("not found", { status: 404 });
       return new Response(file.bytes, { headers: privateFile(file.type) });
+    }
+    case "GET /web/file": {
+      // A file a reply handed over: bytes to save, never a page of this origin (the web page decides how to show it).
+      const key = url.searchParams.get("key") ?? "";
+      const bytes = /^[0-9a-f]{32}$/.test(key) ? await agent.webFile(key) : null;
+      if (!bytes) return new Response("not found", { status: 404 });
+      return new Response(bytes, {
+        headers: { "content-type": "application/octet-stream", "content-disposition": "attachment", "content-security-policy": "sandbox", "x-content-type-options": "nosniff", "cache-control": "private, max-age=86400" }
+      });
     }
     case "POST /web/speak": {
       const spoken = await agent.webSpeak(String(body.id ?? ""));
@@ -472,6 +483,12 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       const tried = await agent.webTestTask(at.base, place);
       return Response.json(tried, { status: "error" in tried ? 400 : 200 });
     }
+    case "POST /web/tasks/roles": {
+      const saved = await agent.webSaveRole({ name: body.name, template: body.template, model: body.model });
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/tasks/roles/remove":
+      return Response.json(await agent.webRemoveRole(String(body.name ?? "")));
     case "POST /web/tasks/github": {
       const set = await agent.webGitHubSetup(at.base);
       return Response.json(set, { status: "error" in set ? 400 : 200 });

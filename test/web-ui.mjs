@@ -18,6 +18,10 @@ const page = vm.runInContext('testPage()', context);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 // Nothing the model or anyone else wrote is put into the page as HTML: every message, card and tool call is bound with x-text.
 assert.ok(!html.includes('x-html'), 'the page never binds HTML');
+// Buttons that do something show a small icon, not a word: each says what it does in title and aria-label.
+assert.ok(!/">(保存|存上|删掉|拿掉|下载|关掉|清掉|改时间|打开线程|打开会话|试一下|断开|复制|复制提示词|不用了|取消|算了|好|建好|搜|更早的|再往前看|删掉这个群)<\/(button|a)>/.test(html), 'no word buttons for actions');
+for (const button of html.match(/<(button|a) class="icon-btn[^>]*>/g)) assert.ok(/ :?aria-label="/.test(button) && / :?title="/.test(button), button);
+assert.ok(readFileSync('public/app.css', 'utf8').includes('.i-trash { --i: url("data:image/svg+xml,'), 'icons are masks in the stylesheet');
 assert.ok(!code.includes('innerHTML') && !markdown.includes('innerHTML') && !markdown.includes('insertAdjacentHTML') && !markdown.includes('outerHTML'), 'the scripts never write HTML');
 assert.ok(html.indexOf('<script src="/markdown.js"></script>') < html.indexOf('<script src="/app.js"></script>') && html.indexOf('<script src="/app.js"></script>') < html.indexOf('alpine-3.14.9.min.js'), 'x-markdown is there before Alpine starts');
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
@@ -211,10 +215,10 @@ assert.equal(page.taskNote({ ...task, status: 'working', progress: '改到一半
 assert.equal(page.taskNote({ ...task, status: 'sent', progress: '', summary: '' }), '派出去了，等它开工');
 const taskCard = markup.slice(markup.indexOf('<template x-for="task in row.cards"'));
 assert.ok(markup.indexOf('<template x-for="task in row.cards"') > markup.indexOf("row.line.role === 'assistant'") && markup.indexOf('<template x-for="task in row.cards"') < markup.indexOf('<!-- her message -->'), "only under the resident's own lines");
-assert.ok(taskCard.includes('@click="openThread(task.thread)">打开线程</button>'), 'a card opens its thread');
+assert.ok(taskCard.includes('@click="openThread(task.thread)" title="打开线程" aria-label="打开线程"><i class="i i-open" aria-hidden="true"></i></button>'), 'a card opens its thread, by an icon with its name');
 // Every card has the same way in, whether or not the thread ran in a session elsewhere: the thread, which has the
 // session and the links.
-const cardActs = taskCard.slice(taskCard.indexOf('<div class="acts">\n                    <button class="btn small" type="button" x-show="!task.test" @click="openThread(task.thread)">打开线程</button>'));
+const cardActs = taskCard.slice(taskCard.indexOf('<div class="acts">\n                    <button class="icon-btn sm" type="button" x-show="!task.test" @click="openThread(task.thread)" title="打开线程" aria-label="打开线程"><i class="i i-open" aria-hidden="true"></i></button>'));
 assert.ok(cardActs.length > 0);
 assert.ok(!cardActs.slice(0, cardActs.indexOf('</div>')).includes('<a '), 'no link on the card itself');
 // A thread that needs her: its choices are buttons, and the one she picks is said back.
@@ -311,6 +315,50 @@ assert.equal(page.textInEffect(taskModel), 'my-provider/my-model');
 assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');
 console.log('PASS cloud tasks: a card under the reply, escaped and https only; the settings appear once it is turned on');
 
+// Roles: icon buttons with names, a model picked from a list or written in, saved and removed through the API.
+assert.ok(html.includes('aria-label="加一个角色" title="加一个角色"') && html.includes('@click="removeRole(row.role)" aria-label="删掉" title="删掉"'));
+page.model = { ...page.model, model: 'anthropic/claude-opus-5.5', recent: ['custom/my-model', 'anthropic/claude-opus-5.5'] };
+page.aeliosModels = { loaded: true, curated: true, items: [{ id: 'openai/gpt-5.5' }], error: '' };
+const picks = page.roleModels();
+assert.deepEqual([...picks.slice(0, 3)], ['anthropic/claude-opus-5.5', 'custom/my-model', 'anthropic/claude-sonnet-5.5']);
+assert.ok(picks.includes('@cf/zai-org/glm-4.7-flash') && picks.at(-1) === 'openai/gpt-5.5');
+assert.equal(new Set(picks).size, picks.length, 'each once');
+page.editRole({ name: 'coder', template: '改代码。', model: 'custom/my-model' });
+assert.deepEqual([page.roleEdit.fresh, page.roleEdit.pick, page.roleEdit.own], [false, 'custom/my-model', '']);
+page.editRole({ name: 'odd', template: 'x', model: 'someone/unlisted' });
+assert.deepEqual([page.roleEdit.pick, page.roleEdit.own], ['…', 'someone/unlisted'], 'a model not in the list is shown written in');
+assert.equal(page.roleModelText({ model: '' }), '线程的模型');
+page.cloud = { ...page.cloud, roles: [{ name: 'coder', template: '改代码。', model: '' }] };
+const roleCalls = [];
+page.api = async (path, options) => {
+  roleCalls.push([path, options.body]);
+  return { roles: [{ name: 'coder', template: '改代码。', model: '' }, { name: 'tester', template: '跑测试。', model: 'x/own' }] };
+};
+// The one being edited shows its form in its place; a new one gets a row of its own at the end.
+assert.equal(page.roleRows().map((row) => row.key).join('|'), 'coder');
+page.editRole(page.cloud.roles[0]);
+assert.deepEqual([page.editingRole(page.roleRows()[0]), page.roleRows().length], [true, 1]);
+page.editRole(null);
+const rows = page.roleRows();
+assert.deepEqual([rows.length, page.editingRole(rows[0]), page.editingRole(rows[1])], [2, false, true]);
+Object.assign(page.roleEdit, { name: 'tester', template: '跑测试。', pick: '…', own: ' x/own ' });
+await page.saveRole();
+assert.equal(JSON.stringify(roleCalls.at(-1)), JSON.stringify(['/web/tasks/roles', { name: 'tester', template: '跑测试。', model: 'x/own' }]));
+assert.equal(page.roleEdit, null);
+assert.equal(page.cloud.roles.map((role) => role.name).join('|'), 'coder|tester');
+page.api = async (path, options) => { roleCalls.push([path, options.body]); return { roles: [] }; };
+await page.removeRole({ name: 'tester' });
+assert.equal(JSON.stringify(roleCalls.at(-1)), JSON.stringify(['/web/tasks/roles/remove', { name: 'tester' }]));
+assert.equal(page.cloud.roles.length, 0);
+page.api = async () => { throw new Error('名字用小写英文字母开头'); };
+page.editRole(null);
+Object.assign(page.roleEdit, { name: '测试', template: 'x' });
+await page.saveRole();
+assert.equal(page.roleError, '名字用小写英文字母开头');
+assert.ok(page.roleEdit, 'what she wrote stays to fix');
+page.roleEdit = null;
+console.log('PASS roles: icon buttons, a model from the list or written in, saved and removed');
+
 // Threads: a file is fetched as bytes and shown by its kind; a page only inside a sandboxed frame.
 assert.ok(html.includes('<iframe class="file-page" sandbox="allow-scripts"'), 'a page runs apart from this one');
 assert.ok(!/sandbox="[^"]*allow-same-origin/.test(html));
@@ -339,6 +387,22 @@ assert.match(page.fileView.url, /^blob:/);
 await page.viewFile({ path: 'blob.bin', size: 2 });
 assert.equal(page.fileView.kind, 'other');
 assert.equal(page.fileView.text, '');
+// A file a reply handed over (make_file): fetched by its key, on a page of its own; back closes it.
+assert.ok(html.includes('@click="openChatFile(f)"'), 'a file card under the reply');
+page.closeFile();
+files['计划.md'] = '# 计划';
+page.api = async (path, options) => {
+  fetched.push(path);
+  assert.ok(options && options.bytes);
+  return new TextEncoder().encode(files['计划.md']);
+};
+page.openChatFile({ key: 'a'.repeat(32), name: '计划.md', size: 8 });
+assert.equal(page.view, 'file');
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(fetched.at(-1), '/web/file?key=' + 'a'.repeat(32));
+assert.deepEqual([page.fileView.path, page.fileView.kind, page.fileView.text], ['计划.md', 'markdown', '# 计划']);
+page.goBack();
+assert.deepEqual([page.view, page.fileView.path, page.fileView.key], ['chat', '', '']);
 page.closeFile();
 assert.equal(page.fileView.path, '');
 assert.equal(page.backText(), '回到聊天');
@@ -1025,12 +1089,12 @@ assert.equal(aside.lineState(report), 'needs_you');
 // 不用了 sits at the end of the row of buttons it already has (打开会话 on the thread page, 打开线程 in the chat),
 // with nothing written to explain it.
 const reportRow = html.slice(html.indexOf('<div class="links" x-show='), html.indexOf('<div class="card" x-ref="fileView"'));
-assert.ok(reportRow.indexOf('>打开会话</a>') < reportRow.indexOf('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))">不用了</button>'));
+assert.ok(reportRow.indexOf('title="打开会话" aria-label="打开会话"><i class="i i-open" aria-hidden="true"></i></a>') < reportRow.indexOf('<button class="icon-btn sm end" type="button" :disabled="Boolean(choosing)" @click="settle(waitingFor(line))" title="不用了" aria-label="不用了">'));
 assert.ok(reportRow.includes('choose(waitingFor(line), choice)'));
 assert.ok(!html.includes('ask-bar') && !html.includes('这一单在等你拍板') && !html.includes('它就不再挂着等你'));
-const cardRow = markup.slice(markup.indexOf('>打开线程</button>'));
-assert.ok(cardRow.includes('<button class="btn small text end" type="button" :disabled="Boolean(choosing)" @click="settle(task)">不用了</button>'), 'and at the end of the card in the chat');
-assert.match(readFileSync('public/app.css', 'utf8'), /\.btn\.end \{ margin-left: auto; \}/, 'at the right end, also on a wrapped line');
+const cardRow = markup.slice(markup.indexOf('title="打开线程" aria-label="打开线程">'));
+assert.ok(cardRow.includes('<button class="icon-btn sm end" type="button" :disabled="Boolean(choosing)" @click="settle(task)" title="不用了" aria-label="不用了">'), 'and at the end of the card in the chat');
+assert.match(readFileSync('public/app.css', 'utf8'), /\.icon-btn\.end \{ margin-left: auto; \}/, 'at the right end, also on a wrapped line');
 console.log('PASS 不用了 puts aside a card that waits for her, on every card of it, in the thread list and on its page');
 
 // Its page: no row of shortcuts (they are in the chat), a pen for the persona, the model's pill opens the picker,

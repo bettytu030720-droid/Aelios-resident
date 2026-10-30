@@ -1,18 +1,18 @@
 // Audio and pictures the web door keeps for itself, in the resident's own SQLite: voice messages she records on the
 // web page, the voice the resident answers in there or reads a message out in, the avatar and the group chats'
-// icons, and pictures she sends in a group chat (group.ts). A Durable Object's SQLite takes at most 2 MB in one row,
-// so a file goes in pieces. Pictures she sends in the chat stay in the conversation itself (pictures.ts); they are
-// not copied here.
+// icons, the files it hands over in the chat (made-files.ts), and pictures she sends in a group chat (group.ts). A
+// Durable Object's SQLite takes at most 2 MB in one row, so a file goes in pieces. Pictures she sends in the chat
+// stay in the conversation itself (pictures.ts); they are not copied here.
 
 import type { Sql } from "./sticker-store";
 
-export type MediaKind = "voice" | "spoken" | "avatar" | "picture";
+export type MediaKind = "voice" | "spoken" | "avatar" | "file" | "picture";
 
 /** One piece of a file per row, under the 2 MB a row can hold. */
 const PIECE_BYTES = 1024 * 1024;
 /** The most one file may be: a minute and a half of 16 kHz WAV, or a long reply read out in MP3. */
 export const MEDIA_MAX_BYTES = 6 * 1024 * 1024;
-/** What all voice, read-out and group picture files together may take; the oldest go first. Avatars and icons are never pruned. */
+/** What all voice, read-out, handed-over and group picture files together may take; the oldest go first. Avatars and icons are never pruned. */
 const KEEP_BYTES = 200 * 1024 * 1024;
 
 export type MediaFile = { type: string; bytes: Uint8Array; seconds: number | null };
