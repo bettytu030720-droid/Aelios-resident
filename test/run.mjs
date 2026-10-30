@@ -1167,6 +1167,17 @@ if (phase === "stickers") {
     }
   });
 
+  await step("a mark that went out counts as the reply's one sticker: one drawn after it in the same reply is not sent", async () => {
+    const before = (await sent()).length;
+    const [stickers, drawn] = [(await tgLog("sendSticker")).length, (await tgLog("sendAnimation")).length];
+    await post("标记完再画");
+    const out = await waitForSends(before, 2);
+    assert.equal(out[0], "先发这张");
+    assert.match(out[1], /one sticker per reply/);
+    await sleep(800);
+    assert.deepEqual([(await tgLog("sendSticker")).length, (await tgLog("sendAnimation")).length], [stickers + 1, drawn]);
+  });
+
   await step("one sticker per reply: a second mark is only taken out", async () => {
     const before = (await sent()).length;
     const stickers = (await tgLog("sendSticker")).length;
@@ -1179,7 +1190,8 @@ if (phase === "stickers") {
   await step("the web page shows the stickers a reply sent, and a web turn sends nothing to Telegram", async () => {
     const lines = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.role === "assistant" && line.stickers);
     const mine = await pack("mine");
-    assert.deepEqual(lines.at(-2).stickers, [{ url: `/stickers/${mine.stickers[0].key}`, video: false }], "the one it drew");
+    assert.deepEqual(lines.findLast((line) => line.text === "抱抱你，今天辛苦啦。").stickers, [{ url: `/stickers/${mine.stickers[0].key}`, video: false }], "the one it drew");
+    assert.deepEqual(lines.findLast((line) => line.text.startsWith("先发这张")).stickers, [{ url: `/stickers/${(await pack("test")).stickers[0].key}`, video: false }], "the one marked first, as on Telegram");
     assert.deepEqual([lines.at(-1).text, lines.at(-1).stickers], ["两张都给你。\n\n还有这张", [{ url: `/stickers/${(await pack("test")).stickers[0].key}`, video: false }]], "one per reply, the first one marked");
     const tgBefore = (await log()).filter((e) => e.kind.startsWith("tg.send")).length;
     const line = await ask("发表情");
@@ -1197,9 +1209,20 @@ if (phase === "stickers") {
     await web("/web/stickers/pack", KEY, { id: "testpack", on: false });
     // A change on the settings page shows from the next message, as any setting does, and the drawn one comes with it.
     assert.equal(await tools(), "make_sticker；清单：mine/heart|test/wave|test/love");
+    // A mark of a sticker whose pack is off, or with stickers off, goes nowhere: not on Telegram, not on the page.
+    await web("/web/stickers/pack", KEY, { id: "test", on: false });
+    const before = (await sent()).length;
+    const stickers = (await tgLog("sendSticker")).length;
+    await post("发表情");
+    assert.deepEqual(await waitForSends(before, 2), ["嗨～", "再说一句。"]);
+    await sleep(800);
+    assert.equal((await tgLog("sendSticker")).length, stickers);
+    assert.deepEqual([(await ask("发表情")).stickers], [undefined], "its pack is off");
+    await web("/web/stickers/pack", KEY, { id: "test", on: true });
     const off = await web("/web/config", KEY, { key: "STICKERS", text: "off" });
     assert.equal(off.status, 200);
     assert.equal(await tools(), "没有");
+    assert.deepEqual([(await ask("发表情")).stickers], [undefined], "stickers are off");
     assert.match(await (await fetch(`${WORKER}/web/stickers`, { headers: { "x-web-key": KEY } })).text(), /"on":false/);
     await web("/web/config", KEY, { key: "STICKERS", text: "" });
     await web("/web/stickers/pack", KEY, { id: "testpack", on: true });
@@ -3615,6 +3638,11 @@ if (phase === "group") {
     await settled(after);
     const reply = (await room()).lines.find((l) => l.seq > after + 1 && l.author === "mochi");
     assert.deepEqual([reply.text, reply.stickers], ["", [{ url: `/r/mochi/stickers/${hug.key}`, video: false, mark: "[sticker 🤗 A hug.]" }]], "a sticker alone is a reply");
+    assert.equal((await json("/r/mochi/web/stickers/pack", { id: packView.id, on: false })).status, 200);
+    after = await say(`@麻薯 发表情 ${packView.id}/${hug.name}`);
+    await settled(after);
+    assert.deepEqual((await room()).lines.filter((l) => l.seq > after + 1 && l.author === "mochi"), [], "its pack off: the sticker does not go, and a reply of nothing else passes");
+    await json("/r/mochi/web/stickers/pack", { id: packView.id, on: true });
   });
 
   await step("a group's icon: put up and taken down from the settings, public like an avatar, only while it is one", async () => {

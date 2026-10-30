@@ -71,7 +71,7 @@ function groupTurn(me: string, round: number, heard: string[], pictures: number)
 }
 
 /** What the fake model says, or a tool it calls. */
-function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown; text?: string } {
+function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown; text?: string; delayMs?: number } {
   const prompt = options.prompt;
   const system = prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
   const user = lastOf(prompt, "user");
@@ -123,6 +123,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // Words, then a sticker drawn, then once its result is back the words again or a line that says nothing (after-tools.ts).
   if (said.includes("说完再画") && last?.role === "tool") return { text: said.includes("没话说") ? "No response requested." : "抱抱你，今天辛苦啦。" };
   if (said.includes("说完再画")) return { text: "抱抱你，今天辛苦啦。", tool: "make_sticker", input: HEART };
+  // A paragraph with a sticker's mark goes out, and a moment later it draws one in the same reply.
+  if (said.includes("标记完再画") && last?.role !== "tool") return { text: "先发这张 [sticker: test/wave]\n\n", tool: "make_sticker", input: HEART, delayMs: 1500 };
   // A voice message sent with send_voice, and nothing written after it.
   if (said.includes("发条语音") && last?.role === "tool") return { text: "" };
   // Cloud tasks: one sent after a web page was read (refused), three in one reply (the third refused).
@@ -429,6 +431,8 @@ export function fakeModel(): LanguageModelV4 {
       if (!options.prompt.some((m) => m.role === "system" && textOf(m.content).includes("one of the resident's threads"))) previous = shape(options);
       const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
       let delayMs = 0;
+      // A tool call can come a while after the words before it, as a real model's does.
+      const toolDelay = "tool" in choice ? (choice.delayMs ?? 0) : 0;
       if ("tool" in choice) {
         if (choice.text) {
           parts.push({ type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: choice.text }, { type: "text-end", id: "t" });
@@ -453,6 +457,7 @@ export function fakeModel(): LanguageModelV4 {
         async start(controller) {
           for (const part of parts) {
             if (step && part.type === "text-delta") await new Promise((resolve) => setTimeout(resolve, step));
+            if (toolDelay && part.type === "tool-call") await new Promise((resolve) => setTimeout(resolve, toolDelay));
             controller.enqueue(part);
           }
           controller.close();

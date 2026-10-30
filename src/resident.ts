@@ -2127,11 +2127,16 @@ export class Resident extends Think<Env> {
 
   /**
    * The sticker a mark in its reply named (sticker-marks.ts), to her chat now; null when it is not one it has, could
-   * not go, or make_sticker already has this reply's one waiting.
+   * not go, or this reply already has its one (make_sticker's). It counts as the reply's one, so make_sticker after
+   * it in the same reply sends nothing.
    */
   private async markedSticker(threadId: string, handle: string): Promise<{ id: string; threadId: string } | null> {
-    const row = this.stickersOn() && !this.#outbox.get(`chat:${threadId}`)?.length ? this.stickers().find(handle) : null;
-    return row ? this.stickerTo(threadId, row.key) : null;
+    const turn = [...this.#turnThread].findLast(([, thread]) => thread === threadId)?.[0];
+    const taken = Boolean(this.#outbox.get(`chat:${threadId}`)?.length) || Boolean(turn && this.#stickerSent.has(turn));
+    const row = this.stickersOn() && !taken ? this.stickers().find(handle) : null;
+    if (!row) return null;
+    if (turn) this.#stickerSent.add(turn);
+    return this.stickerTo(threadId, row.key);
   }
 
   /** One sticker to her chat; null when it could not go out (or stickers are off on WeCom). */
@@ -2217,7 +2222,8 @@ export class Resident extends Think<Env> {
 
   /**
    * The stickers a reply sent, as the web page shows them: the one make_sticker sent (or send_sticker, before the
-   * marks), else the first a mark in its words named, as on Telegram.
+   * marks; kept from a pack turned off since), else the first a mark in its words named that can go now, as on
+   * Telegram.
    */
   private sentStickers(parts: readonly { type: string; text?: string; toolName?: string; input?: unknown; output?: unknown }[]): WebLine["stickers"] {
     const sent = parts.flatMap((part) => {
@@ -2226,7 +2232,9 @@ export class Resident extends Think<Env> {
       return STICKER_TOOLS.has(name) && typeof handle === "string" ? [handle] : [];
     });
     const marked = parts.flatMap((part) => (part.type === "text" ? stickerMarks(part.text ?? "").stickers : []));
-    const rows = (sent.length ? sent : marked).flatMap((handle) => this.stickers().find(handle, false) ?? []);
+    const rows = sent.length
+      ? sent.flatMap((handle) => this.stickers().find(handle, false) ?? [])
+      : this.stickersOn() ? marked.flatMap((handle) => this.stickers().find(handle) ?? []) : [];
     const shown = (sent.length ? rows : rows.slice(0, 1)).map((row) => ({ url: `${residentPrefix(this.residentId)}/stickers/${row.key}`, video: row.web_type === "video/webm" }));
     return shown.length ? shown : undefined;
   }
