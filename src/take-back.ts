@@ -1,5 +1,5 @@
-// Taking back its latest reply, from the two small icons under it on the web page: one deletes it, the other
-// deletes it and has it answer her message again. For a reply that came out as an error, garbled tokens or a flat
+// Taking back its latest reply, from its long-press menu on the web page: 删掉 deletes it, 重新生成 deletes it
+// and has it answer her message again. For a reply that came out as an error, garbled tokens or a flat
 // refusal: once gone, no later turn sees it. Only the latest reply can go, so everything before it stays as it was
 // and the prompt cache still holds. Check-ins it passed on since (a heartbeat that said SKIP, not shown on the
 // page) go with it.

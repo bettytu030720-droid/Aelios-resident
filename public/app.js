@@ -784,7 +784,7 @@ function resident() {
     replying() {
       return this.sending > 0 || this.lines.some(function (line) { return line.pending; });
     },
-    // Its latest reply, once it is done, has two icons under it: delete it, or have it answer again.
+    // Its latest reply, once it is done, can be taken back from its menu: deleted, or answered again.
     takeBackable(line) {
       if (line.role !== 'assistant' || line.kind !== 'chat' || line.pending || this.takingBack || this.replying()) return false;
       var last = this.lines.filter(function (l) { return l.kind !== 'notice'; }).pop();
@@ -1251,7 +1251,7 @@ function resident() {
       if (event.preventDefault) event.preventDefault();
       clearTimeout(holdTimer);
       var rect = event.currentTarget.getBoundingClientRect();
-      var width = 280;
+      var width = this.takeBackable(line) ? 340 : 280;
       var x = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
       var y = rect.top - 64 < 70 ? rect.bottom + 8 : rect.top - 64;
       this.menu = { open: true, id: line.id, role: line.role, text: line.text || '', x: x, y: y, voice: Boolean(line.voice && line.voice.key), local: '' };
@@ -1260,8 +1260,21 @@ function resident() {
     closeMenu() {
       this.menu = { open: false, id: '', role: '', text: '', x: 0, y: 0, voice: false, local: '' };
     },
+    menuLine() {
+      return this.lines.find(function (l) { return l.id === this.menu.id; }, this);
+    },
+    // Only its latest reply's menu has 重新生成 and 删掉.
+    menuTakesBack() {
+      var line = this.menuLine();
+      return Boolean(this.menu.open && line && this.takeBackable(line));
+    },
+    takeBackFromMenu(again) {
+      var line = this.menuLine();
+      this.closeMenu();
+      if (line && this.takeBackable(line)) return this.takeBack(line, again);
+    },
     quoteFromMenu() {
-      var line = this.lines.find(function (l) { return l.id === this.menu.id; }, this);
+      var line = this.menuLine();
       if (line) this.quote = { id: line.id, who: line.role, text: String(line.text || (line.voice ? '[语音]' : line.pictures ? '[图片]' : '')).replace(/\s+/g, ' ').slice(0, 80) };
       this.closeMenu();
       var el = this.$refs && this.$refs.input;
