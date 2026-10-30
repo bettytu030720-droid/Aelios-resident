@@ -334,6 +334,7 @@ function resident() {
     outbox: [],
     loaded: false,
     sending: 0,
+    takingBack: false,
     pinned: {},
     openBusy: {},
     openTool: {},
@@ -777,6 +778,39 @@ function resident() {
     },
     replying() {
       return this.sending > 0 || this.lines.some(function (line) { return line.pending; });
+    },
+    // Its latest reply, once it is done, has two icons under it: delete it, or have it answer again.
+    takeBackable(line) {
+      if (line.role !== 'assistant' || line.kind !== 'chat' || line.pending || this.takingBack || this.replying()) return false;
+      var last = this.lines.filter(function (l) { return l.kind !== 'notice'; }).pop();
+      return Boolean(last && last.id === line.id);
+    },
+    // A check-in or a thread's report answers no message of hers, and a group chat's reply was posted there, so
+    // they can only be deleted.
+    answersHer(line) {
+      return line.via !== 'checkin' && line.via !== 'task' && line.via !== 'group';
+    },
+    async takeBack(line, again) {
+      if (!again && !confirm('删掉这条？')) return;
+      this.takingBack = true;
+      if (again) {
+        // The reply goes at once, and the dots show until the new one starts.
+        var lastUser = this.lines.map(function (l) { return l.role; }).lastIndexOf('user');
+        this.lines = this.lines.filter(function (l, i) { return i <= lastUser || l.kind !== 'chat'; });
+        this.sending += 1;
+        this.poll(true);
+      }
+      try {
+        var result = await this.api('/web/take-back', { method: 'POST', body: { id: line.id, again: again } });
+        if (again && result.status !== 'completed') throw new Error('没回出来（' + result.status + '），再点一次试试');
+      } catch (error) {
+        this.notify(error.message);
+      } finally {
+        if (again) this.sending -= 1;
+        this.takingBack = false;
+        await this.refresh(true).catch(function () {});
+        this.poll(this.replying());
+      }
     },
     bubblesOf(line) {
       var texts = line.role === 'assistant' ? bubbleTexts(line.text) : (String(line.text || '').trim() ? [line.text] : []);

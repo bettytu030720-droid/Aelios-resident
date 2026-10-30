@@ -286,6 +286,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
           voice?: { data?: string };
           sticker?: string;
           quote?: string;
+          again?: boolean;
           subscription?: unknown;
           endpoint?: string;
           execution?: string;
@@ -317,6 +318,12 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
         ...(body.quote ? { quote: String(body.quote) } : {})
       });
       return Response.json(said, { status: "error" in said ? 400 : 200 });
+    }
+    case "POST /web/take-back": {
+      // Its latest reply deleted, or with again: true answered anew (take-back.ts).
+      await agent.noteOrigin(at.base);
+      const taken = await agent.webTakeBack(String(body.id ?? ""), body.again === true);
+      return Response.json(taken, { status: "error" in taken ? 400 : 200 });
     }
     case "GET /web/picture": {
       // Her picture, as bytes the page shows itself: never a page of this origin.
