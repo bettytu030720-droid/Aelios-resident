@@ -1012,6 +1012,14 @@ if (phase === "stickers") {
   const packs = async () => (await (await web("/web/stickers", KEY)).json()).packs;
   const pack = async (id) => (await packs()).find((p) => p.id === id);
   const tgLog = async (kind) => (await log()).filter((e) => e.kind === `tg.${kind}`);
+  // Until Telegram has had one more `kind` call than `count`.
+  const oneMore = async (kind, count) => {
+    const start = Date.now();
+    while ((await tgLog(kind)).length === count) {
+      if (Date.now() - start > 20000) throw new Error(`no ${kind}`);
+      await sleep(200);
+    }
+  };
   const ask = async (text) => {
     const r = await web("/web/say", KEY, { text });
     assert.equal(r.status, 200);
@@ -1087,23 +1095,23 @@ if (phase === "stickers") {
     }
   });
 
-  await step("on Telegram a sticker follows the words, uploaded the first time and sent by its id after", async () => {
+  await step("on Telegram the sticker its reply marks goes right after that paragraph, uploaded the first time and sent by its id after", async () => {
     const before = (await sent()).length;
     await post("发表情");
-    const out = await waitForSends(before, 1);
-    assert.match(out[0], /我查到了：\{"sent":"test\/wave"\}/);
+    const out = await waitForSends(before, 2);
+    assert.deepEqual(out, ["嗨～", "再说一句。"], "the mark is taken out of the words");
     await sleep(500);
     const all = await log();
     const sticker = all.findLastIndex((e) => e.kind === "tg.sendSticker");
-    const words = all.findLastIndex((e) => e.kind === "tg.sendMessage");
-    assert.ok(sticker > words && words >= 0, "the sticker comes after the words");
+    const said = (text) => all.findLastIndex((e) => e.kind === "tg.sendMessage" && plain(e.body.text ?? "") === text);
+    assert.ok(said("嗨～") < sticker && sticker < said("再说一句。"), "the sticker comes after its paragraph");
     const first = all[sticker].body;
     assert.equal(first.multipart, true);
     assert.equal(first.sticker.file, "sticker.webm");
     assert.equal(first.sticker.type, "video/webm");
     assert.equal(first.emoji, "👋");
     await post("发表情");
-    await waitForSends(before + 1, 1);
+    await waitForSends(before + 2, 2);
     await sleep(500);
     const again = (await tgLog("sendSticker")).at(-1).body;
     assert.equal(again.multipart, undefined);
@@ -1114,42 +1122,17 @@ if (phase === "stickers") {
     const before = (await sent()).length;
     const stickers = (await tgLog("sendSticker")).length;
     await post("只发表情");
-    const start = Date.now();
-    while ((await tgLog("sendSticker")).length === stickers) {
-      if (Date.now() - start > 20000) throw new Error("no sticker");
-      await sleep(200);
-    }
+    await oneMore("sendSticker", stickers);
     await sleep(1500);
     assert.deepEqual((await sent()).slice(before), []);
   });
 
-  await step("words, a sticker, then the same words again or 'No response requested.': only the first words go out and stay", async () => {
-    for (const asked of ["说完再发表情", "说完再发表情，没话说"]) {
-      const before = (await sent()).length;
-      const stickers = (await tgLog("sendSticker")).length;
-      await post(asked);
-      const out = await waitForSends(before, 1);
-      assert.equal(out[0], "抱抱你，今天辛苦啦。");
-      const start = Date.now();
-      while ((await tgLog("sendSticker")).length === stickers) {
-        if (Date.now() - start > 20000) throw new Error("no sticker");
-        await sleep(200);
-      }
-      await sleep(1500);
-      assert.deepEqual((await sent()).slice(before), ["抱抱你，今天辛苦啦。"], asked);
-      const kept = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.role === "assistant").at(-1);
-      assert.equal(kept.text, "抱抱你，今天辛苦啦。", "kept once, without the line that said nothing");
-    }
-  });
-
-  await step("one sticker per reply", async () => {
+  await step("a mark of a sticker it does not have is only taken out; a reply that was nothing else says it said nothing", async () => {
     const before = (await sent()).length;
     const stickers = (await tgLog("sendSticker")).length;
-    await post("发两张");
-    const out = await waitForSends(before, 1);
-    assert.match(out[0], /one sticker per reply/);
-    await sleep(800);
-    assert.equal((await tgLog("sendSticker")).length, stickers + 1);
+    await post("发没有的表情");
+    assert.deepEqual(await waitForSends(before, 1), ["（我好像没说出话来，再发一次？）"]);
+    assert.equal((await tgLog("sendSticker")).length, stickers);
   });
 
   await step("the resident draws a sticker, keeps it in its own pack and sends it (as a GIF on Telegram)", async () => {
@@ -1157,8 +1140,9 @@ if (phase === "stickers") {
     await post("画一张");
     await waitForSends(before, 1);
     await sleep(800);
-    const animation = (await tgLog("sendAnimation")).at(-1)?.body;
-    assert.ok(animation, "sent as an animation");
+    const animations = await tgLog("sendAnimation");
+    const animation = animations.at(-1)?.body;
+    assert.equal(animations.length, 1, "sent once, as an animation: its mark in the words after it does not send another");
     assert.equal(animation.animation.file, "sticker.gif");
     assert.equal(animation.animation.head, "GIF89a");
     const mine = await pack("mine");
@@ -1168,26 +1152,51 @@ if (phase === "stickers") {
     assert.equal(Buffer.from(await picture.arrayBuffer()).subarray(0, 6).toString(), "GIF89a");
   });
 
+  await step("words, a sticker drawn, then the same words again or 'No response requested.': only the first words go out and stay", async () => {
+    for (const asked of ["说完再画", "说完再画，没话说"]) {
+      const before = (await sent()).length;
+      const drawn = (await tgLog("sendAnimation")).length;
+      await post(asked);
+      const out = await waitForSends(before, 1);
+      assert.equal(out[0], "抱抱你，今天辛苦啦。");
+      await oneMore("sendAnimation", drawn);
+      await sleep(1500);
+      assert.deepEqual((await sent()).slice(before), ["抱抱你，今天辛苦啦。"], asked);
+      const kept = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.role === "assistant").at(-1);
+      assert.equal(kept.text, "抱抱你，今天辛苦啦。", "kept once, without the line that said nothing");
+    }
+  });
+
+  await step("one sticker per reply: a second mark is only taken out", async () => {
+    const before = (await sent()).length;
+    const stickers = (await tgLog("sendSticker")).length;
+    await post("发两张");
+    assert.deepEqual(await waitForSends(before, 2), ["两张都给你。", "还有这张"]);
+    await sleep(800);
+    assert.equal((await tgLog("sendSticker")).length, stickers + 1);
+  });
+
   await step("the web page shows the stickers a reply sent, and a web turn sends nothing to Telegram", async () => {
-    const lines = (await (await web("/web/messages", KEY)).json()).data;
-    const drawn = lines.filter((line) => line.role === "assistant" && line.stickers).at(-1);
+    const lines = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.role === "assistant" && line.stickers);
     const mine = await pack("mine");
-    assert.deepEqual(drawn.stickers, [{ url: `/stickers/${mine.stickers[0].key}`, video: false }]);
+    assert.deepEqual(lines.at(-2).stickers, [{ url: `/stickers/${mine.stickers[0].key}`, video: false }], "the one it drew");
+    assert.deepEqual([lines.at(-1).text, lines.at(-1).stickers], ["两张都给你。\n\n还有这张", [{ url: `/stickers/${(await pack("test")).stickers[0].key}`, video: false }]], "one per reply, the first one marked");
     const tgBefore = (await log()).filter((e) => e.kind.startsWith("tg.send")).length;
     const line = await ask("发表情");
     assert.equal(line.via, "web");
+    assert.equal(line.text, "嗨～\n\n再说一句。", "without the mark");
     assert.deepEqual(line.stickers, [{ url: `/stickers/${(await pack("test")).stickers[0].key}`, video: false }]);
     await sleep(500);
     assert.equal((await log()).filter((e) => e.kind.startsWith("tg.send")).length, tgBefore);
   });
 
-  await step("the model is told every sticker of the packs that are on; a pack or the whole thing can be turned off", async () => {
+  await step("the system prompt lists every sticker of the packs that are on; a pack or the whole thing can be turned off", async () => {
     const tools = async () => (await ask("表情工具有哪些")).text;
-    // The list is held while the cache is warm: the one it drew joins it in the next window, so the tools stay the same.
-    assert.equal(await tools(), "make_sticker:; send_sticker:test/wave|test/love|testpack/1|testpack/2|testpack/3");
+    // The list is held while the cache is warm: the one it drew joins it in the next window, so the prompt stays the same.
+    assert.equal(await tools(), "make_sticker；清单：test/wave|test/love|testpack/1|testpack/2|testpack/3", "no send_sticker tool");
     await web("/web/stickers/pack", KEY, { id: "testpack", on: false });
     // A change on the settings page shows from the next message, as any setting does, and the drawn one comes with it.
-    assert.equal(await tools(), "make_sticker:; send_sticker:mine/heart|test/wave|test/love");
+    assert.equal(await tools(), "make_sticker；清单：mine/heart|test/wave|test/love");
     const off = await web("/web/config", KEY, { key: "STICKERS", text: "off" });
     assert.equal(off.status, 200);
     assert.equal(await tools(), "没有");
@@ -1220,18 +1229,16 @@ if (phase === "stickers") {
     const body = zip([{ name: "smile.webp", data: WEBP }]);
     const response = await fetch(`${WORKER}/web/stickers/import?name=still.zip`, { method: "POST", headers: { "x-web-key": KEY, "content-type": "application/zip" }, body });
     assert.equal(response.status, 200, await response.clone().text());
-    const before = (await sent()).length;
     const photos = (await tgLog("sendPhoto")).length;
     await post("发静图");
-    await waitForSends(before, 1);
-    await sleep(500);
+    await oneMore("sendPhoto", photos);
     assert.equal((await tgLog("sendSticker")).at(-1).body.sticker?.type, "image/webp", "tried as a sticker first");
     const photo = await tgLog("sendPhoto");
     assert.equal(photo.length, photos + 1);
     assert.equal(photo.at(-1).body.photo.type, "image/webp");
     const stickers = (await tgLog("sendSticker")).length;
     await post("发静图");
-    await waitForSends(before + 1, 1);
+    await oneMore("sendPhoto", photos + 1);
     await sleep(500);
     assert.equal((await tgLog("sendSticker")).length, stickers, "not tried as a sticker again");
     assert.match((await tgLog("sendPhoto")).at(-1).body.photo, /^up-sendPhoto-/);
@@ -2382,7 +2389,7 @@ if (phase === "wecom") {
     assert.ok((await ofKind("wecom.get")).some((e) => e.id === "pic-1"));
   });
 
-  await step("stickers are off on WeCom unless turned on: the model is told, nothing is uploaded", async () => {
+  await step("stickers are off on WeCom unless turned on: the mark is only taken out, nothing is uploaded", async () => {
     const body = zip([
       { name: "pack.json", data: JSON.stringify({ format: "resident-stickers/1", name: "Test", stickers: [{ id: "wave", file: "wave.gif", emoji: "👋", when: "Say hi.", telegram: "wave.webm" }] }) },
       { name: "wave.gif", data: GIF },
@@ -2393,13 +2400,12 @@ if (phase === "wecom") {
     const uploads = (await ofKind("wecom.upload")).length;
     const said = (await texts()).length;
     await push({ MsgType: "text", Content: "发表情" });
-    const out = await waitFor(texts, said, 1);
-    assert.match(out.join("\n"), /stickers do not show in this chat/);
+    assert.deepEqual(await waitFor(texts, said, 2), ["嗨～", "再说一句。"]);
     await sleep(1000);
     assert.equal((await ofKind("wecom.upload")).length, uploads, "nothing uploaded");
   });
 
-  await step("turned on, a sticker goes out after the words, as a still PNG uploaded to WeCom", async () => {
+  await step("turned on, a sticker goes out after its paragraph, as a still PNG uploaded to WeCom", async () => {
     await set({ WECOM_STICKERS: "on" });
     const converts = (await ofKind("wecom.convert")).length;
     const before = (await wecomSent()).length;
@@ -2418,7 +2424,7 @@ if (phase === "wecom") {
     assert.match((await colour.json()).error, /#EDEDED/);
     assert.equal((await ofKind("wecom.convert")).length, converts, "by the resident, not the relay");
     assert.equal(image.body.image.media_id.startsWith("wecom-media-"), true);
-    assert.equal(all.at(-1).body.msgtype, "image", "after the words");
+    assert.deepEqual(all.map((e) => e.body.msgtype === "text" ? e.body.text.content : e.body.msgtype), ["嗨～", "image", "再说一句。"], "right after its paragraph");
   });
 
   await step("with a voice set up, her voice message (AMR) is made MP3 by the relay, heard, and answered with a WeCom voice message (AMR)", async () => {

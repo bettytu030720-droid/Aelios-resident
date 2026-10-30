@@ -186,7 +186,7 @@ The **WeCom** line of `/status`, and the WeCom card under Chat channels on the s
 **What works**:
 
 - Text both ways; pictures you send; voice messages both ways with `--media`. Without `--media` its voice replies go out as text, and it may not be able to hear yours.
-- Stickers, as still pictures, once you turn on **Send stickers on WeCom** (「在企业微信上发表情包」; off by default). WeCom has no sticker message, only pictures, and it plays no animation and turns a see-through background black. So an animated GIF goes as a PNG of its fullest frame, what was see-through is filled with **Sticker background** (「表情包垫的底色」, `#EDEDED` by default, WeChat's light-mode chat grey, so the sticker looks set on the chat; pick dark mode's or type your own colour), and a small one is enlarged with its pixels kept sharp. PNG stickers are filled the same way, JPEG goes as it is, and Telegram's WebP and WebM stickers need `--media`. When off, it knows not to send stickers there, and still sends them on the web and Telegram.
+- Stickers, as still pictures, once you turn on **Send stickers on WeCom** (「在企业微信上发表情包」; off by default). WeCom has no sticker message, only pictures, and it plays no animation and turns a see-through background black. So an animated GIF goes as a PNG of its fullest frame, what was see-through is filled with **Sticker background** (「表情包垫的底色」, `#EDEDED` by default, WeChat's light-mode chat grey, so the sticker looks set on the chat; pick dark mode's or type your own colour), and a small one is enlarged with its pixels kept sharp. PNG stickers are filled the same way, JPEG goes as it is, and Telegram's WebP and WebM stickers need `--media`. When off, the stickers it sends are left out there, and still show on the web and Telegram.
 - `/status`, `/letter` and `/handoff`, as on Telegram.
 - Check-ins, heartbeats, alarms and cloud jobs report to the chat you last wrote from, so if that was WeCom, they come to WeCom.
 
@@ -393,8 +393,10 @@ The code is in `src/voice.ts`. Phone calls (live voice) are not built yet.
 
 Import them under **Stickers** (「表情包」) and it sends one now and then while chatting: at most one per reply, and none when you are upset or talking about something serious.
 
+- **How it sends one**: the list of its stickers is in the system prompt, and it writes `[sticker: pack/name]` in its reply. The mark is taken out of its words and the sticker goes right after the paragraph it was in, on Telegram, WeCom, the web and in group chats. A sticker costs no extra call to the model, as a tool would. A name it does not have is just taken out.
+
 - **Import**: paste a Telegram sticker pack link (`t.me/addstickers/…`), upload a zip, or paste a zip's address. Stickers from a Telegram pack come with only an emoji; fill in **When to use** (「什么时候用」) for the ones you like, so it knows when to send them.
-- **Drawing its own**: pixel art, small animations of up to 8 frames, outlined in white automatically, saved to its own pack, "mine". A new drawing joins its sticker list only from the next cache window (after a silence longer than the cache lifetime, or after a letter), so the tool description does not change and rewrite the whole cache; until then it can still send it by name.
+- **Drawing its own**: pixel art, small animations of up to 8 frames, outlined in white automatically, saved to its own pack, "mine". A new drawing joins its sticker list only from the next cache window (after a silence longer than the cache lifetime, or after a letter), so the system prompt does not change and rewrite the whole cache; until then it can still send it by name.
 - On the settings page you can turn the whole feature or each pack on and off, delete packs or single stickers, and edit **When to use**. Changes apply from the next message (which rewrites the cache once).
 - The name and **When to use** of every sticker in the enabled packs go to the model on every turn, so at most 200 stickers in 20 packs are sent; each pack shows roughly how many tokens it costs.
 

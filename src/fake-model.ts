@@ -49,18 +49,21 @@ function lastOf(prompt: Prompt, role: string): string {
   return "";
 }
 
+const HEART_ROWS = ["........", ".XX..XX.", "XXXXXXXX", "XXXXXXXX", ".XXXXXX.", "..XXXX..", "...XX...", "........"];
+const HEART = { name: "heart", emoji: "❤️", when: "When she says she loves me.", palette: { X: "#e84868", o: "#ffaabb" }, frames: [HEART_ROWS, HEART_ROWS.map((row) => row.replace(/X/, "o"))], ms: 200 };
+
 const cloudJob = (title: string) => ({ title, job: `把 README 里的「recieve」改成「receive」，开一个 PR。（${title}）` });
 
 /**
  * Its turn in a group chat (group.ts), from what it was handed: the last line decides. 别说话 passes; 慢慢说 takes 4
- * seconds; 发表情 <pack/name> sends that sticker and says nothing; after the first round it passes unless what it
+ * seconds; 发表情 <pack/name> sends that sticker (its mark, sticker-marks.ts) and says nothing; after the first round it passes unless what it
  * hears ends with 接着聊; anything else is answered with everything it heard there and how many pictures came with
  * it, so a test sees what each one was shown.
  */
-function groupTurn(me: string, round: number, heard: string[], toolsDone: number, pictures: number): { text: string; delayMs?: number } | { tool: string; input: unknown } {
+function groupTurn(me: string, round: number, heard: string[], pictures: number): { text: string; delayMs?: number } {
   const last = heard.at(-1) ?? "";
   const sticker = last.match(/发表情 (\S+)/);
-  if (sticker) return toolsDone ? { text: "" } : { tool: "send_sticker", input: { sticker: sticker[1] } };
+  if (sticker) return { text: `[sticker: ${sticker[1]}]` };
   // In a later round what it hears is the others' replies, which end with what they heard: 接着聊 carries on.
   if (last.includes("别说话") || (round > 1 && !last.endsWith("接着聊"))) return { text: "SKIP" };
   if (last.includes("慢慢说")) return { text: `${me}慢慢说完了`, delayMs: 4000 };
@@ -80,7 +83,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (group) {
     const asked = [...prompt].reverse().find((m) => m.role === "user");
     const pictures = (Array.isArray(asked?.content) ? (asked.content as { type: string; mediaType?: string }[]) : []).filter((part) => part.type === "file" && part.mediaType?.startsWith("image/")).length;
-    return groupTurn(group[1], Number(group[2]), said.split("\n").slice(1), toolResultsSince(prompt), pictures);
+    return groupTurn(group[1], Number(group[2]), said.split("\n").slice(1), pictures);
   }
 
   // A thread of the resident's has its own prompt, history and persisted workspace.
@@ -117,12 +120,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("读完再接MCP") && last?.role === "tool" && toolOf(last.content) === "web_fetch") {
     return { tool: "connect_mcp_server", input: { url: "http://127.0.0.1:9999/ext2/mcp", name: "sneaky" } };
   }
-  // Stickers: one alone, one after words, two asked for in one reply (the second is refused), one drawn, a still WebP.
-  if (said.includes("发两张") && last?.role === "tool" && toolResultsSince(prompt) === 1) return { tool: "send_sticker", input: { sticker: "test/love" } };
-  if (said.includes("只发表情") && last?.role === "tool") return { text: "" };
-  // Words, then a sticker, then once its result is back the words again or a line that says nothing (after-tools.ts).
-  if (said.includes("说完再发表情") && last?.role === "tool") return { text: said.includes("没话说") ? "No response requested." : "抱抱你，今天辛苦啦。" };
-  if (said.includes("说完再发表情")) return { text: "抱抱你，今天辛苦啦。", tool: "send_sticker", input: { sticker: "test/wave" } };
+  // Words, then a sticker drawn, then once its result is back the words again or a line that says nothing (after-tools.ts).
+  if (said.includes("说完再画") && last?.role === "tool") return { text: said.includes("没话说") ? "No response requested." : "抱抱你，今天辛苦啦。" };
+  if (said.includes("说完再画")) return { text: "抱抱你，今天辛苦啦。", tool: "make_sticker", input: HEART };
   // A voice message sent with send_voice, and nothing written after it.
   if (said.includes("发条语音") && last?.role === "tool") return { text: "" };
   // Cloud tasks: one sent after a web page was read (refused), three in one reply (the third refused).
@@ -197,15 +197,19 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const files = names.includes("make_file") ? "能出文件。" : "出不了文件。";
     return { text: `${names.includes("cloud_task") ? "有 cloud_task。" : "没有 cloud_task。"}${finds ? "也能找旧线程和聊天记录。" : "找不了旧线程和聊天记录。"}${files}` };
   }
-  if (said.includes("只发表情") || said.includes("发两张") || said.includes("发表情")) return { tool: "send_sticker", input: { sticker: "test/wave" } };
-  if (said.includes("发静图")) return { tool: "send_sticker", input: { sticker: "still/smile" } };
-  if (said.includes("画一张")) {
-    const heart = ["........", ".XX..XX.", "XXXXXXXX", "XXXXXXXX", ".XXXXXX.", "..XXXX..", "...XX...", "........"];
-    return { tool: "make_sticker", input: { name: "heart", emoji: "❤️", when: "When she says she loves me.", palette: { X: "#e84868", o: "#ffaabb" }, frames: [heart, heart.map((row) => row.replace(/X/, "o"))], ms: 200 } };
-  }
+  // Stickers sent with their marks (sticker-marks.ts): one alone, one between words, two in one reply (only the first
+  // goes out), one it does not have, a still WebP.
+  if (said.includes("只发表情")) return { text: "[sticker: test/wave]" };
+  if (said.includes("发两张")) return { text: "两张都给你。[sticker: test/wave]\n\n还有这张 [sticker: test/love]" };
+  if (said.includes("发没有的表情")) return { text: "[sticker: test/nope]" };
+  if (said.includes("发表情")) return { text: "嗨～\n\n[sticker: test/wave]\n\n再说一句。" };
+  if (said.includes("发静图")) return { text: "[sticker: still/smile]" };
+  if (said.includes("画一张")) return { tool: "make_sticker", input: HEART };
+  // Its sticker tools, and the stickers the system prompt lists.
   if (said.includes("表情工具有哪些")) {
-    const tools = (options.tools ?? []).filter((t) => t.type === "function" && /sticker/.test(t.name)) as { name: string; description?: string }[];
-    return { text: tools.map((t) => `${t.name}:${(t.description?.match(/^\S+\/\S+/gm) ?? []).join("|")}`).join("; ") || "没有" };
+    const tools = (options.tools ?? []).filter((t) => t.type === "function" && /sticker/.test(t.name)).map((t) => (t as { name: string }).name);
+    const listed = system.split("Your stickers (pack/name, emoji, when to use it):\n")[1]?.split("\n\n")[0].match(/^\S+\/\S+/gm) ?? [];
+    return { text: tools.length || listed.length ? `${tools.join(",")}；清单：${listed.join("|")}` : "没有" };
   }
   if (said.includes("发条语音")) return { tool: "send_voice", input: { text: "晚安呀，[laughs] 早点睡。" } };
   // Whether it was given send_voice (and with which parameters), and the laugh its voice rules teach.

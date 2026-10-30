@@ -14,6 +14,7 @@
 
 import type { MessengerAttachment, MessengerContext, MessengerEvent, MessengerMessage } from "@cloudflare/think/messengers";
 import type { Download } from "./pictures";
+import { withoutStickerMarks } from "./sticker-marks";
 
 /** The Bot API downloads files up to 20 MB. */
 export const HEAR_MAX_BYTES = 20 * 1024 * 1024;
@@ -414,7 +415,7 @@ export function wavSeconds(bytes: Uint8Array): number {
 
 /** The reply as it is said: no links, markdown or emoji. The voice model's own marks stay. */
 export function speakable(text: string): string {
-  return text
+  return withoutStickerMarks(text)
     .replace(/https?:\/\/\S+/g, "")
     .replace(/^\s*(?:#{1,6}|>)\s+/gm, "")
     .replace(/[*`~]+/g, "")

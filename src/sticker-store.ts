@@ -84,9 +84,9 @@ export class StickerStore {
   }
 
   /**
-   * listed() as the model sees it in send_sticker, held for one prompt cache window (`opened`, cache-window.ts):
-   * the list is part of the tools, and a sticker the resident draws would otherwise change them and make the next
-   * turn write the whole conversation into the cache again. A drawn sticker joins the list in the next window. A
+   * listed() as the model sees it in the system prompt, held for one prompt cache window (`opened`, cache-window.ts):
+   * a sticker the resident draws would otherwise change the prompt and make the next turn write the whole
+   * conversation into the cache again. A drawn sticker joins the list in the next window. A
    * change on the settings page shows from the next message (dropMenu), as any setting does.
    */
   menu(opened: number): string[] {
