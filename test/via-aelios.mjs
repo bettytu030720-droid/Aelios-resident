@@ -9,18 +9,22 @@ mkdirSync("node_modules/.cache", { recursive: true });
 const dir = mkdtempSync(join("node_modules/.cache", "resident-via-aelios-"));
 const out = join(dir, "via-aelios.mjs");
 await build({ entryPoints: ["src/via-aelios.ts", "src/thinking.ts"], bundle: true, platform: "node", format: "esm", outdir: dir, outExtension: { ".js": ".mjs" }, logLevel: "error" });
-const { aeliosBase, aeliosName, isAuxiliary, listModels, modelsOf, onMessages } = await import(pathToFileURL(join(process.cwd(), out)).href);
+const { aeliosBase, aeliosModel, aeliosName, isAuxiliary, listModels, modelsOf, onMessages } = await import(pathToFileURL(join(process.cwd(), out)).href);
 const { claudeOf, effortOf, withThinking } = await import(pathToFileURL(join(process.cwd(), dir, "thinking.mjs")).href);
 rmSync(dir, { recursive: true, force: true });
 
+// One at a time: the async ones swap globalThis.fetch.
+let queue = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`PASS ${name}`);
-  } catch (error) {
-    console.log(`FAIL ${name}: ${error.message}`);
-    process.exitCode = 1;
-  }
+  queue = queue.then(async () => {
+    try {
+      await fn();
+      console.log(`PASS ${name}`);
+    } catch (error) {
+      console.log(`FAIL ${name}: ${error.message}`);
+      process.exitCode = 1;
+    }
+  });
 }
 
 const note = "(Not from them: a scheduled check-in; it is now 10-15 09:00.) If you would like to reach out…";
@@ -139,5 +143,24 @@ test("listModels asks Aelios' model endpoint under the identity with the key, an
     await assert.rejects(listModels(named), /Aelios answered 401/);
     answer = () => new Response("<html>", { status: 200 });
     await assert.rejects(listModels(named));
+  } finally { globalThis.fetch = real; }
+});
+
+test("a reply asked for again goes to Aelios with a request id of its own, so it is recorded as a new exchange", async () => {
+  const real = globalThis.fetch;
+  const ids = [];
+  globalThis.fetch = async (_url, init) => {
+    ids.push(new Headers(init.headers).get("x-aelios-request-id"));
+    const message = { role: "assistant", content: "好" };
+    return Response.json({ id: "c", object: "chat.completion", created: 0, model: "m", choices: [{ index: 0, message, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
+  };
+  try {
+    let redo = null;
+    const model = aeliosModel({ url: "https://a.example", key: "k", namespace: "default", identity: "" }, "openai/gpt-5", { redo: () => redo });
+    const call = () => model.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: hers }] }] });
+    await call();
+    redo = "again-1";
+    await call();
+    assert.deepEqual(ids, [null, "again-1"]);
   } finally { globalThis.fetch = real; }
 });

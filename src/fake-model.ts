@@ -15,6 +15,8 @@ let checkins = 0;
 let previous: { system: string; tools: string; messages: string[] } | null = null;
 // Whether 卡住测试 has had its one quiet call.
 let stalledOnce = false;
+// How many times 重来测试 has been answered.
+let redos = 0;
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -241,6 +243,9 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     const pictures = parts.filter((part) => part.type === "file" && part.mediaType?.startsWith("image/")).length;
     return { text: `看到 ${pictures} 张图${user.includes("Attachments:") ? "，还有一行附件说明" : ""}。` };
   }
+  // Taking back a reply (take-back.ts): each answer to 重来测试 is new, and 你上一句说了什么 shows its last words it sees.
+  if (said.includes("重来测试")) return { text: `第 ${++redos} 回` };
+  if (said.includes("你上一句说了什么")) return { text: `上一句：${lastOf(prompt, "assistant") || "没有"}` };
   if (said.includes("卡住测试")) return { text: "刚才卡住了，现在好了。" };
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // Fill real-sized chat windows in letter tests without echoing thousands of characters back to Telegram.

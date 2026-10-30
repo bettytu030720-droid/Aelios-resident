@@ -24,7 +24,7 @@
 //            through the fake relay, a relay without --media, a wrong relay key, out-of-turn messages
 //   web      the web page's own ways to talk: pictures, a quote, a voice message recorded there and replies said back,
 //            a sticker, the command buttons, a model change in the chat, its name and avatar, notifications, moving an
-//            alarm, answering a thread that needs her, searching the conversation
+//            alarm, answering a thread that needs her, searching the conversation, taking back its latest reply
 //   stall    a model that goes quiet: the turn is cut and run again, and the messages after it are answered
 //            (start wrangler with --var CHAT_STALL_SECONDS:2)
 //   claude-code  claude-code/… models on her own subscription, through the fake Claude box: the token, the trial
@@ -1730,6 +1730,15 @@ if (phase === "tasks" || phase === "tasks-quiet") {
         shown = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.files?.length);
       }
       assert.deepEqual(shown.map((line) => line.files.map((f) => f.name)), [["计划.md"], ["计划.md"]]);
+
+      // Taken back from the web page, the reply's file goes with it; the earlier one stays.
+      const [kept, failed] = shown;
+      const taken = await web("/web/take-back", KEY, { id: failed.id });
+      assert.deepEqual([taken.status, await taken.json()], [200, { status: "removed" }]);
+      assert.equal((await web(`/web/file?key=${failed.files[0].key}`, KEY)).status, 404);
+      assert.equal((await web(`/web/file?key=${kept.files[0].key}`, KEY)).status, 200);
+      const left = (await (await web("/web/messages", KEY)).json()).data.filter((line) => line.files?.length);
+      assert.deepEqual(left.map((line) => line.id), [kept.id]);
     });
 
     await step("GitHub Actions with one token: the resident sets up a private repository, starts runs there, and lends a run its GitHub token and model", async () => {
@@ -3137,6 +3146,33 @@ if (phase === "web") {
     assert.deepEqual(second.results.map((hit) => hit.role), ["assistant", "user"]);
     assert.equal(second.results[1].after, " 1", "her first one last");
     assert.equal(new Set([...first.results, ...second.results].map((hit) => hit.id)).size, 32);
+  });
+
+  await step("its latest reply can be taken back: deleted, or answered again; not an earlier one, not while it replies", async () => {
+    const take = (id, again) => json("/web/take-back", { id, ...(again ? { again: true } : {}) });
+    await say({ text: "先说一句" });
+    await say({ text: "重来测试" });
+    let all = await lines();
+    const first = all.at(-1);
+    assert.equal(first.text, "第 1 回");
+    assert.equal(all.at(-3).role, "assistant");
+    assert.deepEqual(await take(all.at(-3).id), { status: 400, data: { error: "只能收回最后一条" } }, "not an earlier reply");
+    assert.deepEqual(await take(all.at(-2).id), { status: 400, data: { error: "这条已经不在了" } }, "not her message");
+    assert.deepEqual(await take(first.id, true), { status: 200, data: { status: "completed" } });
+    all = await lines();
+    assert.deepEqual(all.slice(-2).map((line) => [line.role, line.text]), [["user", "重来测试"], ["assistant", "第 2 回"]], "answered again");
+    assert.ok(!all.some((line) => line.id === first.id), "the old reply is gone");
+    assert.deepEqual(await take(all.at(-1).id), { status: 200, data: { status: "removed" } });
+    all = await lines();
+    assert.equal(all.at(-1).text, "重来测试", "deleted: her message is the last one again");
+    await say({ text: "你上一句说了什么" });
+    all = await lines();
+    assert.match(all.at(-1).text, /^上一句：收到：.*先说一句/s, "the model no longer sees what was taken back");
+    const slow = say({ text: "慢慢说" });
+    await sleep(800);
+    assert.deepEqual(await take(all.at(-1).id), { status: 400, data: { error: "它还在说，等它说完" } });
+    await slow;
+    assert.equal((await web("/web/take-back", "wrong", { id: "x" })).status, 401);
   });
 }
 
