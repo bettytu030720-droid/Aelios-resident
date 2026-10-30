@@ -542,6 +542,17 @@ input.secret { -webkit-text-security: disc; font-family: var(--mono); }
 @keyframes found { 0%, 60% { outline-color: var(--accent); } 100% { outline-color: transparent; } }
 .row.found { outline: 2px solid transparent; outline-offset: 4px; border-radius: 20px; animation: found 1.8s ease-out; }
 
+/* ---- the group chat (group.js) ---- */
+.avatar.mini { width: 24px; height: 24px; }
+.avatar.mini .initial { font-family: var(--serif); font-size: 12px; color: var(--text-1); }
+.group-line .who-g { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; font-size: 12px; color: var(--text-3); }
+.group-call { display: flex; gap: 8px; padding: 8px 14px 0; overflow-x: auto; }
+.group-call .avatar { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); cursor: pointer; }
+.group-call .avatar .initial { font-size: 14px; }
+.check { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.check input { width: 18px; height: 18px; accent-color: var(--accent); }
+.grow-label { flex: 1; font-size: 14px; color: var(--text-2); }
+
 /* Usage. */
 .totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .total { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--panel); }

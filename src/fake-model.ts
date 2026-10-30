@@ -51,6 +51,17 @@ function lastOf(prompt: Prompt, role: string): string {
 
 const cloudJob = (title: string) => ({ title, job: `把 README 里的「recieve」改成「receive」，开一个 PR。（${title}）` });
 
+/**
+ * Its turn in a group chat (group.ts), from what it was handed: the last line decides. 别说话 passes; 慢慢说 takes 4
+ * seconds; anything else is answered with everything it heard there, so a test sees what each one was shown.
+ */
+function groupTurn(me: string, heard: string[]): { text: string; delayMs?: number } {
+  const last = heard.at(-1) ?? "";
+  if (last.includes("别说话")) return { text: "SKIP" };
+  if (last.includes("慢慢说")) return { text: `${me}慢慢说完了`, delayMs: 4000 };
+  return { text: `${me}听到了：${heard.join(" / ")}` };
+}
+
 /** What the fake model says, or a tool it calls. */
 function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: number } | { tool: string; input: unknown; text?: string } {
   const prompt = options.prompt;
@@ -58,6 +69,10 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const user = lastOf(prompt, "user");
   const last = prompt[prompt.length - 1];
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
+
+  // A turn in a group chat (group.ts): who it is there, and what it was handed, after the first line.
+  const group = said.match(/^\[group chat "[^"]*" with them.*?, where you are (.+?)\. What was said/);
+  if (group) return groupTurn(group[1], said.split("\n").slice(1));
 
   // A thread of the resident's has its own prompt, history and persisted workspace.
   if (system.includes("one of the resident's threads") && user.startsWith("task: t_")) {
@@ -311,12 +326,13 @@ export function fakeModel(): LanguageModelV4 {
     modelId: "fake",
     supportedUrls: {},
     async doGenerate(options) {
-      // The model picker's trial call, a thread of the resident's, or the hands on GitHub Actions (none of which
+      // The model picker's trial call, a thread of the resident's or the hands on GitHub Actions (none of which
       // touches the chat's cache state).
       const system = options.prompt.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
       const prompt = textOf(options.prompt.map((m) => textOf(m.content)).join("\n"));
       if (system.includes("one of the resident's threads") || system.includes("You are the resident's background hands")) {
         const choice = decide(options);
+        if ("delayMs" in choice && choice.delayMs) await new Promise((resolve) => setTimeout(resolve, choice.delayMs));
         if ("tool" in choice) {
           return {
             content: [
