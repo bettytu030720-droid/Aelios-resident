@@ -139,7 +139,8 @@ function groupPage() {
       for (var n = 0; n < Math.min(line.pictures || 0, 4); n++) list.push(n);
       return list;
     },
-    // A picture of hers in a group, read with the web key and shown from memory, like one in the chat.
+    // A picture of hers in a group, read with the web key and shown from memory, like one in the chat. Asked once at a
+    // time: once it is in, picUrls holds it, and when switching residents empties that it is asked again.
     groupPicUrl(line, n) {
       var key = 'g:' + this.group.id + ':' + line.seq + ':' + n;
       var url = this.picUrls[key];
@@ -154,7 +155,7 @@ function groupPage() {
         var next = Object.assign({}, self.picUrls);
         next[key] = '';
         self.picUrls = next;
-      });
+      }).finally(function () { delete groupPicLoading[key]; });
       return '';
     },
     // As in the chat: Enter sends with a keyboard; on a phone it starts a new line and the button sends.
