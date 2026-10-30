@@ -401,8 +401,15 @@ await test("threads: follow-ups share a root, their own words do not count or st
   assert.equal(legacy.root, "t_aaaaaaaaaa");
   assert.equal(legacy.runs, "external");
   assert.equal(legacy.direct, false);
+  assert.equal(legacy.role, "", "tasks from before had no role");
   assert.equal(legacy.unasked, 0, "every task from before was asked for");
   new t.TaskStore(sql); // a second start leaves it as it is
+  const reviewed = migrated.add({ title: "审一下", job: "x", role: "reviewer" }).task;
+  assert.equal(migrated.get(reviewed.id).role, "reviewer");
+  const written = migrated.add({ title: "审一下", job: "再看看", follows: reviewed.id, direct: true }).task;
+  assert.equal(written.role, "reviewer", "what they write in the thread keeps its role, and so its model");
+  assert.equal(migrated.add({ title: "审一下", job: "y", follows: written.id }).task.role, "reviewer", "and so do follow-ups after it");
+  assert.equal(migrated.add({ title: "审一下", job: "z", follows: written.id, role: "" }).task.role, "", "unless it is set to none");
   assert.ok(migrated.add({ title: "新的", job: "x" }).task);
 });
 

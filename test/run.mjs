@@ -15,6 +15,7 @@
 //   tasks    后台帮忙: a job sent through a scheduled task's trigger, its reports, the cards, the limits; threads here,
 //            what the web page shows of them, their files, and writing to one directly; the resident finding its
 //            threads, their files and the chat again
+//   tasks-roles  roles for threads: their templates and models, kept by what follows in the thread
 //   tasks-quiet  a task that never reports (start wrangler with --var CLOUD_TASK_QUIET_MINUTES:0.05)
 //   sites    keys for sites web_fetch reads, set on the settings page
 //   heartbeat  going quiet while the chat is short (start wrangler with --var LETTER_IDLE_MINUTES:0.05
@@ -1413,7 +1414,7 @@ if (phase === "voice") {
   await set({ VOICE_PROVIDER: "", VOICE_API_KEY: "", VOICE_MODEL: "", VOICE_ID: "", VOICE_REPLY: "", VOICE_BASE_URL: "" });
 }
 
-if (phase === "tasks" || phase === "tasks-quiet") {
+if (phase === "tasks" || phase === "tasks-quiet" || phase === "tasks-roles") {
   await fetch(`${MOCK}/__reset`);
   const KEY = "test-web-key";
   const URL_OK = "https://api.anthropic.com/v1/claude_code/routines/trig_testtask01/fire";
@@ -1879,6 +1880,58 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
       assert.equal((await fires()).length, 10, "8 sent to the Claude trigger (1 ran locally, 1 on GitHub Actions), the wrong token and the busy trigger tried");
     });
+  }
+
+  // Roles on a worker of their own: the tasks stage uses all ten of the day.
+  if (phase === "tasks-roles") {
+    await set({ CLOUD_TASKS: "on" });
+    await step("roles: three come with it; one she adds on the settings page, with its own model, does a thread's job with its template first", async () => {
+      assert.deepEqual((await tasks()).roles.map((role) => [role.name, role.model]), [["coder", ""], ["reviewer", ""], ["researcher", ""]]);
+      const bad = await web("/web/tasks/roles", KEY, { name: "测试", template: "x" });
+      assert.equal(bad.status, 400);
+      assert.match((await bad.json()).error, /小写英文字母开头/);
+      assert.equal((await fetch(`${WORKER}/web/tasks/roles`, { method: "POST", body: "{}" })).status, 401);
+      // The threads' own model is one that cannot run; the role's own (the fake one) does the work.
+      await set({ CLOUD_TASK_MODEL: "@cf/no/such-model" });
+      const saved = await web("/web/tasks/roles", KEY, { name: "tester", template: "只跑测试，写出哪些没过。", model: "fake" });
+      assert.equal(saved.status, 200);
+      assert.deepEqual((await saved.json()).roles.map((role) => role.name), ["coder", "reviewer", "researcher", "tester"]);
+      assert.match(await ask("按角色派活 nobody"), /there is no role nobody\. Their roles: coder, reviewer, researcher, tester\./);
+      const before = (await sent()).length;
+      await post("按角色派活 tester");
+      const [out, told] = await waitForSends(before, 2, 30000);
+      const id = out.match(/\bt_[0-9a-f]{10}\b/)?.[0];
+      assert.ok(id, out);
+      assert.ok(told.startsWith(`云端回来了：(Not from them: your cloud task ${id} "按角色干" reported back: it is done.`), told);
+      assert.equal((await tasks()).tasks.find((t) => t.id === id)?.status, "done");
+      const thread = await (await web(`/web/thread?id=${id}`, KEY)).json();
+      assert.equal(thread.lines[0].text, "只跑测试，写出哪些没过。\n\n看一下 README。");
+
+      // What she writes in that thread, and a follow-up after it with no role named, still use the role's model.
+      const until = async (done) => {
+        const end = Date.now() + 30000;
+        let seen;
+        while (Date.now() < end) {
+          seen = await (await web(`/web/thread?id=${id}`, KEY)).json();
+          if (done(seen)) return seen;
+          await sleep(300);
+        }
+        assert.fail(JSON.stringify(seen));
+      };
+      assert.equal((await web("/web/thread/say", KEY, { id, text: "再看看" })).status, 200);
+      const written = await until((seen) => seen.tasks.length === 2 && seen.status !== "sent" && seen.status !== "working");
+      assert.equal(written.status, "done", "the role's model did it, not the threads' one that cannot run");
+      const later = (await sent()).length;
+      await post(`角色线程接着做 ${id}`);
+      const [, back] = await waitForSends(later, 2, 30000);
+      assert.match(back, /reported back: it is done/);
+      const after = await until((seen) => seen.tasks.length === 3 && seen.status === "done");
+      assert.equal(after.lines.filter((line) => line.role === "user").at(-1).text, "只跑测试，写出哪些没过。\n\n再看一遍。", "the role's template too");
+      await set({ CLOUD_TASK_MODEL: "" });
+      const removed = await (await web("/web/tasks/roles/remove", KEY, { name: "tester" })).json();
+      assert.deepEqual(removed.roles.map((role) => role.name), ["coder", "reviewer", "researcher"]);
+    });
+
   }
 
   if (phase === "tasks-quiet") {
