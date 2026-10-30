@@ -16,11 +16,13 @@ function said(message: Message): string {
 }
 
 const folded = (message: Message) => message.id.startsWith("compaction_");
+// What a group chat handed it (Resident.groupHear) is answered in the group: asked again here, the answer would not get there.
+const fromGroup = (message: Message) => message.id.startsWith("group_");
 
 /**
  * What goes with the reply `id` on the conversation's current path: the whole reply it is part of (its messages
  * with nothing of hers between), and the passed check-ins after it. `again`: the message before them is one of hers, so it can
- * be answered again (a check-in or a thread's report cannot).
+ * be answered again (a check-in, a thread's report or what a group chat handed it cannot).
  */
 export function takeBack(path: readonly Message[], id: string): { ids: string[]; again: boolean } | { error: string } {
   const at = path.findIndex((message) => message.id === id);
@@ -37,6 +39,6 @@ export function takeBack(path: readonly Message[], id: string): { ids: string[];
   const before = path[start - 1];
   return {
     ids: path.slice(start).map((message) => message.id),
-    again: Boolean(before && before.role === "user" && !folded(before) && !isNote(said(before)))
+    again: Boolean(before && before.role === "user" && !folded(before) && !fromGroup(before) && !isNote(said(before)))
   };
 }
