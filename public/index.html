@@ -33,6 +33,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 <!-- The page: app.css, markdown.js (x-markdown) and app.js; Alpine.js (MIT) lives in vendor/, so the page needs no CDN. -->
 <link rel="stylesheet" href="/app.css">
 <script src="/markdown.js"></script>
+<script src="/group.js"></script>
 <script src="/app.js"></script>
 <script defer src="/vendor/alpine-3.14.9.min.js"></script>
 </head>
@@ -44,7 +45,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   <div class="rail-scrim" x-show="residents.open" x-transition.opacity @click="residents.open = false" @keydown.escape.window="residents.open = false"></div>
   <nav class="rail" x-show="authed && !miniApp && residents.list.length" :class="residents.open && 'open'" aria-label="住户们">
     <template x-for="r in residents.list" :key="r.id">
-      <button class="rail-item" type="button" :class="r.id === resident && 'on'" @click="switchResident(r.id)" :title="r.name" :aria-current="r.id === resident ? 'page' : null">
+      <button class="rail-item" type="button" :class="r.id === resident && view !== 'group' && 'on'" @click="switchResident(r.id)" :title="r.name" :aria-current="r.id === resident ? 'page' : null">
         <span class="avatar">
           <template x-if="r.avatar"><img :src="r.avatar" alt=""></template>
           <template x-if="!r.avatar"><span class="initial" x-text="initialOf(r.name)"></span></template>
@@ -53,6 +54,16 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <span class="label" x-text="r.name"></span>
       </button>
     </template>
+    <template x-for="g in groups" :key="g.id">
+      <button class="rail-item" type="button" :class="view === 'group' && group.id === g.id && 'on'" @click="openGroup(g.id)" :title="g.name">
+        <span class="avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15.5V7a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 16 7v4.5a2.5 2.5 0 0 1-2.5 2.5H8z"/><path d="M19 9.5a2 2 0 0 1 1 1.7v8.3l-3-2.5h-5a2 2 0 0 1-1.7-1"/></svg></span>
+        <span class="label" x-text="g.name"></span>
+      </button>
+    </template>
+    <button class="rail-item add" type="button" x-show="groupOn() && groups.length < 20" @click="newGroup()" title="新群聊">
+      <span class="avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15.5V7a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 16 7v4.5a2.5 2.5 0 0 1-2.5 2.5H8z"/><path d="M10 7v4.5M7.75 9.25h4.5"/><path d="M19 9.5a2 2 0 0 1 1 1.7v8.3l-3-2.5h-5a2 2 0 0 1-1.7-1"/></svg></span>
+      <span class="label">新群聊</span>
+    </button>
     <button class="rail-item add" type="button" x-show="residents.list.length - 1 < residents.max" @click="openAddResident()" title="新住户">
       <span class="avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></span>
       <span class="label">新住户</span>
@@ -532,6 +543,58 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     </template>
     <p class="hint" x-show="fileView.kind === 'other'">这个文件不能直接看，点右上角下载。</p>
   </section>
+  <!-- ===== a group chat (group.js, src/group.ts) ===== -->
+  <header class="top plain" x-show="authed && view === 'group'">
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <div class="who"><span class="name" x-text="group.name || '群聊'"></span><span class="status" x-text="groupStatus()"></span></div>
+    <button class="icon-btn" type="button" x-show="group.running || group.speaking" @click="stopGroup()" aria-label="让大家先停一下" title="停一下">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>
+    </button>
+    <button class="icon-btn" type="button" @click="openGroupSettings()" aria-label="群聊设置" title="群聊设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+    </button>
+  </header>
+  <main class="chat" x-show="authed && view === 'group'">
+    <div class="stream" x-ref="groupStream">
+      <div class="grow"></div>
+      <button class="btn small text" type="button" x-show="group.more" @click="loadGroup(true)" style="align-self: center">更早的</button>
+      <div class="empty" x-show="group.loaded && !group.lines.length">说句话，大家按顺序回；@ 谁只叫谁。群里的话也会进各自的私聊。</div>
+      <template x-for="line in group.lines" :key="line.seq">
+        <div class="slot">
+          <template x-if="line.kind === 'note'"><div class="divider" x-text="line.text"></div></template>
+          <template x-if="line.kind === 'say' && !line.author">
+            <div class="row me"><div class="bubble first last only"><span x-text="line.text"></span><span class="meta" x-text="fmt(line.at)"></span></div></div>
+          </template>
+          <template x-if="line.kind === 'say' && line.author">
+            <div class="row ai group-line">
+              <span class="who-g"><span class="avatar mini"><template x-if="groupMember(line.author).avatar"><img :src="groupMember(line.author).avatar" alt=""></template><template x-if="!groupMember(line.author).avatar"><span class="initial" x-text="initialOf(groupMember(line.author).name)"></span></template></span><span x-text="groupMember(line.author).name"></span></span>
+              <div class="bubble first last only"><span x-text="line.text"></span><span class="meta" x-text="fmt(line.at)"></span></div>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="group.speaking">
+        <div class="row ai group-line"><span class="who-g" x-text="groupMember(group.speaking).name"></span><div class="bubble first typing" role="img" aria-label="正在想"><span></span><span></span><span></span></div></div>
+      </template>
+    </div>
+  </main>
+  <footer class="compose" x-show="authed && view === 'group'">
+    <div class="group-call" aria-label="点头像叫它">
+      <template x-for="m in groupMembers()" :key="m.id">
+        <button type="button" class="avatar mini" @click="callInGroup(m.id)" :title="'@' + m.name" :aria-label="'@' + m.name">
+          <template x-if="m.avatar"><img :src="m.avatar" alt=""></template>
+          <template x-if="!m.avatar"><span class="initial" x-text="initialOf(m.name)"></span></template>
+        </button>
+      </template>
+    </div>
+    <p class="error" x-show="group.error" x-text="group.error" style="margin: 6px 16px 0"></p>
+    <form class="bar" @submit.prevent="sayInGroup()">
+      <div class="field"><textarea x-ref="groupInput" rows="1" x-model="group.draft" @keydown="groupKeydown($event)" placeholder="跟大家说…" aria-label="群聊消息" maxlength="4000"></textarea></div>
+      <button class="round go" type="submit" :disabled="group.busy || !group.draft.trim()" aria-label="发送">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/></svg>
+      </button>
+    </form>
+  </footer>
 
   <!-- ===== threads ===== -->
   <header class="top plain" x-show="authed && (view === 'threads' || view === 'thread')">
@@ -1114,6 +1177,32 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <div class="inline"><span class="spacer"></span><button class="btn text" type="button" @click="residents.add.open = false">算了</button><button class="btn primary" type="submit" :disabled="residents.add.busy">建好</button></div>
       </form>
     </section>
+  </div>
+
+  <div class="scrim" x-show="groupEdit" x-transition.opacity @click.self="groupEdit = null" @keydown.escape.window="groupEdit = null">
+    <template x-if="groupEdit">
+      <section class="sheet" role="dialog" :aria-label="groupEdit.id ? '群聊设置' : '新群聊'">
+        <span class="grab" aria-hidden="true"></span>
+        <div class="sheet-head"><h2 x-text="groupEdit.id ? '群聊设置' : '新群聊'"></h2></div>
+        <form class="sheet-body" @submit.prevent="saveGroupEdit()">
+          <input type="text" x-model="groupEdit.name" maxlength="30" placeholder="群名（不填就用大家的名字）" aria-label="群名">
+          <p class="hint">群里有谁</p>
+          <template x-for="r in residents.list" :key="r.id">
+            <label class="check"><input type="checkbox" x-model="groupEdit.on[r.id]"><span x-text="r.name"></span></label>
+          </template>
+          <div class="inline"><span class="grow-label">没 @ 人时</span><select x-model="groupEdit.reply" aria-label="没 @ 人时谁回"><option value="all">大家都回</option><option value="one">一个人回，轮着来</option><option value="none">都不回</option></select></div>
+          <div class="inline"><span class="grow-label">谁先说</span><select x-model="groupEdit.order" aria-label="谁先说"><option value="list">按侧栏的顺序</option><option value="random">每次打乱</option></select></div>
+          <p class="hint">@ 谁只叫谁。轮到谁，群里它没听过的话就进它自己的私聊，在那里回，也记进 Aelios。</p>
+          <p class="error" x-show="groupEdit.error" x-text="groupEdit.error"></p>
+          <div class="inline">
+            <button class="btn text danger" type="button" x-show="groupEdit.id" :disabled="groupEdit.busy" @click="removeGroup()">删掉这个群</button>
+            <span class="spacer"></span>
+            <button class="btn text" type="button" @click="groupEdit = null">算了</button>
+            <button class="btn primary" type="submit" :disabled="groupEdit.busy" x-text="groupEdit.id ? '好' : '建群'"></button>
+          </div>
+        </form>
+      </section>
+    </template>
   </div>
 
   <div class="scrim" x-show="alarmEdit.open" x-transition.opacity @click.self="alarmEdit.open = false" @keydown.escape.window="alarmEdit.open = false">

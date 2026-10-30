@@ -48,6 +48,11 @@ step("check-ins it passed on since go with it; one it said something on makes it
   assert.deepEqual(takeBack(spoke, "s1"), { ids: ["s1"], again: false }, "a check-in answers no message of hers");
 });
 
+step("a reply to what a group chat handed it can go, but is not asked again here: it was posted in the group", () => {
+  const path = [her("u1"), its("a1"), her("group_1", '[10-30 09:00 周五] [group chat "周末" with them and 麻薯, where you are 旦九. …]\n在吗'), its("a2")];
+  assert.deepEqual(takeBack(path, "a2"), { ids: ["a2"], again: false });
+});
+
 step("only the latest: not an earlier reply, not one with her message after it", () => {
   const path = [her("u1"), its("a1"), her("u2"), its("a2")];
   assert.deepEqual(takeBack(path, "a1"), { error: "只能收回最后一条" });
