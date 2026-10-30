@@ -561,7 +561,8 @@ export class Resident extends Think<Env> {
 
   override afterToolCall(ctx: ToolCallResultContext): void {
     // A thread's file may hold what the thread read on the web.
-    const outside = ["web_search", "web_fetch", "read_thread_file"].includes(ctx.toolName) || ctx.toolName.startsWith("mcp_");
+    const readFile = ctx.toolName === "find" && Boolean((ctx.input as { path?: unknown } | undefined)?.path);
+    const outside = ["web_search", "web_fetch"].includes(ctx.toolName) || ctx.toolName.startsWith("mcp_") || readFile;
     if (ctx.requestId && outside) {
       this.markTurn(ctx.requestId, "outside");
     }
@@ -1381,7 +1382,7 @@ export class Resident extends Think<Env> {
   }
 
   /**
-   * cloud_task, and the tools that find earlier work again (find_threads, read_thread_file, search_chat), once
+   * cloud_task, and find (find-tools.ts), which finds earlier work and talk again, once
    * CLOUD_TASKS is on: a resident kept for chatting alone carries none of them. Their words and choices are the
    * same whatever is set up, so the prompt cache holds when a place is turned on or off (TASK_DESCRIPTION); sendTask
    * picks the place.
@@ -1396,7 +1397,7 @@ export class Resident extends Think<Env> {
           job: z.string().describe("The whole job, for a thread that knows nothing else."),
           repo: z.string().optional().describe("owner/name of the GitHub repository to work in, if there is one."),
           execution: z.enum(["local", "external", "linux"]).optional().describe("Where it runs, from the description. Leave it out for the usual place."),
-          follow_up_of: z.string().optional().describe("The id (t_…) of an earlier task or thread this one continues; find_threads finds it.")
+          follow_up_of: z.string().optional().describe("The id (t_…) of an earlier task or thread this one continues; find finds it.")
         }),
         execute: async (input) => this.sendTask(input as TaskInput)
       }),
@@ -1409,7 +1410,7 @@ export class Resident extends Think<Env> {
     await this.cloudTasks().syncPrs(this.githubToken(), this.env.CLOUD_TASK_API_BASE).catch(() => {});
   }
 
-  /** What find_threads, read_thread_file and search_chat need (find-tools.ts). */
+  /** What find needs (find-tools.ts). */
   private findHost(): FindHost {
     const started = (root: string) => this.dynamicAgents.has(TaskWorker, threadName(root));
     const thread = async (root: string) => await this.dynamicAgents.get(TaskWorker, threadName(root));
@@ -1457,7 +1458,7 @@ export class Resident extends Think<Env> {
     const earlier = input.follow_up_of?.trim() ?? "";
     // Any task of a thread, or the thread itself: it carries on from the thread's newest task.
     const follows = earlier ? this.cloudTasks().continuing(earlier) : null;
-    if (earlier && !follows) return { error: `No task or thread ${earlier}. find_threads finds them.` };
+    if (earlier && !follows) return { error: `No task or thread ${earlier}. find with in threads finds them.` };
     const execution = this.placeFor(input.execution);
     if (typeof execution === "object") return execution;
     const id = this.activeTurn!.requestId;
@@ -3523,7 +3524,7 @@ export class Resident extends Think<Env> {
 
   /**
    * Up to `page` hits for `query`, newest first, before the message at `before` (seq) if given; `next` continues.
-   * `skip`: a message left out (the one a turn of search_chat answers, which has the words in it).
+   * `skip`: a message left out (the one a turn that searches with find answers, which has the words in it).
    */
   private async chatHits(query: string, before: number | undefined, page: number, skip = ""): Promise<{ results: ChatHit[]; next: number | null }> {
     const sessionId = this.session.sessionId;
