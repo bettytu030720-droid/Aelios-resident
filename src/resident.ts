@@ -194,6 +194,7 @@ import { SiteKeyStore } from "./web/site-keys";
 import { searchEngines, searchSource } from "./web/search";
 import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, type Thinking } from "./via-aelios";
 import { effortOf } from "./thinking";
+import { takeBack } from "./take-back";
 import { activityOf, WebDraft, type Activity } from "./web/history";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { findTools, type FindHost } from "./find-tools";
@@ -691,7 +692,7 @@ export class Resident extends Think<Env> {
     const report = (status: string) => {
       this.ctx.waitUntil(this.ctx.storage.put("aelios_memory", { status, model: id, at: Date.now() }));
     };
-    return aeliosModel(memory, id, { auxiliary, report, thinking });
+    return aeliosModel(memory, id, { auxiliary, report, thinking, redo: () => this.#redo });
   }
 
   /**
@@ -3672,6 +3673,32 @@ export class Resident extends Think<Env> {
       }
     ]);
     return { status: result.status };
+  }
+
+  /** While a reply asked for again runs: the id its calls go to Aelios with, so it is recorded as a new exchange. */
+  #redo: string | null = null;
+
+  /**
+   * Its latest reply taken back from the web page (take-back.ts): deleted, and with `again` her message answered
+   * anew, like a message she sent from there. Not while it is still replying.
+   */
+  async webTakeBack(id: string, again: boolean): Promise<{ status: string } | { error: string }> {
+    if (this.#draftActive?.() || this.letterJob()) return { error: "它还在说，等它说完" };
+    const plan = takeBack(this.messages, id);
+    if ("error" in plan) return plan;
+    if (again && !plan.again) return { error: "这条不是回你的话，没法重新回" };
+    await this.session.deleteMessages(plan.ids);
+    for (const message of plan.ids) {
+      const voice = this.media().spokenFor(message);
+      if (voice) this.media().remove(voice);
+    }
+    if (!again) return { status: "removed" };
+    this.#redo = crypto.randomUUID();
+    try {
+      return { status: (await this.saveMessages([])).status };
+    } finally {
+      this.#redo = null;
+    }
   }
 
   /** A picture sent from the web page, as the model reads it: shrunk like one from Telegram (pictures.ts). */

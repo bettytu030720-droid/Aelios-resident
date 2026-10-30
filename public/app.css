@@ -217,6 +217,9 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
 .bubble.held { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .bubble.failed { border-color: color-mix(in srgb, var(--err) 55%, transparent); opacity: .85; }
 .bubble.sending { opacity: .7; }
+.take-back { display: flex; gap: 2px; margin-left: 2px; }
+.take-back .icon-btn { width: 30px; height: 30px; border-radius: 10px; color: var(--text-3); }
+.take-back .icon-btn svg { width: 16px; height: 16px; }
 .meta { float: right; display: inline-flex; align-items: center; gap: 4px; margin: 9px -3px -6px 12px; font-size: 11px; line-height: 1; color: var(--text-4); white-space: nowrap; }
 .row.me .meta { color: var(--text-3); }
 .meta svg { width: 11px; height: 11px; color: var(--accent-text); }
