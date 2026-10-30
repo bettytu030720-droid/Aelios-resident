@@ -747,7 +747,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
           <span class="cost" x-text="totalCost(usage.totals && usage.totals[span.key])"></span>
           <span class="line" x-text="totalCalls(usage.totals && usage.totals[span.key])"></span>
           <span class="line" x-show="unpricedText(usage.totals && usage.totals[span.key])" x-text="unpricedText(usage.totals && usage.totals[span.key])"></span>
-          <span class="line hit" x-text="'缓存命中 ' + hitText(usage.totals && usage.totals[span.key])"></span>
+          <span class="line cache-hit" x-text="'cache hit ' + hitText(usage.totals && usage.totals[span.key])"></span>
           <span class="line" x-text="totalTokens(usage.totals && usage.totals[span.key])"></span>
         </div>
       </template>
@@ -761,7 +761,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
           <span class="cost" x-text="row.cost === null ? '没有价格' : '约 ' + money(row.cost)"></span>
         </div>
         <div class="small" x-text="row.model || '（没报模型名）'"></div>
-        <div class="small"><span x-text="rowNums(row)"></span><span style="color: var(--accent-text)" x-show="row.input + row.cacheRead + row.cacheWrite > 0" x-text="' · 命中 ' + hitText(row)"></span></div>
+        <div class="small"><span x-text="rowNums(row)"></span><span style="color: var(--accent-text)" x-show="row.input + row.cacheRead + row.cacheWrite > 0" x-text="' · hit ' + hitText(row)"></span></div>
         <div class="small" x-show="row.tools.length" x-text="'调了 ' + row.tools.join('、')"></div>
       </div>
     </template>

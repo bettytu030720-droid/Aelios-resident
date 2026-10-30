@@ -806,13 +806,14 @@ assert.equal(timeline.unpricedText(timeline.usage.totals.month), '', 'all unpric
 assert.equal(timeline.totalCost(timeline.usage.totals.month), '没有价格');
 assert.equal(timeline.hitText(timeline.usage.totals.today), '90%');
 assert.equal(timeline.hitText({ input: 0, cacheRead: 0, cacheWrite: 0 }), '—');
-assert.equal(timeline.totalTokens(timeline.usage.totals.today), '入 10k · 出 500');
+assert.equal(timeline.totalTokens(timeline.usage.totals.today), 'in 10k · out 500');
 assert.equal(timeline.kindText(firstRows[0]), '聊天 · Telegram');
 assert.equal(timeline.kindText({ ...firstRows[0], via: '', kind: 'heartbeat', step: 1 }), '心跳 · 工具后');
 assert.equal(timeline.kindText(firstRows[1]), '压缩网页');
-assert.equal(timeline.rowNums(firstRows[0]), '新 12 · 读 30,000 · 写 400（1 小时） · 出 250（想 80）');
-assert.equal(timeline.rowNums({ ...firstRows[0], cacheWrite1h: 0 }), '新 12 · 读 30,000 · 写 400（5 分钟） · 出 250（想 80）');
-assert.equal(timeline.rowNums(firstRows[1]), '新 2,000 · 读 0 · 写 0 · 出 100');
+assert.equal(timeline.rowNums(firstRows[0]), 'new 12 · read 30,000 · write 400 (1h) · out 250 (think 80)');
+assert.equal(timeline.rowNums({ ...firstRows[0], cacheWrite1h: 0 }), 'new 12 · read 30,000 · write 400 (5m) · out 250 (think 80)');
+assert.equal(timeline.rowNums({ ...firstRows[0], cacheWrite1h: 100 }), 'new 12 · read 30,000 · write 400 (1h 100) · out 250 (think 80)');
+assert.equal(timeline.rowNums(firstRows[1]), 'new 2,000 · read 0 · write 0 · out 100');
 assert.equal(timeline.money(1.234), '$1.23');
 assert.equal(timeline.money(0.00042), '$0.0004');
 await timeline.moreUsage();

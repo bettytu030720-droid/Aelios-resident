@@ -1982,12 +1982,12 @@ function resident() {
     },
     totalTokens(t) {
       if (!t) return '';
-      return '入 ' + this.compact(t.input + t.cacheRead + t.cacheWrite) + ' · 出 ' + this.compact(t.output);
+      return 'in ' + this.compact(t.input + t.cacheRead + t.cacheWrite) + ' · out ' + this.compact(t.output);
     },
     usageToday() {
       var t = this.usage.totals && this.usage.totals.today;
       if (!t) return '';
-      return '今天约 ' + this.totalCost(t) + ' · 命中 ' + this.hitText(t);
+      return '今天约 ' + this.totalCost(t) + ' · cache hit ' + this.hitText(t);
     },
     kindText(row) {
       var kind = { chat: '聊天', letter: '写交接信', checkin: '定时找你', heartbeat: '心跳', alarm: '闹钟', task: '线程交回', worker: '线程干活',
@@ -1997,11 +1997,11 @@ function resident() {
     },
     rowNums(row) {
       var n = function (v) { return v.toLocaleString('en-US'); };
-      var write = row.cacheWrite ? '写 ' + n(row.cacheWrite) + (row.cacheWrite1h === row.cacheWrite ? '（1 小时）' : row.cacheWrite1h ? '（1 小时 ' + n(row.cacheWrite1h) + '）' : '（5 分钟）') : '写 0';
-      return '新 ' + n(row.input) + ' · 读 ' + n(row.cacheRead) + ' · ' + write + ' · 出 ' + n(row.output) + (row.reasoning ? '（想 ' + n(row.reasoning) + '）' : '');
+      var write = 'write ' + n(row.cacheWrite) + (!row.cacheWrite ? '' : row.cacheWrite1h === row.cacheWrite ? ' (1h)' : row.cacheWrite1h ? ' (1h ' + n(row.cacheWrite1h) + ')' : ' (5m)');
+      return 'new ' + n(row.input) + ' · read ' + n(row.cacheRead) + ' · ' + write + ' · out ' + n(row.output) + (row.reasoning ? ' (think ' + n(row.reasoning) + ')' : '');
     },
     usageNote() {
-      return '钱按 Anthropic 官方价估，订阅额度、中转和别家的实际花费会不一样；表里没有的模型只记 token。「新」是没走缓存的输入，「读」「写」是缓存，命中是读占全部输入的比例。只留最近 ' + this.usage.keepDays + ' 天。';
+      return '钱按 Anthropic 官方价估，订阅额度、中转和别家的实际花费会不一样；表里没有的模型只记 token。new 是没走缓存的输入，read、write 是从缓存读、往缓存写（1h、5m 是写进 1 小时还是 5 分钟的缓存），out 是输出（think 是其中想的部分），in 是 new、read、write 加起来，hit 是 read 占 in 的比例。只留最近 ' + this.usage.keepDays + ' 天。';
     },
 
     // ---- persona ----
