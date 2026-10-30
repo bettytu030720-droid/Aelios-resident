@@ -83,6 +83,7 @@ assert.equal(u.noteKind("(Not from them: something else.)"), "note");
 assert.deepEqual(u.usageLabel({ asked: "[10-27] hi", letter: false, task: false, proactive: false }), { kind: "chat", via: "web" });
 assert.deepEqual(u.usageLabel({ asked: "[10-27] hi", letter: false, task: false, messenger: "telegram", proactive: false }), { kind: "chat", via: "telegram" });
 assert.deepEqual(u.usageLabel({ asked: "[10-27] hi", letter: false, task: false, messenger: "wecom", proactive: false }), { kind: "chat", via: "wecom" });
+assert.deepEqual(u.usageLabel({ asked: "[10-27] [group chat \"周末\" with them and 旦九, where you are 麻薯. …]\n嗯", letter: false, task: false, proactive: false, group: true }), { kind: "group", via: "web" });
 assert.deepEqual(u.usageLabel({ asked: u.checkinPrompt(now), letter: false, task: false, proactive: true }), { kind: "checkin", via: "" });
 assert.deepEqual(u.usageLabel({ asked: u.heartbeatPrompt(now, 30, 1, 3), letter: false, task: false, proactive: true }), { kind: "heartbeat", via: "" });
 assert.deepEqual(u.usageLabel({ asked: u.letterPrompt(now, false), letter: true, task: false, proactive: false }), { kind: "letter", via: "" });

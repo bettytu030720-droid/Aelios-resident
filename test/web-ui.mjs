@@ -5,10 +5,12 @@ import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = readFileSync('public/app.js', 'utf8');
 const markdown = readFileSync('public/markdown.js', 'utf8');
+const groupCode = readFileSync('public/group.js', 'utf8');
 assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
 const resized = [];
 const context = vm.createContext({ document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {}, ResizeObserver: class { constructor(fn) { resized.push(fn); } observe() {} } });
 vm.runInContext(markdown, context);
+vm.runInContext(groupCode, context);
 vm.runInContext(code, context);
 // What Alpine would add to the page's state.
 vm.runInContext('function testPage() { var p = resident(); p.$nextTick = function (fn) { fn(); }; p.$refs = {}; return p; }', context);
@@ -1213,6 +1215,72 @@ searcher.logout();
 assert.equal(searcher.search.q, '', 'the search is not kept after locking the door');
 console.log('PASS search: pages of hits put together once each, a new search starts over, a hit read once, the words marked as text');
 
+// The group chat pages (public/group.js): groups made from the sidebar, tapping an avatar calls it, what is said is
+// bound as text, the settings send who is ticked, and what a group handed a resident is marked in its own chat.
+const groupMarkup = html.slice(html.indexOf('<!-- ===== a group chat'), html.indexOf('<!-- ===== threads ===== -->'));
+assert.ok(groupMarkup.includes('x-text="line.text"') && !groupMarkup.includes('x-html'), 'what is said in a group is bound as text');
+assert.ok(html.indexOf('<script src="/group.js"></script>') < html.indexOf('<script src="/app.js"></script>'), 'group.js is there before app.js mixes it in');
+const grouper = vm.runInContext('testPage()', context);
+grouper.residents.list = [{ id: 'default', name: '旦九', avatar: null }, { id: 'mochi', name: '麻薯', avatar: null }, { id: 'kiki', name: 'Kiki', avatar: null }];
+assert.equal(grouper.groupOn(), true);
+const groupCalls = [];
+let groupAnswer = {};
+grouper.api = async (path, options) => { groupCalls.push([path, options && options.body]); return groupAnswer; };
+grouper.newGroup();
+assert.deepEqual(copy(grouper.groupEdit.on), { default: true, mochi: true, kiki: true }, 'everyone ticked to start with');
+grouper.groupEdit.on.kiki = false;
+grouper.groupEdit.name = '周末';
+groupAnswer = { group: { id: 'g1', name: '周末', members: ['default', 'mochi'], reply: 'all', order: 'list' }, lines: [], more: false, groups: [] };
+await grouper.saveGroupEdit();
+assert.deepEqual(copy(groupCalls[0]), ['/web/groups', { name: '周末', members: ['default', 'mochi'], reply: 'all', order: 'list' }]);
+assert.deepEqual([grouper.view, grouper.group.id, grouper.groupEdit], ['group', 'g1', null], 'the new group opens');
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(grouper.group.name, '周末');
+grouper.group.members = ['default', 'mochi'];
+grouper.callInGroup('mochi');
+assert.equal(grouper.group.draft, '@麻薯 ');
+grouper.group.draft = '你好';
+grouper.callInGroup('default');
+assert.equal(grouper.group.draft, '你好 @旦九 ');
+assert.equal(grouper.groupStatus(), '2 个住户和你');
+grouper.group.speaking = 'mochi';
+assert.equal(grouper.groupStatus(), '麻薯 正在想…');
+assert.equal(grouper.groupMember('gone').name, 'gone', 'a resident deleted since is shown by its id');
+groupAnswer = { line: { seq: 7, author: '', text: '你好 @旦九', at: 1, kind: 'say' } };
+grouper.group.draft = '  你好 @旦九 ';
+await grouper.sayInGroup();
+assert.deepEqual(copy(groupCalls.at(-1)), ['/web/group/say?g=g1', { text: '你好 @旦九' }]);
+assert.equal(grouper.group.draft, '');
+assert.ok(grouper.group.lines.some((line) => line.seq === 7));
+// A reply that reached the server while she was writing is still fetched after her line is put in.
+grouper.view = 'group';
+grouper.group.lines = [{ seq: 1, author: '', text: '在吗', at: 1, kind: 'say' }];
+grouper.group.seen = 1;
+groupAnswer = { line: { seq: 3, author: '', text: '人呢', at: 3, kind: 'say' } };
+grouper.group.draft = '人呢';
+await grouper.sayInGroup();
+groupAnswer = { lines: [{ seq: 2, author: 'mochi', text: '在', at: 2, kind: 'say' }, { seq: 3, author: '', text: '人呢', at: 3, kind: 'say' }] };
+await grouper.groupNews();
+assert.equal(groupCalls.at(-1)[0], '/web/group?g=g1&after=1', 'asked after the last line the server handed it, not her own');
+assert.deepEqual(grouper.group.lines.map((line) => line.seq), [1, 2, 3], 'once each, in order');
+groupAnswer = { lines: [] };
+await grouper.groupNews();
+assert.equal(groupCalls.at(-1)[0], '/web/group?g=g1&after=3');
+grouper.openGroupSettings();
+assert.deepEqual(copy(grouper.groupEdit.on), { default: true, mochi: true, kiki: false }, 'its members ticked');
+grouper.groupEdit.on.kiki = true;
+grouper.groupEdit.reply = 'one';
+await grouper.saveGroupEdit();
+assert.deepEqual(copy(groupCalls.find((call) => call[0].startsWith('/web/group/config'))), ['/web/group/config?g=g1', { name: '周末', members: ['default', 'mochi', 'kiki'], reply: 'one', order: 'list' }]);
+assert.equal(grouper.groupEdit, null, 'closed once saved');
+// In a resident's own chat, what a group handed it says which group, above it.
+const handed = vm.runInContext('testPage()', context);
+handed.lines = [
+  { id: 'u1', role: 'user', kind: 'chat', text: '今晚吃什么\n[旦九] 火锅', at: null, via: 'group', group: '周末' },
+  { id: 'a1', role: 'assistant', kind: 'chat', text: '我也要', at: null, via: 'group' }
+];
+assert.deepEqual(copy(handed.rows().map((row) => [row.type, row.text ?? row.line.id])), [['why', '群聊「周末」'], ['line', 'u1'], ['line', 'a1']]);
+console.log('PASS group chat pages: made from the sidebar with who is ticked, an avatar tapped is @ and its name, what is said is bound as text, a reply not fetched yet is not skipped, settings sent, marked in its own chat');
 // Its latest reply has two icons under it: delete (asked first) and answer again (the dots show until the new one).
 const back = vm.runInContext('testPage()', context);
 const takes = [];
