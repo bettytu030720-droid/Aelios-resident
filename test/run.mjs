@@ -1712,7 +1712,12 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       // Words from the job of each: both threads, the newest first, and its id is all a follow-up needs.
       const both = await ask("找找线程 README recieve");
       assert.ok(both.indexOf(`"id":"${localThread}"`) >= 0 && both.indexOf(`"id":"${localThread}"`) < both.indexOf(`"id":"${first.id}"`), both);
-      assert.match(await ask("找找线程 没有这种词"), /No thread has all of those words/);
+      assert.match(await ask("找找线程 没有这种词"), /No thread has any of those words/);
+      // By days: from yesterday to tomorrow is today wherever they are; long ago there was none.
+      const day = (offset) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+      const lately = await ask(`找找那几天的线程 ${day(-1)}..${day(1)}`);
+      assert.ok(lately.includes(`"id":"${localThread}"`) && lately.includes(`"id":"${first.id}"`), lately);
+      assert.match(await ask("找找那几天的线程 2020-01-01"), /No thread was active then/);
 
       const read = await ask(`看看线程文件 ${localThread} page.html`);
       assert.ok(read.includes('"path":"/page.html"') && read.includes("短标题"), read);

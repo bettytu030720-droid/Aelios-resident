@@ -143,6 +143,7 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   // Finding earlier work: threads by words, a thread's file, the conversation and the messages around a hit.
   if (said.includes("读完文件再派活")) return { tool: "find", input: { in: "threads", thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: "/page.html" } };
   if (said.includes("找找线程")) return { tool: "find", input: { in: "threads", words: said.split("找找线程")[1].trim() } };
+  if (said.includes("找找那几天的线程")) return { tool: "find", input: { in: "threads", when: said.split("找找那几天的线程")[1].trim() } };
   if (said.includes("看看线程文件")) return { tool: "find", input: { in: "threads", thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: said.match(/ (\/?[\w.-]+\.\w+)$/)?.[1] ?? "" } };
   if (said.includes("翻翻聊天前后")) return { tool: "find", input: { in: "chat", around: said.split("翻翻聊天前后")[1].trim() } };
   if (said.includes("翻翻聊天")) return { tool: "find", input: { in: "chat", words: said.split("翻翻聊天")[1].trim() } };

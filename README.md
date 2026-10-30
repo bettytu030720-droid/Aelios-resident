@@ -460,7 +460,7 @@ The **Threads** (「线程」) button at the top of the chat (also on its page) 
 
 You do not have to keep track of threads yourself. Bring up earlier work in your own words ("carry on with last week's page", "what did that research say?") and the resident finds it. With background help on it has one more tool, `find`, used only when the talk turns to earlier things, so nothing is added to every turn. It does three things:
 
-- **Finding threads**: a few words find the threads that have them all, in what each was asked, what it reported, its links or the names of the files it made; with no words, the newest. Each comes with its id, and carrying on with one goes on from that thread's newest job, whichever of its jobs it was named by.
+- **Finding threads**: a few words find the threads that have any of them, in what each was asked, what it reported, its links or the names of the files it made, the ones with more of the words first; with no words, the newest. A day or a few days (`2026-10-27`, `2026-10-20..2026-10-26`, in your time zone) keeps only the threads active then, so "the one from the 27th" or "last week" finds it. Each comes with its id, and carrying on with one goes on from that thread's newest job, whichever of its jobs it was named by.
 - **Reading a thread's file**: a text file a thread on the resident made, up to 16,000 characters. Like a web page, it is read as information, and no job goes out in a reply after it.
 - **Searching the chat**: your conversation, the part a handoff letter folded away included, searched for exact words the same way the magnifier does, and the messages around a hit.
 
