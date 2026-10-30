@@ -197,6 +197,7 @@ import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, t
 import { effortOf } from "./thinking";
 import { takeBack } from "./take-back";
 import { activityOf, WebDraft, type Activity } from "./web/history";
+import { GROUPS_MAX, GROUP_HEAD, GROUP_TEXT_MAX, GroupStore, HER, cleanReply, groupConfigFrom, groupHeard, membersOf, named, speakersFor, type Group, type GroupLine, type Member } from "./group";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { findTools, type FindHost } from "./find-tools";
 import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
@@ -244,6 +245,10 @@ const WEB_AWAY_MS = 20_000;
 const PUSH_DEVICES_MAX = 10;
 // The deepest a search walks back along the conversation's branch, as the session's own path reads do.
 const PATH_MAX = 10_000;
+// How long a group waits for a member's answer (group.ts); a round that has not moved for longer than that is taken
+// as dead (its isolate went away mid-turn) and started again by her next message.
+const GROUP_WAIT_MS = 5 * 60_000;
+const GROUP_STALE_MS = GROUP_WAIT_MS + 60_000;
 // A deleted resident is wiped again after this long if the first wipe did not finish (residentWipeAgain).
 const RESIDENT_WIPE_RETRY_SECONDS = 5 * 60;
 // Set while a resident is being deleted; only the wipe removes it (residentForgotten).
@@ -292,7 +297,9 @@ export type WebLine = {
   kind: "chat" | "letter" | "notice";
   text: string;
   at: number | null;
-  via: "telegram" | "wecom" | "web" | "checkin" | "task" | null;
+  via: "telegram" | "wecom" | "web" | "checkin" | "task" | "group" | null;
+  /** The group chat this message of hers was handed to it from (group.ts). */
+  group?: string;
   activity?: Activity[];
   /** Stickers sent in this reply, shown after its words; or the one she sent from the web page. */
   stickers?: { url: string; video: boolean }[];
@@ -421,6 +428,8 @@ type WebSaidMeta = {
   sticker?: string;
   /** The message she replied to. */
   quote?: { who: "user" | "assistant"; text: string };
+  /** The group chat it was handed to it from (groupHear). */
+  group?: string;
 };
 
 // The lines webSay puts in front of her words for the model, taken off again on the web page.
@@ -527,6 +536,7 @@ export class Resident extends Think<Env> {
   /** What each running turn is, for its rows in the usage timeline. */
   #usageLabels = new Map<string, UsageLabel>();
   #usageStore: UsageStore | null = null;
+  #groupStore: GroupStore | null = null;
 
   // Lazily created once per object lifetime; mark ready only after the DDL succeeds.
   private turnTableReady = false;
@@ -2421,7 +2431,8 @@ export class Resident extends Think<Env> {
           letter: Boolean(this.#letterPromptId),
           task: taskOfNote(askedForThisTurn) !== null,
           messenger: ctx.messenger?.messengerId,
-          proactive: ctx.trigger === "scheduled" || ctx.trigger === "submission"
+          proactive: ctx.trigger === "scheduled" || ctx.trigger === "submission",
+          group: GROUP_HEAD.test(askedForThisTurn.replace(STAMP_PREFIX, ""))
         })
       );
     }
@@ -3212,7 +3223,8 @@ export class Resident extends Think<Env> {
     // A reply to Telegram or WeCom said as a voice message is made after this: it finds its reply here (voiceReply).
     if (door) this.#lastReply.set(door, { id: result.message.id, at: Date.now() });
     // A reply on the web page: said in the voice too when it should be, and pushed when the page has been left.
-    if (web && !proactive && reply && reply !== SKIP) {
+    // Not one in a group: it is posted there, where she is.
+    if (web && !proactive && !GROUP_HEAD.test(asked.replace(STAMP_PREFIX, "")) && reply && reply !== SKIP) {
       if (!voiced) this.ctx.waitUntil(this.speakOnWeb(result.message.id, reply, web.voice));
       if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
     }
@@ -3433,13 +3445,13 @@ export class Resident extends Think<Env> {
           via = "checkin";
           continue;
         }
-        via = meta?.messenger ? (meta.messenger.messengerId === "wecom" ? "wecom" : "telegram") : "web";
         const own = message.metadata as WebSaidMeta | undefined;
+        via = own?.group ? "group" : meta?.messenger ? (meta.messenger.messengerId === "wecom" ? "wecom" : "telegram") : "web";
         const pictures = message.parts.filter((part) => part.type === "file").length;
         // Pictures that aged out of the conversation before media were kept: only their mark is left.
         const gone = text.match(EVICTED_PICTURE)?.length ?? 0;
         let voice: WebLine["voice"];
-        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "");
+        let said = text.replace(EVICTED_PICTURE, "").replace(REFUSED_PICTURE, "\n[图片被退回]").trim().replace(STAMP_PREFIX, "").replace(GROUP_HEAD, "");
         if (own?.quote) said = said.replace(QUOTE_MARK, "");
         if (own?.sticker) said = said.replace(STICKER_MARK, "");
         said = said
@@ -3463,6 +3475,7 @@ export class Resident extends Think<Env> {
           ...(pictures ? { pictures } : {}),
           ...(voice ? { voice } : {}),
           ...(own?.quote ? { quote: own.quote } : {}),
+          ...(own?.group ? { group: own.group } : {}),
           ...(own?.sticker ? { stickers: [{ url: `${residentPrefix(this.residentId)}/stickers/${own.sticker}`, video: sticker?.video ?? false }] } : {})
         });
         continue;
@@ -3473,7 +3486,8 @@ export class Resident extends Think<Env> {
         about = null;
         continue;
       }
-      if (via === "checkin" && text === SKIP) continue;
+      // A check-in or a group chat it passed on says nothing.
+      if ((via === "checkin" || via === "group") && text === SKIP) continue;
       const stickers = this.sentStickers(message.parts as never);
       const tasks = this.taskCards(message.parts as never, about);
       about = null;
@@ -3621,12 +3635,13 @@ export class Resident extends Think<Env> {
       .replace(REFUSED_PICTURE, "[图片被退回]")
       .trim()
       .replace(STAMP_PREFIX, "")
+      .replace(GROUP_HEAD, "")
       .replace(QUOTE_MARK, "")
       .replace(STICKER_MARK, "[表情包]")
       .replace(VOICE_MARK, "")
       .trim();
     if (!said) return null;
-    const search = searchable(parts, [EVICTED_PICTURE, REFUSED_PICTURE, STAMP_PREFIX, QUOTE_MARK, STICKER_MARK, VOICE_MARK]);
+    const search = searchable(parts, [EVICTED_PICTURE, REFUSED_PICTURE, STAMP_PREFIX, GROUP_HEAD, QUOTE_MARK, STICKER_MARK, VOICE_MARK]);
     return { id: message.id, role: "user", text: said, at, search };
   }
 
@@ -4522,6 +4537,143 @@ export class Resident extends Think<Env> {
   /** Whether the wipe went through: the mark residentForgetting left is gone with everything else. */
   async residentForgotten(): Promise<boolean> {
     return (await this.ctx.storage.get(FORGETTING)) === undefined;
+  }
+
+  // ---- group chats (group.ts): the groups live in the default resident; each member answers in its own chat ----
+
+  private groupStore(): GroupStore {
+    this.#groupStore ??= new GroupStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    return this.#groupStore;
+  }
+
+  /** Every resident's id, in the sidebar's order. */
+  private everyResident(): string[] {
+    return [DEFAULT_RESIDENT, ...this.residentIds()];
+  }
+
+  /** Every resident with the name the groups call it by. */
+  private async groupPeople(): Promise<Member[]> {
+    return Promise.all(
+      this.everyResident().map(async (id) => ({ id, name: id === this.residentId ? this.webIdentity().name : (await (await getAgentByName(this.env.RESIDENT, id)).webIdentity()).name }))
+    );
+  }
+
+  webGroups(): { groups: ReturnType<GroupStore["views"]> } {
+    return { groups: this.groupStore().views(this.everyResident()) };
+  }
+
+  async webGroupCreate(body: Record<string, unknown>): Promise<{ group: Group } | { error: string }> {
+    if (this.groupStore().list().length >= GROUPS_MAX) return { error: `最多 ${GROUPS_MAX} 个群` };
+    const checked = groupConfigFrom(body, this.everyResident());
+    if ("error" in checked) return checked;
+    return { group: this.groupStore().create(named(checked.config, await this.groupPeople())) };
+  }
+
+  webGroup(id: string, after: number | null, before: number | null): Record<string, unknown> {
+    return this.groupStore().view(id, this.everyResident(), after, before);
+  }
+
+  /** A message of hers in a group: kept, and those who answer it lined up (groupTurn). */
+  async webGroupSay(id: string, text: string): Promise<{ line: GroupLine } | { error: string }> {
+    const said = text.trim();
+    if (!said) return { error: "要说什么？" };
+    if (said.length > GROUP_TEXT_MAX) return { error: `一条最多 ${GROUP_TEXT_MAX} 字` };
+    const everyone = await this.groupPeople();
+    const store = this.groupStore();
+    const group = store.get(id);
+    if (!group) return { error: "没有这个群" };
+    const line = store.add(id, HER, said);
+    const members = everyone.filter((person) => group.members.includes(person.id));
+    const queue = speakersFor(said, members, group, store.lastSaid(id), { everyone });
+    // Whoever was still to answer her last message does not; one answering now finishes first.
+    const round = group.round;
+    const idle = !round.running || Date.now() - round.since > GROUP_STALE_MS;
+    if (!idle || !queue.length) {
+      store.setRound(id, { ...round, queue });
+      return { line };
+    }
+    store.setRound(id, { queue, speaking: "", since: Date.now(), epoch: round.epoch + 1, running: true });
+    await this.schedule(0, "groupTurn", { id });
+    return { line };
+  }
+
+  webGroupStop(id: string): { ok: true } | { error: string } {
+    return this.groupStore().stop(id);
+  }
+
+  async webGroupConfig(id: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.groupStore().get(id)) return { error: "没有这个群" };
+    const checked = groupConfigFrom(body, this.everyResident());
+    if ("error" in checked) return checked;
+    this.groupStore().update(id, named(checked.config, await this.groupPeople()));
+    return this.webGroup(id, null, null);
+  }
+
+  /** A group goes, and what was said in it; what its members heard stays in their own conversations. */
+  webGroupRemove(id: string): ReturnType<Resident["webGroups"]> {
+    this.groupStore().remove(id);
+    return this.webGroups();
+  }
+
+  /**
+   * One answer in a group, then the next one is scheduled: the first in line is handed what it has not heard there,
+   * answers in its own conversation (groupHear), and its answer goes into the group.
+   */
+  async groupTurn({ id }: { id: string }): Promise<void> {
+    const store = this.groupStore();
+    const start = store.get(id)?.round;
+    if (!start) return;
+    const speaker = start.queue[0];
+    if (!speaker) return store.setRound(id, { ...start, speaking: "", running: false });
+    store.setRound(id, { ...start, queue: start.queue.slice(1), speaking: speaker, since: Date.now(), running: true });
+    const everyone = await this.groupPeople();
+    const names = Object.fromEntries(everyone.map((person) => [person.id, person.name]));
+    const group = store.get(id);
+    const members = group ? membersOf(group, this.everyResident()) : [];
+    let reply: { text: string } | { error: string } = { text: "" };
+    if (group && members.includes(speaker)) {
+      const unheard = store.unheard(id, speaker, group.seen[speaker] ?? 0);
+      const others = members.filter((member) => member !== speaker).map((member) => names[member]);
+      const heard = { group: group.name, text: groupHeard(unheard.lines, unheard.cut, { group: group.name, me: names[speaker], others, names }) };
+      store.setSeen(id, speaker, unheard.last);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const hearing = speaker === this.residentId ? this.groupHear(heard) : (await getAgentByName(this.env.RESIDENT, speaker)).groupHear(heard);
+        const late = new Promise<{ error: string }>((resolve) => {
+          timer = setTimeout(() => resolve({ error: `等了 ${GROUP_WAIT_MS / 60_000} 分钟没等到，它回了会留在它自己的聊天里` }), GROUP_WAIT_MS);
+        });
+        reply = await Promise.race([hearing, late]);
+      } catch (error) {
+        reply = { error: String(error instanceof Error ? error.message : error).slice(0, 200) };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    const now = store.get(id);
+    if (!now) return;
+    if ("error" in reply) store.add(id, speaker, `${names[speaker] ?? speaker} 没回上来：${reply.error}`, "note");
+    else if (reply.text) store.add(id, speaker, reply.text);
+    // A round started again meanwhile (this one had stopped moving) is the new turn's to move on.
+    if (now.round.epoch !== start.epoch) return;
+    store.setRound(id, { ...now.round, speaking: "", running: now.round.queue.length > 0 });
+    if (now.round.queue.length) await this.schedule(0, "groupTurn", { id });
+  }
+
+  /**
+   * This resident's turn in a group, asked by the default resident: what was said there goes into its own
+   * conversation as a message of hers, it answers as in any turn (its tools and Aelios memory included; nothing
+   * goes to Telegram), and its answer goes back to the group: "" when it passes.
+   */
+  async groupHear(heard: { group: string; text: string }): Promise<{ text: string } | { error: string }> {
+    const at = Date.now();
+    const id = `group_${crypto.randomUUID()}`;
+    const text = `[${stamp(new Date(at), this.tz)}] ${heard.text}`;
+    const { status } = await this.saveMessages([{ id, role: "user", parts: [{ type: "text", text }], metadata: { at, group: heard.group } } as UIMessage]);
+    if (status !== "completed") return { error: `这一轮没走完（${status}）` };
+    const messages = this.messages;
+    const asked = messages.findIndex((message) => message.id === id);
+    const answer = asked < 0 ? undefined : messages.slice(asked + 1).find((message) => message.role === "assistant");
+    return { text: cleanReply(answer ? textOf(answer) : "", this.webIdentity().name) };
   }
 
   /** The MCP servers on the settings page: how each is doing and what its tools cost per turn. Never a key. */

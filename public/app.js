@@ -304,7 +304,7 @@ function resident() {
   var IMAGE_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
   var extOf = function (path) { var m = String(path).match(/\.([A-Za-z0-9]+)$/); return m ? m[1].toLowerCase() : ''; };
 
-  return {
+  return Object.assign({
     key: readKey(),
     miniApp: false,
     miniToken: '',
@@ -589,6 +589,7 @@ function resident() {
       list.forEach(function (r) { if (!(r.id in self.residents.seen) || r.id === self.resident) self.residents.seen[r.id] = r.saidAt; });
       remember('resident.seen', JSON.stringify(this.residents.seen));
       if (!list.some(function (r) { return r.id === self.resident; })) return this.switchResident('default');
+      this.loadGroups().catch(function () {});
       if (list.length < 2) return;
       residentsTimer = setTimeout(function tick() {
         if (!self.authed) return;
@@ -606,6 +607,7 @@ function resident() {
     },
     async switchResident(id) {
       this.residents.open = false;
+      if (id === this.resident && this.view === 'group') { this.view = 'chat'; this.scrollSoon(true); }
       if (id === this.resident || !this.authed) return;
       clearTimeout(pollTimer);
       this.resident = id;
@@ -725,6 +727,7 @@ function resident() {
       this.letterError = '';
       this.picker.open = false;
       this.residents.list = [];
+      this.groups = [];
       this.search = freshSearch();
       clearTimeout(pollTimer);
       clearTimeout(residentsTimer);
@@ -753,6 +756,10 @@ function resident() {
         if (line.role === 'assistant' && (line.via === 'checkin' || line.via === 'task') && lastVia !== line.via) {
           out.push({ key: 'why_' + line.id, type: 'why', text: (line.via === 'task' ? '线程交回' : '主动找你') + (line.at ? ' · ' + self.clock(line.at) : '') });
         }
+        // What a group chat handed it says which group, above it.
+        if (line.role === 'user' && line.via === 'group') {
+          out.push({ key: 'why_' + line.id, type: 'why', text: '群聊「' + (line.group || '') + '」' + (line.at ? ' · ' + self.clock(line.at) : '') });
+        }
         lastVia = line.role === 'user' ? null : line.via;
         var cards = (line.tasks || []).filter(function (task) { return newest[task.id] === line.id; });
         out.push({ key: line.id, type: 'line', line: line, cards: cards });
@@ -778,9 +785,10 @@ function resident() {
       var last = this.lines.filter(function (l) { return l.kind !== 'notice'; }).pop();
       return Boolean(last && last.id === line.id);
     },
-    // A check-in or a thread's report answers no message of hers, so it can only be deleted.
+    // A check-in or a thread's report answers no message of hers, and a group chat's reply was posted there, so
+    // they can only be deleted.
     answersHer(line) {
-      return line.via !== 'checkin' && line.via !== 'task';
+      return line.via !== 'checkin' && line.via !== 'task' && line.via !== 'group';
     },
     async takeBack(line, again) {
       if (!again && !confirm('删掉这条？')) return;
@@ -1961,7 +1969,7 @@ function resident() {
     },
     kindText(row) {
       var kind = { chat: '聊天', letter: '写交接信', checkin: '定时找你', heartbeat: '心跳', alarm: '闹钟', task: '线程交回', worker: '线程干活',
-        note: '系统提示', compress: '压缩网页', learn: '记下搜到的', trial: '试模型' }[row.kind] || row.kind;
+        note: '系统提示', compress: '压缩网页', learn: '记下搜到的', trial: '试模型', group: '群聊' }[row.kind] || row.kind;
       var via = { web: '网页', telegram: 'Telegram', wecom: '企业微信' }[row.via];
       return kind + (via ? ' · ' + via : '') + (row.step ? ' · 工具后' : '');
     },
@@ -2855,5 +2863,5 @@ function resident() {
       this.toast = message;
       setTimeout(function () { if (self.toast === message) self.toast = ''; }, 2400);
     }
-  };
+  }, typeof groupPage === 'function' ? groupPage() : {});
 }

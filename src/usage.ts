@@ -20,9 +20,9 @@ export const USAGE_PAGE = 100;
 /**
  * What a call was for: a turn of theirs, the handoff letter, a check-in, a heartbeat, an alarm, a cloud task's
  * report, another system note; or work outside the conversation: shrinking a web page, saving what a search found,
- * the trial call when a model is picked.
+ * the trial call when a model is picked; a turn in the group chat.
  */
-export type UsageKind = "chat" | "letter" | "checkin" | "heartbeat" | "alarm" | "task" | "worker" | "note" | "compress" | "learn" | "trial";
+export type UsageKind = "chat" | "letter" | "checkin" | "heartbeat" | "alarm" | "task" | "worker" | "note" | "compress" | "learn" | "trial" | "group";
 /** Where the turn came from; "" for a turn the resident started itself and for work outside the conversation. */
 export type UsageVia = "web" | "telegram" | "wecom" | "";
 export type UsageLabel = { kind: UsageKind; via: UsageVia };
@@ -33,7 +33,8 @@ export function usageLabel({
   letter,
   task,
   messenger,
-  proactive
+  proactive,
+  group
 }: {
   /** The last message in the turn's input. */
   asked: string;
@@ -45,9 +46,11 @@ export function usageLabel({
   messenger?: string;
   /** Started by a schedule or a submission rather than by a message. */
   proactive: boolean;
+  /** The message was handed to it from a group chat on the web page (group.ts). */
+  group?: boolean;
 }): UsageLabel {
-  const kind: UsageKind = letter ? "letter" : task ? "task" : (noteKind(asked) ?? "chat");
-  const via: UsageVia = messenger ? (messenger === "wecom" ? "wecom" : "telegram") : kind === "chat" && !proactive ? "web" : "";
+  const kind: UsageKind = letter ? "letter" : task ? "task" : group ? "group" : (noteKind(asked) ?? "chat");
+  const via: UsageVia = messenger ? (messenger === "wecom" ? "wecom" : "telegram") : (kind === "chat" || kind === "group") && !proactive ? "web" : "";
   return { kind, via };
 }
 
