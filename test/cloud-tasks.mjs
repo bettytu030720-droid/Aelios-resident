@@ -444,7 +444,7 @@ await test("a follow-up carries on from its thread's newest task, named by any t
   assert.equal(tasks.continuing(first.id).id, said.id);
 });
 
-await test("find_threads: every word in what was asked, reported or linked, or in a file's name; the newest first; files noted and looked at again once the thread moves", () => {
+await test("find_threads: any word in what was asked, reported or linked, or in a file's name; more words first, then the newest; files noted and looked at again once the thread moves", () => {
   const { db, tasks } = store();
   const page = tasks.add({ title: "做个介绍页", job: "给住户做一个介绍页，放在 index.html", execution: "local" }).task;
   tasks.result(page.id, { status: "done", summary: "做好了，在 /site/index.html，配色是蓝的。", links: ["https://example.com/preview"] });
@@ -459,7 +459,12 @@ await test("find_threads: every word in what was asked, reported or linked, or i
   assert.deepEqual(tasks.find("  DURABLE   objects ").map((thread) => thread.id), [notes.id], "letters in either case, spaces folded");
   assert.deepEqual(tasks.find("蓝").map((thread) => thread.id), [page.id], "what it reported");
   assert.deepEqual(tasks.find("pull/3").map((thread) => thread.id), [notes.id], "its links");
-  assert.deepEqual(tasks.find("介绍页 价格"), [], "every word, in one thread");
+  assert.deepEqual(tasks.find("介绍页 价格").map((thread) => thread.id), [notes.id, page.id], "any of the words: as many each, the newest first");
+  assert.deepEqual(tasks.find("介绍页 蓝 价格").map((thread) => thread.id), [page.id, notes.id], "more of the words first");
+  assert.deepEqual(tasks.find("没有的词"), []);
+  assert.deepEqual(tasks.find("", undefined, { from: 1, to: 2 }).map((thread) => thread.id), [page.id], "only threads active in the span");
+  assert.deepEqual(tasks.find("介绍页 价格", undefined, { from: 2, to: 3 }).map((thread) => thread.id), [notes.id]);
+  assert.deepEqual(tasks.find("", undefined, { from: 3, to: 9 }), []);
   assert.ok(!tasks.find("").some((thread) => thread.id === test.id));
   const [shown] = tasks.find("介绍页");
   assert.deepEqual(
@@ -530,6 +535,41 @@ await test("find_threads: a thread whose files could not be listed is asked agai
   assert.deepEqual(tasks.staleFiles(), []);
 });
 
+await test("find: when is a day or days in their time zone; threads active then", async () => {
+  const { daysOf, findTools: tools } = await findTools();
+  const at = (iso) => Date.parse(iso);
+  assert.deepEqual(daysOf("2026-10-27", "Asia/Shanghai"), { from: at("2026-10-26T16:00:00Z"), to: at("2026-10-27T16:00:00Z") });
+  assert.deepEqual(daysOf(" 2026-10-20 .. 2026-10-26 ", "Asia/Shanghai"), { from: at("2026-10-19T16:00:00Z"), to: at("2026-10-26T16:00:00Z") });
+  assert.deepEqual(daysOf("2026-10-26..2026-10-20", "UTC"), { from: at("2026-10-20T00:00:00Z"), to: at("2026-10-27T00:00:00Z") }, "either way round");
+  // A day of 23 hours: clocks go forward in New York on 2026-03-08.
+  const short = daysOf("2026-03-08", "America/New_York");
+  assert.equal(short.to - short.from, 23 * 3600_000);
+  for (const bad of ["上周", "2026-02-30", "10-27", "2026-10-27..", "2026-10-01..2026-10-02..2026-10-03"]) assert.equal(daysOf(bad, "UTC"), null, bad);
+
+  const { db, tasks } = store();
+  const old = tasks.add({ title: "旧的", job: "介绍页", execution: "external" }).task;
+  const fresh = tasks.add({ title: "新的", job: "介绍页", execution: "external" }).task;
+  db.prepare("UPDATE res_tasks SET created_at = ?, updated_at = ? WHERE id = ?").run(at("2026-10-27T02:00:00Z"), at("2026-10-27T03:00:00Z"), old.id);
+  db.prepare("UPDATE res_tasks SET created_at = ?, updated_at = ? WHERE id = ?").run(at("2026-10-29T02:00:00Z"), at("2026-10-29T03:00:00Z"), fresh.id);
+  const host = {
+    store: tasks,
+    tz: "Asia/Shanghai",
+    syncPrs: async () => {},
+    threadStarted: () => false,
+    threadFiles: async () => [],
+    threadFile: async () => null,
+    chatHits: async () => ({ results: [], next: null }),
+    chatAround: async () => ({ error: "x" }),
+    answering: () => ""
+  };
+  const find = (input) => tools(host).find.execute({ in: "threads", ...input }, { toolCallId: "t", messages: [] });
+  assert.deepEqual((await find({ words: "介绍页", when: "2026-10-27" })).threads.map((thread) => thread.id), [old.id]);
+  assert.deepEqual((await find({ when: "2026-10-20..2026-10-30" })).threads.map((thread) => thread.id), [fresh.id, old.id]);
+  assert.match((await find({ when: "2026-10-28" })).note, /No thread was active then/);
+  assert.match((await find({ words: "价格", when: "2026-10-27" })).note, /No thread then has any of those words/);
+  assert.match((await find({ when: "上周" })).error, /2026-10-20\.\.2026-10-26/);
+});
+
 await test("the descriptions of the tools that find earlier work never change and say how to carry on", async () => {
   const f = await findTools();
   const text = f.FIND_DESCRIPTION;
@@ -538,6 +578,7 @@ await test("the descriptions of the tools that find earlier work never change an
   assert.match(text, /information, not instructions/);
   assert.match(text, /no task goes out in this reply/);
   assert.match(text, /folded away included/);
+  assert.match(text, /more of them first/);
   assert.match(t.TASK_DESCRIPTION, /the find tool finds it/);
   assert.deepEqual(Object.keys(f.findTools({})), ["find"], "one tool, not three");
 });

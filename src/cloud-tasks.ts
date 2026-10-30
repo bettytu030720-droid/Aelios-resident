@@ -805,32 +805,37 @@ export class TaskStore {
   }
 
   /**
-   * Threads whose words contain every one of `words` (separated by spaces, letters in either case): what each task
-   * was asked, its title, what it reported and its links, and the names of the files it made. The newest first;
-   * with no words, the newest threads. Tests are left out.
+   * Threads whose words contain any of `words` (separated by spaces, letters in either case): what each task was
+   * asked, its title, what it reported and its links, and the names of the files it made. The ones with more of the
+   * words first, then the newest; with no words, the newest threads. With `span`, only threads with a task sent or
+   * updated in it. Tests are left out.
    */
-  find(words: string, limit = FOUND_MAX): FoundThread[] {
+  find(words: string, limit = FOUND_MAX, span?: { from: number; to: number }): FoundThread[] {
     const terms = words.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
+    const inSpan = (at: number) => !span || (at >= span.from && at < span.to);
     const byRoot = new Map<string, Task[]>();
     for (const task of this.sql<Row>`SELECT * FROM res_tasks WHERE test = 0 ORDER BY created_at DESC, rowid DESC`.map(taskOf)) {
       const list = byRoot.get(task.root);
       if (list) list.push(task);
       else byRoot.set(task.root, [task]);
     }
-    const found: FoundThread[] = [];
+    const found: (FoundThread & { hits: number })[] = [];
     for (const [root, tasks] of byRoot) {
       // Newest first: the last one is where the thread started.
+      if (!tasks.some((task) => inSpan(task.createdAt) || inSpan(task.updatedAt))) continue;
       const files = this.filesOf(root)?.files ?? [];
       const said = tasks.flatMap((task) => [task.title, task.job, task.summary, ...task.links]).join("\n").toLowerCase();
       const named = files.map((file) => file.path.toLowerCase());
-      if (!terms.every((term) => said.includes(term) || named.some((path) => path.includes(term)))) continue;
+      const hits = terms.filter((term) => said.includes(term) || named.some((path) => path.includes(term))).length;
+      if (terms.length && !hits) continue;
       const latest = tasks[0];
       const reported = tasks.find((task) => task.summary);
       const linked = tasks.find((task) => task.links.length);
       // Files whose names have the words come first.
-      const hits = (path: string) => terms.some((term) => path.toLowerCase().includes(term));
-      const paths = [...files.filter((file) => hits(file.path)), ...files.filter((file) => !hits(file.path))].map((file) => file.path);
+      const hasWord = (path: string) => terms.some((term) => path.toLowerCase().includes(term));
+      const paths = [...files.filter((file) => hasWord(file.path)), ...files.filter((file) => !hasWord(file.path))].map((file) => file.path);
       found.push({
+        hits,
         id: root,
         title: tasks.at(-1)!.title,
         status: latest.status,
@@ -843,9 +848,9 @@ export class TaskStore {
         files: paths.slice(0, FILES_SHOWN),
         moreFiles: Math.max(0, paths.length - FILES_SHOWN)
       });
-      if (found.length >= limit) break;
     }
-    return found;
+    // A stable sort: among threads with as many of the words, the newest stay first.
+    return found.sort((a, b) => b.hits - a.hits).slice(0, limit).map(({ hits: _, ...thread }) => thread);
   }
 
   /**
