@@ -172,6 +172,16 @@ export async function sendVoice(config: TelegramConfig, chatId: string, voice: {
   return String(sent.result.message_id);
 }
 
+/** A file as a document (make_file), and the id of the message it became. */
+export async function sendDocument(config: TelegramConfig, chatId: string, file: { name: string; type: string; bytes: Uint8Array }): Promise<string> {
+  const form = new FormData();
+  form.set("chat_id", chatId);
+  form.set("document", new Blob([file.bytes], { type: file.type }), file.name);
+  const sent = await answer<{ message_id: number }>(await call(config, "sendDocument", form));
+  if (!sent.ok || !sent.result) throw new Error(`Telegram: ${sent.description ?? "sendDocument failed"}`);
+  return String(sent.result.message_id);
+}
+
 /** How a file goes to a chat: as a sticker (WebM, WebP, TGS), an animation (GIF) or a photo. */
 export type MediaKind = "sticker" | "animation" | "photo";
 

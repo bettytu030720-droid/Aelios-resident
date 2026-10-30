@@ -1441,8 +1441,8 @@ if (phase === "tasks" || phase === "tasks-quiet") {
   };
 
   if (phase === "tasks") {
-    await step("off by default: no cloud_task tool, nor the ones that find earlier work, even with the trigger filled in, until it is turned on; a wrong address is not taken", async () => {
-      assert.match(await ask("云端工具有哪些"), /没有 cloud_task。找不了旧线程和聊天记录。/);
+    await step("off by default: no cloud_task tool, nor find or make_file, even with the trigger filled in, until it is turned on; a wrong address is not taken", async () => {
+      assert.match(await ask("云端工具有哪些"), /没有 cloud_task。找不了旧线程和聊天记录。出不了文件。/);
       const bad = await web("/web/config", KEY, { key: "CLOUD_TASK_URL", text: "https://example.com/fire" });
       assert.equal(bad.status, 400);
       assert.match((await bad.json()).error, /API 触发网址/);
@@ -1452,7 +1452,7 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(await ask("/status"), /后台帮忙：关/);
       assert.deepEqual([(await tasks()).on, (await tasks()).configured], [false, false]);
       await set({ CLOUD_TASKS: "on" });
-      assert.match(await ask("云端工具有哪些"), /有 cloud_task。也能找旧线程和聊天记录。/);
+      assert.match(await ask("云端工具有哪些"), /有 cloud_task。也能找旧线程和聊天记录。能出文件。/);
     });
 
     await step("the settings page gives the scheduled task's prompt, with this resident's address in it", async () => {
@@ -1696,6 +1696,22 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       const around = await ask(`翻翻聊天前后 ${id}`);
       assert.ok(around.includes('"hit":true') && around.includes("有 cloud_task"), around);
       assert.match(await ask("翻翻聊天 没人说过这句话"), /Nothing said has those words/);
+    });
+
+    await step("make_file: the file goes to Telegram as a document and shows under the reply on the web page, to download", async () => {
+      const said = await ask("做个文件");
+      assert.ok(said.includes('"made":"计划.md"') && said.includes("Sent to Telegram"), said);
+      const doc = (await log()).filter((e) => e.kind === "tg.sendDocument").at(-1);
+      assert.deepEqual([doc?.body.chat_id, doc?.body.document?.file, doc?.body.document?.type], ["42", "计划.md", "text/markdown; charset=utf-8"]);
+      const line = (await (await web("/web/messages", KEY)).json()).data.filter((l) => l.role === "assistant").at(-1);
+      const content = "# 周末计划\n\n- 去公园\n- 早点睡";
+      assert.deepEqual(line.files?.map((f) => [f.name, f.size]), [["计划.md", Buffer.byteLength(content)]]);
+      const file = await web(`/web/file?key=${line.files[0].key}`, KEY);
+      assert.equal(file.status, 200);
+      assert.deepEqual(["content-type", "content-disposition", "content-security-policy"].map((h) => file.headers.get(h)), ["application/octet-stream", "attachment", "sandbox"]);
+      assert.equal(await file.text(), content);
+      assert.equal((await fetch(`${WORKER}/web/file?key=${line.files[0].key}`)).status, 401);
+      assert.equal((await web(`/web/file?key=${"0".repeat(32)}`, KEY)).status, 404);
     });
 
     await step("GitHub Actions with one token: the resident sets up a private repository, starts runs there, and lends a run its GitHub token and model", async () => {

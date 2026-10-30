@@ -211,6 +211,12 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
                   <span class="txt"><b x-text="p.title"></b><span x-text="p.host"></span></span>
                 </a>
               </template>
+              <template x-for="f in row.line.files || []" :key="f.key">
+                <button class="page-card" type="button" @click="openChatFile(f)">
+                  <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg></span>
+                  <span class="txt"><b x-text="f.name"></b><span x-text="sizeText(f.size)"></span></span>
+                </button>
+              </template>
               <template x-for="a in alarmCardsOf(row.line)" :key="a.id">
                 <div class="ccard" :class="!a.alive && 'gone'">
                   <div class="head">
@@ -501,6 +507,22 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
       </div>
     </template>
     <button class="btn" type="button" x-show="search.next" :disabled="search.busy" @click="runSearch(true)">更早的</button>
+  </section>
+
+  <!-- ===== a file a reply handed over ===== -->
+  <header class="top plain" x-show="authed && view === 'file'">
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回到聊天"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <h1 class="title" style="font-size: 17px" x-text="fileView.path"></h1>
+    <button class="icon-btn" type="button" @click="saveFile(fileView)" :disabled="fileView.busy" aria-label="下载" title="下载"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+  </header>
+  <section class="page" x-show="authed && view === 'file'">
+    <p class="hint" x-show="fileView.busy">在读…</p>
+    <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
+    <div class="file-md md" x-show="fileView.kind === 'markdown'" x-markdown="fileView.text"></div>
+    <template x-if="fileView.kind === 'html' && view === 'file'">
+      <iframe class="file-page" sandbox="allow-scripts" referrerpolicy="no-referrer" :srcdoc="fileView.text" title="页面预览"></iframe>
+    </template>
+    <p class="hint" x-show="fileView.kind === 'other'">这个文件不能直接看，点右上角下载。</p>
   </section>
 
   <!-- ===== threads ===== -->

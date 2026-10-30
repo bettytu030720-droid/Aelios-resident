@@ -337,6 +337,22 @@ assert.match(page.fileView.url, /^blob:/);
 await page.viewFile({ path: 'blob.bin', size: 2 });
 assert.equal(page.fileView.kind, 'other');
 assert.equal(page.fileView.text, '');
+// A file a reply handed over (make_file): fetched by its key, on a page of its own; back closes it.
+assert.ok(html.includes('@click="openChatFile(f)"'), 'a file card under the reply');
+page.closeFile();
+files['计划.md'] = '# 计划';
+page.api = async (path, options) => {
+  fetched.push(path);
+  assert.ok(options && options.bytes);
+  return new TextEncoder().encode(files['计划.md']);
+};
+page.openChatFile({ key: 'a'.repeat(32), name: '计划.md', size: 8 });
+assert.equal(page.view, 'file');
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(fetched.at(-1), '/web/file?key=' + 'a'.repeat(32));
+assert.deepEqual([page.fileView.path, page.fileView.kind, page.fileView.text], ['计划.md', 'markdown', '# 计划']);
+page.goBack();
+assert.deepEqual([page.view, page.fileView.path, page.fileView.key], ['chat', '', '']);
 page.closeFile();
 assert.equal(page.fileView.path, '');
 assert.equal(page.backText(), '回到聊天');
