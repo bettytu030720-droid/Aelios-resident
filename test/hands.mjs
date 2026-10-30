@@ -67,21 +67,34 @@ try {
     assert.ok(!JSON.stringify(body).includes('sensitive-code'));
     return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Ready' } }] }));
   };
-  const base = { residentUrl: 'https://resident.example', modelBaseUrl: 'https://model.example/v1', modelApiKey: 'test-key', model: 'fallback/model', jobText, workdir };
+  const base = { residentUrl: 'https://resident.example', modelBaseUrl: 'https://model.example/v1', modelApiKey: 'test-key', model: 'fallback/model', jobText, workdir, modelRetryMs: 1 };
   assert.equal((await runHands(base)).status, 'done');
   const missing = await runHands({ ...base, model: '', jobText: jobText.replace('model: selected/model\n', '') });
   assert.equal(missing.status, 'failed');
   assert.match(missing.summary, /MODEL_NAME 要一起给/);
-  globalThis.fetch = async (url, init) => { if (String(url).includes('/tasks/')) { reports.push(JSON.parse(init.body)); return new Response('{}'); } throw new Error('do not leak test-key'); };
-  assert.equal((await runHands(base)).status, 'failed');
+  let modelCalls = 0;
+  globalThis.fetch = async (url, init) => { if (String(url).includes('/tasks/')) { reports.push(JSON.parse(init.body)); return new Response('{}'); } modelCalls++; throw new Error('do not leak test-key'); };
+  const offline = await runHands(base);
+  assert.deepEqual([offline.status, offline.summary, modelCalls], ['failed', '模型连接失败或超时（重试过一次）', 2], 'a call that cannot connect is tried once more');
   assert.ok(!JSON.stringify(reports).includes('test-key'));
-  globalThis.fetch = async (url) => String(url).includes('/tasks/') ? new Response('{}') : new Response('raw secret test-key', { status: 401 });
+  modelCalls = 0;
+  globalThis.fetch = async (url) => String(url).includes('/tasks/') ? new Response('{}') : (modelCalls++, new Response('raw secret test-key', { status: 401 }));
   assert.equal((await runHands(base)).summary, '模型调用失败（HTTP 401）');
+  assert.equal(modelCalls, 1, 'a refusal (4xx) is not tried again');
+  // A server error (a 502 from a model call that timed out) is tried once more, and the second answer counts.
+  modelCalls = 0;
+  globalThis.fetch = async (url) => String(url).includes('/tasks/') ? new Response('{}')
+    : ++modelCalls === 1 ? Response.json({ error: { message: 'the model call failed: timeout' } }, { status: 502 })
+    : new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Ready' } }] }));
+  const retried = [];
+  assert.equal((await runHands({ ...base, log: (line) => retried.push(line) })).status, 'done');
+  assert.equal(modelCalls, 2);
+  assert.ok(retried.includes('模型调用失败（HTTP 502），过一会儿再试一次'), JSON.stringify(retried));
   globalThis.fetch = async (url) => String(url).includes('/tasks/') ? new Response('{}', { status: 403 }) : new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Ready' } }] }));
   await assert.rejects(runHands(base), /report could not be delivered/);
   globalThis.fetch = async (url) => { assert.ok(String(url).includes('/tasks/')); return new Response('{}'); };
   assert.equal((await runHands({ residentUrl: base.residentUrl, jobText: 'task: t_test\ncode: test-code\ntitle: 接通测试\n\nThis is a test from the resident\'s settings page' })).status, 'done');
-  console.log('PASS selected model wins, no implicit model, network/HTTP failures are safe, rejected reports fail and connectivity test needs no model');
+  console.log('PASS selected model wins, no implicit model, network/HTTP failures are safe and a timeout or 5xx is tried once more, rejected reports fail and connectivity test needs no model');
 
   // With no model endpoint of its own, the model is called through the resident with the task's code, and on
   // Actions the GitHub token comes from the resident too: it goes to gh and git, and never into a report.
@@ -137,8 +150,8 @@ try {
       if (where.endsWith('/chat/completions')) return Response.json({ error: { message: 'the model call failed: 5007 no such model' } }, { status: 502 });
       return new Response('{}');
     };
-    const modelDown = await runHands({ residentUrl: 'https://resident.example', jobText: jobText.replace('model: selected/model\n', ''), workdir, askToken: true, log: (line) => lines.push(line) });
-    assert.equal(modelDown.summary, '模型调用失败（HTTP 502）：the model call failed: 5007 no such model');
+    const modelDown = await runHands({ residentUrl: 'https://resident.example', jobText: jobText.replace('model: selected/model\n', ''), workdir, askToken: true, log: (line) => lines.push(line), modelRetryMs: 1 });
+    assert.equal(modelDown.summary, '模型调用失败（HTTP 502，重试过一次）：the model call failed: 5007 no such model');
     assert.ok(lines.includes('向住户借 GitHub token'), JSON.stringify(lines));
     assert.ok(lines.at(-1).startsWith('没做完：模型调用失败'), JSON.stringify(lines));
     const cloneFails = async (bin, args) => {
