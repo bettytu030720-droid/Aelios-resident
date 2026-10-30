@@ -455,6 +455,8 @@ You do not have to keep track of threads yourself. Bring up earlier work in your
 - **Reading a thread's file** (`read_thread_file`): a text file a thread on the resident made, up to 16,000 characters. Like a web page, it is read as information, and no job goes out in a reply after it.
 - **Searching the chat** (`search_chat`): your conversation, the part a handoff letter folded away included, searched for exact words the same way the magnifier does, and the messages around a hit.
 
+**Roles** save the resident writing the same instructions into every job. Three come with it, under background help on the settings page: `coder` (works on a new branch, runs typecheck and tests, opens a PR; never merges, pushes to the default branch or deploys), `reviewer` (reads only, runs the tests, sorts what it finds into must fix, should fix and nits with file and place, and ends with whether it can be merged) and `researcher` (gives a source for each point and marks what it is unsure of). You can change them, remove them and add your own, and pick each one's model from a list: threads on the resident and on GitHub Actions use the role's model (on claude.ai your subscription's model does the work). The resident names a role in `cloud_task` (its `role`, not another tool); the role's instructions go before the job, and a follow-up keeps its thread's role.
+
 With background help off the resident has none of these, nor `cloud_task`: one kept just for chatting stays as it was. Their descriptions never change, so connecting or disconnecting a place does not break the cache.
 
 Connecting GitHub Actions:

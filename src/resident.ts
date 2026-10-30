@@ -197,6 +197,7 @@ import { effortOf } from "./thinking";
 import { activityOf, WebDraft, type Activity } from "./web/history";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { findTools, type FindHost } from "./find-tools";
+import { RoleStore, unknownRole, withRole, type Role } from "./task-roles";
 import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
 import { validateUrlWithDns } from "./web/validate-url";
@@ -331,7 +332,7 @@ export type TelegramState = {
 };
 
 /** cloud_task's input. */
-type TaskInput = { title: string; job: string; repo?: string; follow_up_of?: string; execution?: TaskExecution };
+type TaskInput = { title: string; job: string; repo?: string; follow_up_of?: string; execution?: TaskExecution; role?: string };
 
 /**
  * A line of a thread on the web page: what was asked (the job, or their own words), the thread's own messages (for a
@@ -1323,6 +1324,23 @@ export class Resident extends Think<Env> {
     return this.#taskStore;
   }
 
+  #roleStore: RoleStore | null = null;
+  private taskRoles(): RoleStore {
+    this.#roleStore ??= new RoleStore(this.sqlShownOnWeb());
+    return this.#roleStore;
+  }
+
+  /** The settings page's roles: saved (added or changed) or removed; the list as it now is. */
+  webSaveRole(input: { name?: unknown; template?: unknown; model?: unknown }): { roles: Role[] } | { error: string } {
+    const saved = this.taskRoles().save(input);
+    return "error" in saved ? saved : { roles: this.taskRoles().list() };
+  }
+
+  webRemoveRole(name: string): { roles: Role[] } {
+    this.taskRoles().remove(name);
+    return { roles: this.taskRoles().list() };
+  }
+
   // Off unless they turn it on. Threads here need nothing more; a trigger adds GitHub Actions or claude.ai.
   private cloudTasksOn(): boolean {
     return this.cfg.CLOUD_TASKS?.trim().toLowerCase() === "on";
@@ -1362,8 +1380,13 @@ export class Resident extends Think<Env> {
     return Number.isFinite(minutes) && minutes > 0 ? minutes : QUIET_MINUTES;
   }
 
-  /** The model threads work with, here and on GitHub Actions: the one picked for them, else Workers AI's. */
-  private threadModel(): string {
+  /**
+   * The model threads work with, here and on GitHub Actions: the task's role's when it has one, else the one picked
+   * for threads, else Workers AI's.
+   */
+  private threadModel(task?: Task): string {
+    const own = task?.role ? this.taskRoles().get(task.role)?.model : "";
+    if (own) return own;
     const picked = this.cfg.CLOUD_TASK_MODEL?.trim();
     if (picked) return picked;
     return this.env.FAKE_MODEL === "true" ? "fake" : DEFAULT_THREAD_MODEL;
@@ -1373,8 +1396,8 @@ export class Resident extends Think<Env> {
    * The threads' model as something to call. A Workers AI id runs on Cloudflare here; any other goes through
    * Aelios when it is connected (marked auxiliary, so nothing is recorded), else as the id says.
    */
-  private threadModelToCall() {
-    const name = this.threadModel();
+  private threadModelToCall(task?: Task) {
+    const name = this.threadModel(task);
     if (name === "fake" && this.env.FAKE_MODEL === "true") return { name, model: fakeModel() };
     const viaAelios = Boolean(aeliosConfig(this.cfg)) && !name.startsWith("@cf/");
     return { name, model: this.resolveModel(viaAelios ? this.chatModel(name, { auxiliary: true, thinking: false }) : this.modelFor(name)) };
@@ -1396,7 +1419,8 @@ export class Resident extends Think<Env> {
           job: z.string().describe("The whole job, for a thread that knows nothing else."),
           repo: z.string().optional().describe("owner/name of the GitHub repository to work in, if there is one."),
           execution: z.enum(["local", "external", "linux"]).optional().describe("Where it runs, from the description. Leave it out for the usual place."),
-          follow_up_of: z.string().optional().describe("The id (t_…) of an earlier task or thread this one continues; find_threads finds it.")
+          follow_up_of: z.string().optional().describe("The id (t_…) of an earlier task or thread this one continues; find_threads finds it."),
+          role: z.string().optional().describe("A role from their settings page (coder, reviewer, researcher, or one they added): its instructions go before your job and its threads use its model, so write only what this job needs. A follow-up keeps its thread's role.")
         }),
         execute: async (input) => this.sendTask(input as TaskInput)
       }),
@@ -1458,11 +1482,16 @@ export class Resident extends Think<Env> {
     // Any task of a thread, or the thread itself: it carries on from the thread's newest task.
     const follows = earlier ? this.cloudTasks().continuing(earlier) : null;
     if (earlier && !follows) return { error: `No task or thread ${earlier}. find_threads finds them.` };
+    const roles = this.taskRoles();
+    const roleName = input.role?.trim().toLowerCase() || follows?.role || "";
+    const role = roleName ? roles.get(roleName) : null;
+    if (roleName && !role && input.role?.trim()) return { error: unknownRole(roleName, roles.list()) };
     const execution = this.placeFor(input.execution);
     if (typeof execution === "object") return execution;
     const id = this.activeTurn!.requestId;
     this.#turnTasks.set(id, (this.#turnTasks.get(id) ?? 0) + 1);
-    const task = await this.startTask({ title: input.title, job: input.job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution }, follows);
+    const job = role ? withRole(role, input.job) : input.job;
+    const task = await this.startTask({ title: input.title, job, repo: input.repo?.trim() || follows?.repo, follows: follows?.id, execution, role: role?.name }, follows);
     if ("error" in task) return { error: task.error };
     return { task: task.id, title: task.title, runs: task.runs, session_url: task.sessionUrl, note: "Sent. Its result comes back to you later as a note." };
   }
@@ -1591,7 +1620,7 @@ export class Resident extends Think<Env> {
     await this.ctx.storage.put(`hands_calls:${id}`, calls);
     const request = fromOpenAI(body);
     if ("error" in request) return failed(400, request.error);
-    const { name, model } = this.threadModelToCall();
+    const { name, model } = this.threadModelToCall(task);
     try {
       const result = await generateText({
         model,
@@ -1666,7 +1695,7 @@ export class Resident extends Think<Env> {
     const descriptors = await Promise.all(Object.entries(tools).map(async ([name, item]) => ({
       name, description: typeof item.description === "string" ? item.description : "", schema: await asSchema(item.inputSchema).jsonSchema as JSONSchema7
     })));
-    const model = this.threadModel();
+    const model = this.threadModel(task);
     return {
       // A Workers AI model runs on Cloudflare, not through Aelios.
       model, memory: model.startsWith("@cf/") ? null : aeliosConfig(this.cfg), gatewayId: this.cfg.AI_GATEWAY_ID?.trim() ?? "",
@@ -1801,6 +1830,7 @@ export class Resident extends Think<Env> {
     limit: number;
     tasks: TaskCard[];
     open: number;
+    roles: Role[];
   }> {
     if (origin) await this.noteOrigin(origin);
     const own = (await this.ctx.storage.get<string>("origin")) ?? "";
@@ -1823,7 +1853,8 @@ export class Resident extends Think<Env> {
       // Threads at work or waiting for her, as 线程 lists them (tests are not threads): the count on its button.
       open: this.cloudTasks()
         .threads()
-        .filter((thread) => thread.status === "sent" || thread.status === "working" || thread.waiting).length
+        .filter((thread) => thread.status === "sent" || thread.status === "working" || thread.waiting).length,
+      roles: this.taskRoles().list()
     };
   }
 

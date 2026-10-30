@@ -266,6 +266,8 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
           subscription?: unknown;
           endpoint?: string;
           execution?: string;
+          template?: string;
+          model?: string;
         })
       : {};
   switch (`${request.method} ${url.pathname}`) {
@@ -426,6 +428,12 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       const tried = await agent.webTestTask(at.base, place);
       return Response.json(tried, { status: "error" in tried ? 400 : 200 });
     }
+    case "POST /web/tasks/roles": {
+      const saved = await agent.webSaveRole({ name: body.name, template: body.template, model: body.model });
+      return Response.json(saved, { status: "error" in saved ? 400 : 200 });
+    }
+    case "POST /web/tasks/roles/remove":
+      return Response.json(await agent.webRemoveRole(String(body.name ?? "")));
     case "POST /web/tasks/github": {
       const set = await agent.webGitHubSetup(at.base);
       return Response.json(set, { status: "error" in set ? 400 : 200 });

@@ -394,7 +394,9 @@ await test("threads: follow-ups share a root, their own words do not count or st
   assert.equal(legacy.root, "t_aaaaaaaaaa");
   assert.equal(legacy.runs, "external");
   assert.equal(legacy.direct, false);
+  assert.equal(legacy.role, "", "tasks from before had no role");
   new t.TaskStore(sql); // a second start leaves it as it is
+  assert.equal(migrated.get(migrated.add({ title: "审一下", job: "x", role: "reviewer" }).task.id).role, "reviewer");
   assert.ok(migrated.add({ title: "新的", job: "x" }).task);
 });
 

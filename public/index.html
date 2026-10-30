@@ -836,6 +836,42 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
             </details>
             <div class="inline"><span class="spacer"></span><button class="btn primary small" type="button" :disabled="!cloud.on || Boolean(cloudBusy)" @click="testTask()" x-text="cloudBusy === true ? '派出去…' : '试一下'"></button></div>
             <p class="error" x-show="cloudError" x-text="cloudError"></p>
+            <template x-if="cloud.on">
+              <div class="set roles">
+                <div class="label"><span>角色</span><span class="spacer"></span>
+                  <button class="icon-btn" type="button" x-show="!roleEdit && cloud.roles.length < 12" @click="editRole(null)" aria-label="加一个角色" title="加一个角色"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+                <p class="hint">派活时带上角色，要求就不用每次从头写。选的模型管住户这里和 GitHub Actions 上的线程，claude.ai 上用你订阅的模型。</p>
+                <template x-for="row in roleRows()" :key="row.key">
+                  <div class="mini-row">
+                    <template x-if="!editingRole(row)">
+                      <div class="role-view">
+                        <div class="top-line"><span class="t" x-text="row.role.name"></span><span class="pill" x-text="roleModelText(row.role)"></span><span class="spacer"></span>
+                          <button class="icon-btn" type="button" :disabled="roleBusy || Boolean(roleEdit)" @click="editRole(row.role)" aria-label="改" title="改"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></button>
+                          <button class="icon-btn" type="button" :disabled="roleBusy || Boolean(roleEdit)" @click="removeRole(row.role)" aria-label="删掉" title="删掉"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></div>
+                        <p class="hint clip" x-text="row.role.template"></p>
+                      </div>
+                    </template>
+                    <template x-if="editingRole(row)">
+                      <div class="role-edit">
+                        <input x-show="roleEdit.fresh" x-model="roleEdit.name" type="text" placeholder="名字，比如 tester" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="角色的名字">
+                        <b x-show="!roleEdit.fresh" x-text="roleEdit.name"></b>
+                        <textarea x-model="roleEdit.template" rows="5" maxlength="1500" placeholder="这个角色怎么干活、交回来写什么" aria-label="怎么干活"></textarea>
+                        <select x-model="roleEdit.pick" aria-label="用哪个模型">
+                          <option value="">线程的模型</option>
+                          <template x-for="id in roleModels()" :key="id"><option :value="id" :selected="id === roleEdit.pick" x-text="id"></option></template>
+                          <option value="…">自己填…</option>
+                        </select>
+                        <input x-show="roleEdit.pick === '…'" x-model="roleEdit.own" type="text" placeholder="模型 id，比如 anthropic/claude-haiku-5.5" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="模型 id">
+                        <div class="inline"><span class="spacer"></span>
+                          <button class="icon-btn" type="button" @click="roleEdit = null" aria-label="不改了" title="不改了"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+                          <button class="icon-btn" type="button" :disabled="roleBusy || !roleEdit.name.trim() || !roleEdit.template.trim()" @click="saveRole()" aria-label="存" title="存"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg></button></div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <p class="error" x-show="roleError" x-text="roleError"></p>
+              </div>
+            </template>
             <template x-if="cloud.tasks.length">
               <div class="section">
                 <div class="label"><span>最近的活</span><span class="spacer"></span><span class="pill" x-text="'24 小时内 ' + cloud.today + ' / ' + cloud.limit + ' 单'"></span></div>

@@ -309,6 +309,50 @@ assert.equal(page.textInEffect(taskModel), 'my-provider/my-model');
 assert.equal(page.linkText('https://github.com/o/r/pull/7'), 'r #7');
 console.log('PASS cloud tasks: a card under the reply, escaped and https only; the settings appear once it is turned on');
 
+// Roles: icon buttons with names, a model picked from a list or written in, saved and removed through the API.
+assert.ok(html.includes('aria-label="加一个角色" title="加一个角色"') && html.includes('@click="removeRole(row.role)" aria-label="删掉" title="删掉"'));
+page.model = { ...page.model, model: 'anthropic/claude-opus-5.5', recent: ['custom/my-model', 'anthropic/claude-opus-5.5'] };
+page.aeliosModels = { loaded: true, curated: true, items: [{ id: 'openai/gpt-5.5' }], error: '' };
+const picks = page.roleModels();
+assert.deepEqual([...picks.slice(0, 3)], ['anthropic/claude-opus-5.5', 'custom/my-model', 'anthropic/claude-sonnet-5.5']);
+assert.ok(picks.includes('@cf/zai-org/glm-4.7-flash') && picks.at(-1) === 'openai/gpt-5.5');
+assert.equal(new Set(picks).size, picks.length, 'each once');
+page.editRole({ name: 'coder', template: '改代码。', model: 'custom/my-model' });
+assert.deepEqual([page.roleEdit.fresh, page.roleEdit.pick, page.roleEdit.own], [false, 'custom/my-model', '']);
+page.editRole({ name: 'odd', template: 'x', model: 'someone/unlisted' });
+assert.deepEqual([page.roleEdit.pick, page.roleEdit.own], ['…', 'someone/unlisted'], 'a model not in the list is shown written in');
+assert.equal(page.roleModelText({ model: '' }), '线程的模型');
+page.cloud = { ...page.cloud, roles: [{ name: 'coder', template: '改代码。', model: '' }] };
+const roleCalls = [];
+page.api = async (path, options) => {
+  roleCalls.push([path, options.body]);
+  return { roles: [{ name: 'coder', template: '改代码。', model: '' }, { name: 'tester', template: '跑测试。', model: 'x/own' }] };
+};
+// The one being edited shows its form in its place; a new one gets a row of its own at the end.
+assert.equal(page.roleRows().map((row) => row.key).join('|'), 'coder');
+page.editRole(page.cloud.roles[0]);
+assert.deepEqual([page.editingRole(page.roleRows()[0]), page.roleRows().length], [true, 1]);
+page.editRole(null);
+const rows = page.roleRows();
+assert.deepEqual([rows.length, page.editingRole(rows[0]), page.editingRole(rows[1])], [2, false, true]);
+Object.assign(page.roleEdit, { name: 'tester', template: '跑测试。', pick: '…', own: ' x/own ' });
+await page.saveRole();
+assert.equal(JSON.stringify(roleCalls.at(-1)), JSON.stringify(['/web/tasks/roles', { name: 'tester', template: '跑测试。', model: 'x/own' }]));
+assert.equal(page.roleEdit, null);
+assert.equal(page.cloud.roles.map((role) => role.name).join('|'), 'coder|tester');
+page.api = async (path, options) => { roleCalls.push([path, options.body]); return { roles: [] }; };
+await page.removeRole({ name: 'tester' });
+assert.equal(JSON.stringify(roleCalls.at(-1)), JSON.stringify(['/web/tasks/roles/remove', { name: 'tester' }]));
+assert.equal(page.cloud.roles.length, 0);
+page.api = async () => { throw new Error('名字用小写英文字母开头'); };
+page.editRole(null);
+Object.assign(page.roleEdit, { name: '测试', template: 'x' });
+await page.saveRole();
+assert.equal(page.roleError, '名字用小写英文字母开头');
+assert.ok(page.roleEdit, 'what she wrote stays to fix');
+page.roleEdit = null;
+console.log('PASS roles: icon buttons, a model from the list or written in, saved and removed');
+
 // Threads: a file is fetched as bytes and shown by its kind; a page only inside a sandboxed frame.
 assert.ok(html.includes('<iframe class="file-page" sandbox="allow-scripts"'), 'a page runs apart from this one');
 assert.ok(!/sandbox="[^"]*allow-same-origin/.test(html));

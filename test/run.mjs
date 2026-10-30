@@ -1698,6 +1698,32 @@ if (phase === "tasks" || phase === "tasks-quiet") {
       assert.match(await ask("翻翻聊天 没人说过这句话"), /Nothing said has those words/);
     });
 
+    await step("roles: three come with it; one she adds on the settings page, with its own model, does a thread's job with its template first", async () => {
+      assert.deepEqual((await tasks()).roles.map((role) => [role.name, role.model]), [["coder", ""], ["reviewer", ""], ["researcher", ""]]);
+      const bad = await web("/web/tasks/roles", KEY, { name: "测试", template: "x" });
+      assert.equal(bad.status, 400);
+      assert.match((await bad.json()).error, /小写英文字母开头/);
+      assert.equal((await fetch(`${WORKER}/web/tasks/roles`, { method: "POST", body: "{}" })).status, 401);
+      // The threads' own model is one that cannot run; the role's own (the fake one) does the work.
+      await set({ CLOUD_TASK_MODEL: "@cf/no/such-model" });
+      const saved = await web("/web/tasks/roles", KEY, { name: "tester", template: "只跑测试，写出哪些没过。", model: "fake" });
+      assert.equal(saved.status, 200);
+      assert.deepEqual((await saved.json()).roles.map((role) => role.name), ["coder", "reviewer", "researcher", "tester"]);
+      assert.match(await ask("按角色派活 nobody"), /there is no role nobody\. Their roles: coder, reviewer, researcher, tester\./);
+      const before = (await sent()).length;
+      await post("按角色派活 tester");
+      const [out, told] = await waitForSends(before, 2, 30000);
+      const id = out.match(/\bt_[0-9a-f]{10}\b/)?.[0];
+      assert.ok(id, out);
+      assert.ok(told.startsWith(`云端回来了：(Not from them: your cloud task ${id} "按角色干" reported back: it is done.`), told);
+      assert.equal((await tasks()).tasks.find((t) => t.id === id)?.status, "done");
+      const thread = await (await web(`/web/thread?id=${id}`, KEY)).json();
+      assert.equal(thread.lines[0].text, "只跑测试，写出哪些没过。\n\n看一下 README。");
+      await set({ CLOUD_TASK_MODEL: "" });
+      const removed = await (await web("/web/tasks/roles/remove", KEY, { name: "tester" })).json();
+      assert.deepEqual(removed.roles.map((role) => role.name), ["coder", "reviewer", "researcher"]);
+    });
+
     await step("GitHub Actions with one token: the resident sets up a private repository, starts runs there, and lends a run its GitHub token and model", async () => {
       // A token that cannot write workflow files says so on the settings page.
       await set({ CLOUD_TASK_GITHUB_TOKEN: "no-workflow-token" });
@@ -1790,12 +1816,12 @@ if (phase === "tasks" || phase === "tasks-quiet") {
     });
 
     await step("ten a day at most, on the settings page and in the chat", async () => {
-      for (let i = 0; i < 3; i += 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
+      for (let left = 10 - (await tasks()).today; left > 0; left -= 1) assert.equal((await web("/web/tasks/test", KEY, {})).status, 200);
       const over = await web("/web/tasks/test", KEY, {});
       assert.equal(over.status, 400);
       assert.match((await over.json()).error, /已经派了 10 单/);
       assert.match(await ask("派活"), /10 tasks have gone out in the last 24 hours/);
-      assert.equal((await fires()).length, 10, "8 sent to the Claude trigger (1 ran locally, 1 on GitHub Actions), the wrong token and the busy trigger tried");
+      assert.equal((await fires()).length, 9, "7 sent to the Claude trigger (2 ran locally, 1 on GitHub Actions), the wrong token and the busy trigger tried");
     });
   }
 

@@ -383,7 +383,11 @@ function resident() {
     siteError: '',
     STICKER_META: { key: 'STICKERS', label: '发表情包', def: 'on' },
     stickers: { on: true, packs: [], left: 0 },
-    cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] },
+    cloud: { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [], roles: [] },
+    // The role being written: its name, how it works, and its model ('' the threads' own, '…' one written in own).
+    roleEdit: null,
+    roleBusy: false,
+    roleError: '',
     threads: { loaded: false, on: false, threads: [] },
     search: freshSearch(),
     thread: emptyThread(),
@@ -646,7 +650,8 @@ function resident() {
       this.sites = [];
       this.search = freshSearch();
       this.stickers = { on: true, packs: [], left: 0 };
-      this.cloud = { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [] };
+      this.cloud = { on: false, configured: false, mode: 'off', origin: '', prompt: '', github: { on: false, repo: '', url: '', problem: '', tokenPage: '' }, today: 0, limit: 10, tasks: [], roles: [] };
+      this.roleEdit = null;
       this.threads = { loaded: false, on: false, threads: [] };
       this.thread = emptyThread();
       this.alarms = { on: false, limit: 10, alarms: [] };
@@ -2618,6 +2623,66 @@ function resident() {
         this.cloudError = error.message;
       } finally {
         this.cloudBusy = false;
+      }
+    },
+
+    // ---- roles: job templates for threads, each with the model its threads use ----
+    // The models to pick from: the chat's, the recent ones, the usual ones, and the list kept in Aelios.
+    roleModels() {
+      var seen = {};
+      var list = [];
+      var add = function (id) { if (id && !seen[id]) { seen[id] = true; list.push(id); } };
+      add(this.model.model);
+      (this.model.recent || []).forEach(add);
+      FAVORITES.forEach(add);
+      if (this.aeliosModels.curated) this.aeliosModels.items.forEach(function (item) { add(item.id); });
+      return list;
+    },
+    // The roles as rows, and a row for a new one while it is being written; the one being edited shows its form.
+    roleRows() {
+      var rows = this.cloud.roles.map(function (role) { return { key: role.name, role: role }; });
+      if (this.roleEdit && this.roleEdit.fresh) rows.push({ key: ' new', role: null });
+      return rows;
+    },
+    editingRole(row) {
+      var edit = this.roleEdit;
+      return Boolean(edit) && (row.role ? !edit.fresh && edit.name === row.role.name : edit.fresh);
+    },
+    editRole(role) {
+      var model = role ? role.model : '';
+      var listed = !model || this.roleModels().indexOf(model) >= 0;
+      this.roleError = '';
+      this.roleEdit = { fresh: !role, name: role ? role.name : '', template: role ? role.template : '', pick: listed ? model : '…', own: listed ? '' : model };
+    },
+    roleModelText(role) {
+      return role.model ? this.shortName(role.model) : '线程的模型';
+    },
+    async saveRole() {
+      var edit = this.roleEdit;
+      if (!edit || this.roleBusy) return;
+      this.roleBusy = true;
+      this.roleError = '';
+      try {
+        var model = edit.pick === '…' ? edit.own.trim() : edit.pick;
+        var saved = await this.api('/web/tasks/roles', { method: 'POST', body: { name: edit.name, template: edit.template, model: model } });
+        this.cloud.roles = saved.roles;
+        this.roleEdit = null;
+      } catch (error) {
+        this.roleError = error.message;
+      } finally {
+        this.roleBusy = false;
+      }
+    },
+    async removeRole(role) {
+      if (this.roleBusy || !confirm('删掉 ' + role.name + '？派活时就不能再用它了。')) return;
+      this.roleBusy = true;
+      try {
+        this.cloud.roles = (await this.api('/web/tasks/roles/remove', { method: 'POST', body: { name: role.name } })).roles;
+        if (this.roleEdit && this.roleEdit.name === role.name) this.roleEdit = null;
+      } catch (error) {
+        this.roleError = error.message;
+      } finally {
+        this.roleBusy = false;
       }
     },
 

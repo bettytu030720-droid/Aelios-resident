@@ -453,6 +453,13 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
 .status-line { margin: 0; padding: 8px 12px; border-radius: 12px; background: var(--line-soft); font-size: 13px; color: var(--text-2); }
 .status-line.needs { color: var(--accent-text); }
 input.secret { -webkit-text-security: disc; font-family: var(--mono); }
+.roles .icon-btn { width: 36px; height: 36px; }
+.roles .top-line .t { flex: none; }
+.roles .hint.clip { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.roles .role-view, .roles .role-edit { display: flex; flex-direction: column; gap: 8px; }
+.roles .role-edit input, .roles .role-edit select, .roles .role-edit textarea { width: 100%; height: 42px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--input-bg); outline: 0; font-size: 15px; }
+.roles .role-edit textarea { height: auto; padding: 10px 12px; line-height: 1.5; resize: vertical; }
+.roles .role-edit :focus { border-color: var(--accent); }
 .copy-box { width: 100%; height: 150px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--input-bg); color: var(--text-2); font: 12px/1.5 var(--mono); resize: vertical; outline: 0; }
 .mini-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 14px; background: var(--input-bg); border: 1px solid var(--line-soft); }
 .mini-row .top-line { display: flex; align-items: center; gap: 8px; }

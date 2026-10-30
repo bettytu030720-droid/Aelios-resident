@@ -72,6 +72,8 @@ export type Task = {
   runs: TaskExecution;
   /** Written by them in the thread, not sent by the resident. */
   direct: boolean;
+  /** The role it was sent with (task-roles.ts), or "": its template is in the job, and its model does the work. */
+  role: string;
   status: TaskStatus;
   sessionUrl: string;
   progress: string;
@@ -403,6 +405,7 @@ type Row = {
   root: string;
   runs: string;
   direct: number;
+  role: string;
   status: TaskStatus;
   session_url: string;
   progress: string;
@@ -430,6 +433,7 @@ function taskOf(row: Row): Task {
     root: row.root || row.id,
     runs: (["local", "linux", "external"].includes(row.runs) ? row.runs : "external") as TaskExecution,
     direct: Boolean(row.direct),
+    role: row.role ?? "",
     status: row.status,
     sessionUrl: row.session_url,
     progress: row.progress,
@@ -495,6 +499,7 @@ export type NewTask = {
   execution?: TaskExecution;
   /** Written by them in the thread. */
   direct?: boolean;
+  role?: string;
 };
 
 /** A GitHub pull request link: github.com/<owner>/<repo>/pull/<n>. */
@@ -530,7 +535,8 @@ export class TaskStore {
       ["direct", () => sql`ALTER TABLE res_tasks ADD COLUMN direct INTEGER NOT NULL DEFAULT 0`],
       ["choices", () => sql`ALTER TABLE res_tasks ADD COLUMN choices TEXT NOT NULL DEFAULT '[]'`],
       ["chosen", () => sql`ALTER TABLE res_tasks ADD COLUMN chosen TEXT NOT NULL DEFAULT ''`],
-      ["settled", () => sql`ALTER TABLE res_tasks ADD COLUMN settled INTEGER NOT NULL DEFAULT 0`]
+      ["settled", () => sql`ALTER TABLE res_tasks ADD COLUMN settled INTEGER NOT NULL DEFAULT 0`],
+      ["role", () => sql`ALTER TABLE res_tasks ADD COLUMN role TEXT NOT NULL DEFAULT ''`]
     ] as const) {
       try {
         if (column === "root") sql`SELECT root FROM res_tasks LIMIT 0`;
@@ -538,7 +544,8 @@ export class TaskStore {
         else if (column === "direct") sql`SELECT direct FROM res_tasks LIMIT 0`;
         else if (column === "choices") sql`SELECT choices FROM res_tasks LIMIT 0`;
         else if (column === "chosen") sql`SELECT chosen FROM res_tasks LIMIT 0`;
-        else sql`SELECT settled FROM res_tasks LIMIT 0`;
+        else if (column === "settled") sql`SELECT settled FROM res_tasks LIMIT 0`;
+        else sql`SELECT role FROM res_tasks LIMIT 0`;
       } catch {
         add();
       }
@@ -557,10 +564,10 @@ export class TaskStore {
     const now = Date.now();
     const follows = input.follows ? this.get(input.follows) : null;
     const root = follows?.root ?? id;
-    this.sql`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, status, session_url, progress,
+    this.sql`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, role, status, session_url, progress,
       progress_at, progress_count, summary, links, notices, test, created_at, updated_at)
       VALUES (${id}, ${code}, ${title}, ${job}, ${repo}, ${input.follows ?? ""}, ${root}, ${input.execution ?? "external"},
-      ${input.direct ? 1 : 0}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
+      ${input.direct ? 1 : 0}, ${input.role ?? ""}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
     return { task: this.get(id)!, code };
   }
 
