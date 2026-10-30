@@ -338,6 +338,15 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       if (!file) return new Response("not found", { status: 404 });
       return new Response(file.bytes, { headers: privateFile(file.type) });
     }
+    case "GET /web/file": {
+      // A file a reply handed over: bytes to save, never a page of this origin (the web page decides how to show it).
+      const key = url.searchParams.get("key") ?? "";
+      const bytes = /^[0-9a-f]{32}$/.test(key) ? await agent.webFile(key) : null;
+      if (!bytes) return new Response("not found", { status: 404 });
+      return new Response(bytes, {
+        headers: { "content-type": "application/octet-stream", "content-disposition": "attachment", "content-security-policy": "sandbox", "x-content-type-options": "nosniff", "cache-control": "private, max-age=86400" }
+      });
+    }
     case "POST /web/speak": {
       const spoken = await agent.webSpeak(String(body.id ?? ""));
       return Response.json(spoken, { status: "error" in spoken ? 400 : 200 });

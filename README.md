@@ -133,7 +133,7 @@ WeCom (optional) ──▶ Worker (signature, decrypt, allowlist) ────�
 
 ### The web door
 
-Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors.
+Open the Worker's address and enter `WEB_KEY`. It is the same conversation as Telegram and WeCom: what you say there appears here within 5 seconds, and what you say on the web is answered only on the web, never sent to the other doors. Its buttons are small icons; hover over one, or press and hold it on a phone, to see its name (the names in 「」 below).
 
 - **Saying something**: type, or tap **+** for pictures (up to 4 at a time, from the album or the camera), a handoff letter or another model; the smiley in the box opens your stickers. Hold the microphone to record a voice message (up to a minute); it is heard like one on Telegram.
 - **Long-press** a message (right-click with a mouse) to quote it in your reply, copy it, save it to Aelios' **Precious** (「珍贵」), or have it read aloud (「念给我听」) once a voice provider is set.
@@ -464,7 +464,9 @@ You do not have to keep track of threads yourself. Bring up earlier work in your
 - **Reading a thread's file**: a text file a thread on the resident made, up to 16,000 characters. Like a web page, it is read as information, and no job goes out in a reply after it.
 - **Searching the chat**: your conversation, the part a handoff letter folded away included, searched for exact words the same way the magnifier does, and the messages around a hit.
 
-With background help off the resident has neither `find` nor `cloud_task`: one kept just for chatting stays as it was. The descriptions never change, so connecting or disconnecting a place does not break the cache.
+It can also hand you a file instead of a long text you would have to copy on a phone: a plan, a document, a list, a table. That is one more tool, `make_file` (at most 3 files a reply). The file goes to the chat you wrote from (a document on Telegram, a file on WeCom) and shows under the reply on the web page, where you can open and download it. Files are kept with the voice messages and go when those do, the oldest first.
+
+With background help off the resident has none of `find`, `make_file` or `cloud_task`: one kept just for chatting stays as it was. The descriptions never change, so connecting or disconnecting a place does not break the cache.
 
 Connecting GitHub Actions:
 

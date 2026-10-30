@@ -147,6 +147,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("看看线程文件")) return { tool: "find", input: { in: "threads", thread: said.match(/t_[0-9a-f]{10}/)?.[0] ?? "", path: said.match(/ (\/?[\w.-]+\.\w+)$/)?.[1] ?? "" } };
   if (said.includes("翻翻聊天前后")) return { tool: "find", input: { in: "chat", around: said.split("翻翻聊天前后")[1].trim() } };
   if (said.includes("翻翻聊天")) return { tool: "find", input: { in: "chat", words: said.split("翻翻聊天")[1].trim() } };
+  // A file handed over in the chat (made-files.ts): no extension given, so it becomes .md.
+  if (said.includes("做个文件")) return { tool: "make_file", input: { name: "周末/计划", content: "# 周末计划\n\n- 去公园\n- 早点睡" } };
   if (said.includes("派四单")) return { tool: "cloud_task", input: cloudJob("第 1 单") };
   if (said.includes("后台写文件")) return { tool: "cloud_task", input: { title: "工作区写入测试", job: "workspace-write-test", execution: "local" } };
   if (said.includes("后台接着读")) return { tool: "cloud_task", input: { title: "工作区读取测试", job: "workspace-read-test", execution: "local", follow_up_of: said.match(/t_[0-9a-f]{10}/)?.[0] } };
@@ -180,7 +182,8 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("云端工具有哪些")) {
     const names = (options.tools ?? []).filter((t) => t.type === "function").map((t) => t.name);
     const finds = names.includes("find");
-    return { text: `${names.includes("cloud_task") ? "有 cloud_task。" : "没有 cloud_task。"}${finds ? "也能找旧线程和聊天记录。" : "找不了旧线程和聊天记录。"}` };
+    const files = names.includes("make_file") ? "能出文件。" : "出不了文件。";
+    return { text: `${names.includes("cloud_task") ? "有 cloud_task。" : "没有 cloud_task。"}${finds ? "也能找旧线程和聊天记录。" : "找不了旧线程和聊天记录。"}${files}` };
   }
   if (said.includes("只发表情") || said.includes("发两张") || said.includes("发表情")) return { tool: "send_sticker", input: { sticker: "test/wave" } };
   if (said.includes("发静图")) return { tool: "send_sticker", input: { sticker: "still/smile" } };
@@ -388,6 +391,10 @@ export function fakeModel(): LanguageModelV4 {
       if (refused) {
         const body = JSON.stringify({ type: "error", error: { type: "permission_error", message: "You tried to access something that you don't have permissions for." } });
         throw Object.assign(new Error("You tried to access something that you don't have permissions for."), { statusCode: 403, responseBody: body });
+      }
+      // A file made, then the model fails before it says anything about it.
+      if (lastOf(options.prompt, "user").includes("做个文件然后出错") && options.prompt.at(-1)?.role === "tool") {
+        throw Object.assign(new Error("the model fell over after the file"), { statusCode: 400 });
       }
       // The first time 卡住测试 is asked the model goes quiet and stays so, as a hung provider does, until the turn
       // is cut; the turn run again is answered.

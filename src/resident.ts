@@ -90,6 +90,7 @@ import {
   mediaKindOf,
   sendBubbles,
   sendMedia,
+  sendDocument,
   sendVoice,
   setWebhook,
   splitIntoBubbles,
@@ -200,6 +201,7 @@ import { activityOf, WebDraft, type Activity } from "./web/history";
 import { GROUPS_MAX, GROUP_HEAD, GROUP_TEXT_MAX, GroupStore, HER, cleanReply, groupConfigFrom, groupHeard, membersOf, named, speakersFor, type Group, type GroupLine, type Member } from "./group";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
 import { findTools, type FindHost } from "./find-tools";
+import { MadeFiles, fileTools, type FileHost, type MadeFile } from "./made-files";
 import { USAGE_KEEP_DAYS, UsageStore, entryOf, usageLabel, usageSpans, type StepLike, type UsageLabel, type UsageRow, type UsageTotals } from "./usage";
 import { learnFromSearch, searched, type Searched } from "./web/learn";
 import { validateUrlWithDns } from "./web/validate-url";
@@ -311,6 +313,8 @@ export type WebLine = {
   quote?: { who: "user" | "assistant"; text: string };
   /** Cloud tasks this reply sent, or reported on, as cards. */
   tasks?: TaskCard[];
+  /** Files this reply handed over (make_file), each read from /web/file by its key. */
+  files?: MadeFile[];
   pending?: boolean;
 };
 
@@ -1413,13 +1417,36 @@ export class Resident extends Think<Env> {
         }),
         execute: async (input) => this.sendTask(input as TaskInput)
       }),
-      ...findTools(this.findHost())
+      ...findTools(this.findHost()),
+      ...fileTools(this.fileHost())
     };
   }
 
   /** Tasks waiting on a pull request learn from GitHub that it was merged or closed (cached, failures ignored). */
   private async syncPrs(): Promise<void> {
     await this.cloudTasks().syncPrs(this.githubToken(), this.env.CLOUD_TASK_API_BASE).catch(() => {});
+  }
+
+  /** What make_file needs (made-files.ts): files go to the chat the turn answers, and show with its reply on the web page. */
+  private fileHost(): FileHost {
+    return {
+      turn: () => (this.#letterPromptId ? null : (this.activeTurn?.requestId ?? null)),
+      made: (turn) => this.madeFiles().madeIn(turn),
+      keep: (turn, name, type, bytes) => {
+        const kept = this.media().put("file", type, bytes);
+        if (!("error" in kept)) this.madeFiles().add(turn, kept.key, name, bytes.length);
+        return kept;
+      },
+      send: async (turn, file) => {
+        const trigger = this.activeTurn?.trigger;
+        const thread = this.#turnThread.get(turn) ?? (trigger === "scheduled" || trigger === "submission" ? await this.herThread() : null);
+        const chat = thread ? chatIdOf(thread) : null;
+        const user = thread ? userOf(thread) : null;
+        if (chat) await sendDocument(this.telegramConfig(), chat, file);
+        else if (user) await this.wecomApi().sendFile(user, "file", file);
+        return chat ? "Telegram" : user ? "WeCom" : null;
+      }
+    };
   }
 
   /** What find needs (find-tools.ts). */
@@ -3188,6 +3215,8 @@ export class Resident extends Think<Env> {
       await this.finishLetter(letter, result.status, result.message.id);
       return;
     }
+    // Files make_file made go with this reply even when it did not finish: a file made stays made.
+    if (result.requestId) this.madeFiles().withReply(result.requestId, result.message.id);
     const asked = before?.text ?? "";
     // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
     const fromThem = Boolean(asked) && !isNote(asked);
@@ -3506,9 +3535,12 @@ export class Resident extends Think<Env> {
     // The voice each reply was said in on the web page, or read out in since.
     const media = this.media();
     const spoken = media.spokenOf(lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id));
+    const files = this.madeFiles().ofReplies(lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id));
     for (const line of lines) {
       const key = spoken.get(line.id);
       if (key) line.voice = { key, seconds: media.seconds(key) };
+      const made = files.get(line.id);
+      if (made) line.files = made;
     }
     // Only include a running draft when the SDK has not already exposed its assistant row.
     for (const [requestId, draft] of this.#drafts) {
@@ -3714,6 +3746,8 @@ export class Resident extends Think<Env> {
       const voice = this.media().spokenFor(message);
       if (voice) this.media().remove(voice);
     }
+    // Files it made go with it from the web page (a copy sent to a chat stays there).
+    for (const files of this.madeFiles().ofReplies(plan.ids).values()) for (const file of files) this.media().remove(file.key);
     if (!again) return { status: "removed" };
     this.#redo = crypto.randomUUID();
     try {
@@ -3774,6 +3808,7 @@ export class Resident extends Think<Env> {
   // ---- the web door's own things: pictures, voices, the avatar and name, notices, commands ----
 
   #mediaStore: MediaStore | null = null;
+  #madeFileStore: MadeFiles | null = null;
   /** When the web page last asked for the conversation: a reply while it is closed is pushed (web push). */
   #webSeenAt = 0;
   /** Web turns now running, and whether her message in it was a voice message (so the reply can be one). */
@@ -3782,6 +3817,17 @@ export class Resident extends Think<Env> {
   private media(): MediaStore {
     this.#mediaStore ??= new MediaStore(this.sqlShownOnWeb());
     return this.#mediaStore;
+  }
+
+  private madeFiles(): MadeFiles {
+    this.media();
+    this.#madeFileStore ??= new MadeFiles(this.sqlShownOnWeb());
+    return this.#madeFileStore;
+  }
+
+  /** A file a reply handed over, for the web page to open or download. */
+  webFile(key: string): Uint8Array | null {
+    return this.madeFiles().get(key) && this.media().kindOf(key) === "file" ? (this.media().get(key)?.bytes ?? null) : null;
   }
 
   /** A picture of a message, by its place among the message's pictures. Null when there is none (any more). */
