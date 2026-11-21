@@ -18,7 +18,7 @@ const at = (path) => import(pathToFileURL(join(process.cwd(), path)).href);
 const { BoxRegistry, BoxError } = await at(join(dir, "box-registry.mjs"));
 const protocol = await at(join(dir, "box-protocol.mjs"));
 const { BoxTurns } = await at(join(dir, "box-turns.mjs"));
-const { runLink, REVOKED } = await at("acp-box/link.mjs");
+const { runLink, REVOKED, CLOSE_GRACE_MS } = await at("acp-box/link.mjs");
 const config = await at("acp-box/config.mjs");
 const { createEngines, KIRO_UNREACHABLE } = await at("acp-box/engines.mjs");
 
@@ -150,7 +150,9 @@ function hubSide() {
   const net = {
     state,
     turns,
-    /** The box's WebSocket class. `valid` says whether the token is known (a revoked box is closed with 4401). */
+    /** The box's WebSocket class. `valid` says whether the token is known (a revoked box is closed with 4401).
+     *  The next `failDials` dials never open: an error alone, as on Node 22, or with `closeAfterError` a close right
+     *  after it in the same task, as on Node 24. */
     Socket: class {
       constructor(url, options) {
         this.url = url;
@@ -160,6 +162,13 @@ function hubSide() {
         state.sockets.push(this);
         queueMicrotask(() => {
           if (net.valid === false) return this.#closed(REVOKED);
+          if (net.failDials > 0) {
+            net.failDials -= 1;
+            this.onerror?.({ message: "Received network error or non-101 status code." });
+            if (!net.closeAfterError) return;
+            this.readyState = 3;
+            return this.onclose?.({ code: 1006, reason: "", wasClean: false });
+          }
           this.readyState = 1;
           this.owner = `box.${state.sockets.length}`;
           this.onopen?.();
@@ -357,6 +366,59 @@ await step("socket errors and peer close reasons stay on one line with credentia
     assert.equal(closed.localClose, null);
   } finally {
     link.stop();
+  }
+});
+
+await step("a dial that never opens is dialed again, once, whether or not a close follows its error", async () => {
+  for (const closeAfterError of [false, true]) {
+    const net = hubSide();
+    net.failDials = 2;
+    net.closeAfterError = closeAfterError;
+    const logs = [];
+    const link = runLink({ url: "wss://r", token: "t", engines: {}, name: "M", WebSocketImpl: net.Socket, backoff: FAST, log: (line) => logs.push(line) });
+    await tick(100);
+    assert.equal(net.state.sockets.length, 3, `two failed dials, one that opened, no more (close after error: ${closeAfterError})`);
+    assert.equal(net.state.hellos.length, 1);
+    const lost = logs.filter((line) => line.startsWith("disconnected; ")).map((line) => JSON.parse(line.slice("disconnected; ".length)));
+    assert.deepEqual(lost.map(({ code, openMs }) => ({ code, openMs })), [{ code: 1006, openMs: null }, { code: 1006, openMs: null }]);
+    link.stop();
+  }
+});
+
+await step("a close the resident never answers is given up after a few seconds, and the box dials again", async () => {
+  const net = hubSide();
+  const logs = [];
+  // A resident that is gone: no pong, and no answer to the box's close, so Node 22 would never fire close.
+  class GoneSocket extends net.Socket {
+    send(data) {
+      if (data !== "ping") super.send(data);
+    }
+    close() {
+      this.readyState = 2;
+    }
+  }
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  mock.timers.enable({ apis: ["Date", "setInterval", "setTimeout"], now: 0 });
+  const link = runLink({ url: "wss://r", token: "t", engines: {}, name: "M", WebSocketImpl: GoneSocket, backoff: FAST, log: (line) => logs.push(line) });
+  try {
+    await flush();
+    for (let i = 0; i < 4; i++) mock.timers.tick(25_000);
+    assert.ok(logs.includes("closing WebSocket; silent"));
+    assert.ok(!logs.some((line) => line.startsWith("disconnected; ")), "it waits a little for the close to be answered");
+    mock.timers.tick(CLOSE_GRACE_MS);
+    assert.deepEqual(logRecord(logs, "disconnected; "), { code: 1006, reason: null, wasClean: false, localClose: "silent",
+      openMs: 105_000, lastPingAgoMs: 30_000, lastPongAgoMs: null, activeTurns: 0 });
+    mock.timers.tick(FAST.max * 2);
+    await flush();
+    assert.equal(net.state.hellos.length, 2, "it dialed again and said hello again");
+    // The first socket's close, should it ever come, changes nothing.
+    net.state.sockets[0].onclose({ code: 1006, reason: "", wasClean: false });
+    mock.timers.tick(FAST.max * 2);
+    await flush();
+    assert.equal(net.state.sockets.length, 2);
+  } finally {
+    link.stop();
+    mock.timers.reset();
   }
 });
 

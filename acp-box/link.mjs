@@ -3,13 +3,19 @@
 // every connection it says hello (name, the plugs it can serve now, and the ones it cannot with a one-line reason).
 // The resident sends turns down; the box streams each reply back a line at a time. No port is opened for this.
 //
-// It reconnects with backoff after any loss. A close with code 4401 means the token was revoked: it stops for good.
+// It reconnects with backoff after any loss: a close event, an error before the socket opened, or a close the box asked
+// for that is not answered within a few seconds. Node 22's WebSocket fires no close event for the last two (a dial with
+// no network, refused or answered 502; a peer that is gone), so waiting for one would leave the box offline for good.
+// A close with code 4401 means the token was revoked: it stops for good.
 // Frames the protocol does not name are dropped, and `secrets` (the helpers' keys) are blanked out of anything sent,
 // as a last guard: nothing of them is meant to be there.
 const PROTOCOL = "aelios-box/1";
 const PING_MS = 25_000;
 const SILENT_MS = 75_000;
 const RECHECK_MS = 5 * 60_000;
+export const CLOSE_GRACE_MS = 5_000;
+/** What a close event says when the connection ended without a close frame. */
+const ABNORMAL_CLOSE = { code: 1006, reason: "", wasClean: false };
 const TURN_FIELDS = ["t", "id", "plug", "body"];
 const CANCEL_FIELDS = ["t", "id"];
 export const REVOKED = 4401;
@@ -81,12 +87,15 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
     let lastPing = null;
     let lastPong = null;
     let localClose = null;
+    let gone = false;
+    let grace = null;
     const close = (code, reason) => {
       if (ws.readyState < 2 && !localClose) {
         localClose = reason;
         log(`closing WebSocket; ${reason}`);
       }
       ws.close(code, reason);
+      grace ??= setTimeout(() => lost(ABNORMAL_CLOSE), CLOSE_GRACE_MS);
     };
     closeSocket = close;
     let timers = [];
@@ -108,6 +117,8 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
       ];
     };
     ws.onmessage = (event) => {
+      // A socket given up on may still deliver: a turn that came on it could answer only on the next connection.
+      if (gone) return;
       heard = Date.now();
       if (event.data === "pong") {
         lastPong = heard;
@@ -124,7 +135,11 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
       if (frame.t === "turn" && only(frame, TURN_FIELDS) && typeof frame.id === "string" && !running.has(frame.id)) void turn(frame);
       else if (frame.t === "cancel" && only(frame, CANCEL_FIELDS)) running.get(frame.id)?.abort();
     };
-    ws.onclose = (event) => {
+    /** The socket is gone, however that was reported: the first report counts, the rest change nothing. */
+    function lost(event) {
+      if (gone) return;
+      gone = true;
+      clearTimeout(grace);
       timers.forEach(clearInterval);
       if (socket === ws) {
         socket = null;
@@ -147,13 +162,17 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
       log(`trying again in ${Math.round(wait / 1000)}s`);
       setTimeout(connect, wait * (1 + Math.random() / 4));
       wait = Math.min(wait * 2, backoff.max);
-    };
+    }
+    ws.onclose = lost;
     ws.onerror = (event) => {
       const error = event.error;
       log(`WebSocket error; ${JSON.stringify({
         message: logText(event.message || error?.message), code: logText(error?.code),
         cause: logText(error?.cause?.message), causeCode: logText(error?.cause?.code)
       })}`);
+      // Before the socket opened, Node 22 fires no close after this. Where a close does follow, it comes in the same
+      // task, ahead of this microtask, and is the one counted.
+      if (openedAt === null) queueMicrotask(() => lost(ABNORMAL_CLOSE));
     };
   }
 
