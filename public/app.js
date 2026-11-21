@@ -369,7 +369,7 @@ function resident() {
     recording: null,
     stickerList: [],
     // sheets and menus
-    menu: { open: false, id: '', role: '', text: '', x: 0, y: 0, voice: false, local: '' },
+    menu: { open: false, id: '', role: '', text: '', x: 0, y: 0, voice: false, local: '', backdropPressed: false },
     lightbox: '',
     answer: { open: false, title: '', text: '', busy: false },
     alarmEdit: { open: false, id: '', kind: '', date: '', time: '', note: '', busy: false, error: '' },
@@ -1309,11 +1309,15 @@ function resident() {
       var width = this.takeBackable(line) ? 340 : 280;
       var x = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
       var y = rect.top - 64 < 70 ? rect.bottom + 8 : rect.top - 64;
-      this.menu = { open: true, id: line.id, role: line.role, text: line.text || '', x: x, y: y, voice: Boolean(line.voice && line.voice.key), local: '' };
+      this.menu = { open: true, id: line.id, role: line.role, text: line.text || '', x: x, y: y, voice: Boolean(line.voice && line.voice.key), local: '', backdropPressed: false };
       try { if (navigator.vibrate) navigator.vibrate(10); } catch (e) {}
     },
     closeMenu() {
-      this.menu = { open: false, id: '', role: '', text: '', x: 0, y: 0, voice: false, local: '' };
+      this.menu = { open: false, id: '', role: '', text: '', x: 0, y: 0, voice: false, local: '', backdropPressed: false };
+    },
+    dismissMenuFromBackdrop() {
+      // The opening hold can send a contextmenu or click after the backdrop has appeared.
+      if (this.menu.backdropPressed) this.closeMenu();
     },
     menuLine() {
       return this.lines.find(function (l) { return l.id === this.menu.id; }, this);

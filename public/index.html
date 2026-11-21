@@ -1523,7 +1523,9 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
     </section>
   </div>
 
-  <div x-show="menu.open" style="position: fixed; inset: 0; z-index: 29" @click="closeMenu()" @contextmenu.prevent="closeMenu()" @keydown.escape.window="closeMenu()"></div>
+  <div x-show="menu.open" style="position: fixed; inset: 0; z-index: 29"
+    @pointerdown="menu.backdropPressed = true" @pointercancel="menu.backdropPressed = false"
+    @click="dismissMenuFromBackdrop()" @contextmenu.prevent="dismissMenuFromBackdrop()" @keydown.escape.window="closeMenu()"></div>
   <div class="menu-pop" :class="menuTakesBack() && 'six'" role="menu" aria-label="这条消息" x-show="menu.open" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
     <button type="button" role="menuitem" class="hot" x-show="menu.role === 'assistant' && aelios" @click="pinFromMenu()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg><span x-text="pinned[menu.id] ? '已存' : '存进珍贵'"></span></button>

@@ -1019,6 +1019,25 @@ assert.equal(talk.voiceLen({ seconds: 75 }), '1:15');
 assert.equal(talk.voiceLen({ seconds: 0 }), '');
 console.log('PASS a quote is a short excerpt of the line held; voice lengths read as m:ss');
 
+// A touch can finish on the backdrop that appeared while the finger was already down.
+const heldMenu = vm.runInContext('testPage()', context);
+const heldBubble = { currentTarget: { getBoundingClientRect: () => ({ left: 40, top: 160, bottom: 200 }) } };
+const heldLine = { id: 'held-message', role: 'user', text: 'A message' };
+heldMenu.openMenu(heldBubble, heldLine);
+heldMenu.dismissMenuFromBackdrop();
+assert.equal(heldMenu.menu.open, true, 'events without a new backdrop press do not dismiss');
+heldMenu.menu.backdropPressed = true;
+heldMenu.dismissMenuFromBackdrop();
+assert.equal(heldMenu.menu.open, false, 'a new press can dismiss the menu');
+heldMenu.openMenu(heldBubble, heldLine);
+assert.equal(heldMenu.menu.backdropPressed, false, 'a new menu starts without a backdrop press');
+const menuBackdrop = html.match(/<div x-show="menu.open"[^>]*><\/div>/)[0];
+assert.ok(menuBackdrop.includes('@pointerdown="menu.backdropPressed = true"'));
+assert.ok(menuBackdrop.includes('@pointercancel="menu.backdropPressed = false"'));
+assert.ok(menuBackdrop.includes('@click="dismissMenuFromBackdrop()"') && menuBackdrop.includes('@contextmenu.prevent="dismissMenuFromBackdrop()"'));
+assert.ok(menuBackdrop.includes('@keydown.escape.window="closeMenu()"'));
+console.log('PASS opening the message menu ignores its own backdrop events, and a fresh outside press can dismiss it');
+
 // A recording becomes a 16 kHz mono WAV.
 const wav = vm.runInContext('encodeWav([new Float32Array(4800).fill(0.5), new Float32Array(4800).fill(-0.5)], 48000, 16000)', context);
 const view = new DataView(wav.buffer);
