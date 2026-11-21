@@ -20,6 +20,7 @@ const only = (frame, fields) => Object.keys(frame).every((key) => fields.include
 export function runLink({ url, token, name, engines, secrets = () => [], WebSocketImpl = WebSocket, log = () => {}, backoff = { min: 1000, max: 60_000 } }) {
   let stopped = false;
   let socket = null;
+  let closeSocket = null;
   let wait = backoff.min;
   let ended;
   const finished = new Promise((resolve) => (ended = resolve));
@@ -28,6 +29,11 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
   let offered = { up: [], down: {} };
 
   const blank = (text) => secrets().reduce((out, secret) => (secret ? out.split(secret).join("[key]") : out), text);
+  const logText = (value) => {
+    if (!value) return null;
+    const text = String(value);
+    return blank(token ? text.split(token).join("[key]") : text).slice(0, 240);
+  };
   const send = (frame) => {
     if (socket?.readyState === 1) socket.send(blank(JSON.stringify(frame)));
   };
@@ -71,25 +77,43 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
     const ws = new WebSocketImpl(url, { headers: { authorization: `Bearer ${token}` } });
     socket = ws;
     let heard = Date.now();
+    let openedAt = null;
+    let lastPing = null;
+    let lastPong = null;
+    let localClose = null;
+    const close = (code, reason) => {
+      if (ws.readyState < 2 && !localClose) {
+        localClose = reason;
+        log(`closing WebSocket; ${reason}`);
+      }
+      ws.close(code, reason);
+    };
+    closeSocket = close;
     let timers = [];
     ws.onopen = () => {
+      openedAt = Date.now();
       wait = backoff.min;
       send({ t: "hello", proto: PROTOCOL, name, plugs: now.up, down: now.down });
       log(`connected; plugs: ${now.up.join(", ") || "none"}${Object.keys(now.down).length ? `; unavailable: ${Object.entries(now.down).map(([p, w]) => `${p} (${w})`).join("; ")}` : ""}`);
       timers = [
         setInterval(() => {
-          if (Date.now() - heard > SILENT_MS) return ws.close(4000, "silent");
+          if (Date.now() - heard > SILENT_MS) return close(4000, "silent");
+          lastPing = Date.now();
           ws.send("ping");
         }, PING_MS),
         // A plug that came up (IPv4 egress, a key) or went down is announced by a fresh hello on a fresh connection.
         setInterval(async () => {
-          if (JSON.stringify(await plugs()) !== JSON.stringify(now)) ws.close(1000, "plugs changed");
+          if (JSON.stringify(await plugs()) !== JSON.stringify(now)) close(1000, "plugs changed");
         }, RECHECK_MS)
       ];
     };
     ws.onmessage = (event) => {
       heard = Date.now();
-      if (event.data === "pong" || typeof event.data !== "string") return;
+      if (event.data === "pong") {
+        lastPong = heard;
+        return;
+      }
+      if (typeof event.data !== "string") return;
       let frame;
       try {
         frame = JSON.parse(event.data);
@@ -102,7 +126,16 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
     };
     ws.onclose = (event) => {
       timers.forEach(clearInterval);
-      if (socket === ws) socket = null;
+      if (socket === ws) {
+        socket = null;
+        closeSocket = null;
+      }
+      const at = Date.now();
+      const age = (stamp) => stamp === null ? null : at - stamp;
+      log(`disconnected; ${JSON.stringify({
+        code: event.code, reason: logText(event.reason), wasClean: event.wasClean, localClose,
+        openMs: age(openedAt), lastPingAgoMs: age(lastPing), lastPongAgoMs: age(lastPong), activeTurns: running.size
+      })}`);
       // What was running on the lost connection has nowhere to answer: it stops.
       for (const stop of running.values()) stop.abort();
       if (stopped) return;
@@ -111,11 +144,17 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
         log("this box was revoked on the settings page: pair it again with a new code");
         return ended({ revoked: true });
       }
-      log(`disconnected; trying again in ${Math.round(wait / 1000)}s`);
+      log(`trying again in ${Math.round(wait / 1000)}s`);
       setTimeout(connect, wait * (1 + Math.random() / 4));
       wait = Math.min(wait * 2, backoff.max);
     };
-    ws.onerror = () => {};
+    ws.onerror = (event) => {
+      const error = event.error;
+      log(`WebSocket error; ${JSON.stringify({
+        message: logText(event.message || error?.message), code: logText(error?.code),
+        cause: logText(error?.cause?.message), causeCode: logText(error?.cause?.code)
+      })}`);
+    };
   }
 
   void connect();
@@ -124,7 +163,7 @@ export function runLink({ url, token, name, engines, secrets = () => [], WebSock
     stop() {
       stopped = true;
       for (const stop of running.values()) stop.abort();
-      socket?.close(1000, "stopping");
+      closeSocket?.(1000, "stopping");
       ended({ revoked: false });
     }
   };

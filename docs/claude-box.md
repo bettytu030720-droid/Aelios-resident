@@ -83,5 +83,6 @@ KIRO_API_KEY=ksk_… CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat… sudo -E ./install.sh 
 
 - **配对码不对或过期了**：在设置页重新拿一个。试错太多次（10 分钟内 10 次）会被拦一阵。
 - **盒子显示不在线**：看盒子的输出或日志；机器断网、盒子没起、或者被撤销了都会这样。被撤销的盒子会打印出来并停下，重新拿配对码配一次。
+- **盒子反复重连**。在盒子上运行 `journalctl -u aelios-box -f` 即可观察空闲连接。每条 `disconnected` 记录含关闭码、原因及当时进行中的回合数。`localClose` 是盒子主动请求关闭的理由，`lastPingAgoMs` 和 `lastPongAgoMs` 是距最近一次发送心跳、收到心跳回复的毫秒数，尚无记录时为 `null`。关闭码 1006 表示未收到关闭帧。排查原因时，一起看同一时刻的 `WebSocket error` 和进程级 `WebSocket transport error`。
 - **插头写着「用不了」**：照写的原因处理（没放钥匙、没装 `kiro-cli`、连不上 Kiro 要 IPv4、没装 Claude 的 SDK 要在 `acp-box` 里 `npm ci`）。
 - **Claude 订阅没登录上**：setup token 不对或过期了，重新 `claude setup-token`，放到盒子那台机器上，重启盒子。

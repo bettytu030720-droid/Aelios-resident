@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
@@ -32,6 +33,7 @@ async function step(name, fn) {
   }
 }
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
+const logRecord = (lines, label) => JSON.parse(lines.find((line) => line.startsWith(label)).slice(label.length));
 const refused = (status) => (error) => error instanceof BoxError && error.status === status;
 
 function registry() {
@@ -154,7 +156,7 @@ function hubSide() {
         this.url = url;
         this.readyState = 0;
         state.seenToken.push(options.headers.authorization);
-        this.peer = { send: (data) => this.onmessage?.({ data }), close: (code) => this.#closed(code) };
+        this.peer = { send: (data) => this.onmessage?.({ data }), close: (code, reason) => this.#closed(code, reason) };
         state.sockets.push(this);
         queueMicrotask(() => {
           if (net.valid === false) return this.#closed(REVOKED);
@@ -173,15 +175,15 @@ function hubSide() {
         else turns.end(this.owner, frame.id);
       }
 
-      close(code = 1000) {
-        this.#closed(code);
+      close(code = 1000, reason) {
+        this.#closed(code, reason);
       }
 
-      #closed(code) {
+      #closed(code, reason = "") {
         if (this.readyState === 3) return;
         this.readyState = 3;
         if (this.owner) turns.lost(this.owner, "the box disconnected");
-        queueMicrotask(() => this.onclose?.({ code }));
+        queueMicrotask(() => this.onclose?.({ code, reason, wasClean: code !== 1006 }));
       }
     },
     /** The resident sends a turn down the live socket. */
@@ -289,8 +291,9 @@ await step("Kiro without IPv4 egress is announced as down with a one-line reason
 
 await step("a lost box ends its turn with the reason; the box reconnects with backoff; unknown frames are ignored", async () => {
   const net = hubSide();
+  const logs = [];
   const engines = { kiro: { check: async () => null, turn: (body, write, signal) => new Promise((resolve) => (write({ text: "half" }), signal.addEventListener("abort", resolve, { once: true }))) } };
-  const link = runLink({ url: "wss://r/box/v1/link", token: "t", name: "M", engines, WebSocketImpl: net.Socket, backoff: FAST });
+  const link = runLink({ url: "wss://r/box/v1/link", token: "bt_test", name: "M", engines, WebSocketImpl: net.Socket, backoff: FAST, log: (line) => logs.push(line) });
   await tick(20);
   const reply = net.turn("kiro", { model: "auto" });
   net.state.sockets[0].peer.send(JSON.stringify({ t: "turn", id: "b".repeat(32), plug: "kiro", body: {}, extra: "refused" }));
@@ -299,10 +302,62 @@ await step("a lost box ends its turn with the reason; the box reconnects with ba
   net.state.sockets[0].peer.close(1006);
   const lines = await read(reply);
   assert.deepEqual(lines, [{ text: "half" }, { error: "the box disconnected" }]);
+  const closed = logRecord(logs, "disconnected; ");
+  assert.deepEqual(closed, { code: 1006, reason: null, wasClean: false, localClose: null, openMs: closed.openMs,
+    lastPingAgoMs: null, lastPongAgoMs: null, activeTurns: 1 });
+  assert.ok(closed.openMs >= 0);
   await tick(80);
   assert.equal(net.state.hellos.length, 2, "it dialed again and said hello again");
   assert.equal(net.turns.open, 0);
   link.stop();
+});
+
+await step("a silent link records its last ping and pong and its local close request", async () => {
+  const net = hubSide();
+  const logs = [];
+  class QuietSocket extends net.Socket {
+    send(data) {
+      if (data !== "ping") super.send(data);
+    }
+  }
+  mock.timers.enable({ apis: ["Date", "setInterval"], now: 0 });
+  const link = runLink({ url: "wss://r", token: "bt_test", engines: {}, name: "M", WebSocketImpl: QuietSocket, log: (line) => logs.push(line) });
+  try {
+    await tick();
+    mock.timers.tick(25_000);
+    net.state.sockets[0].peer.send("pong");
+    for (let i = 0; i < 4; i++) mock.timers.tick(25_000);
+    await tick();
+    const closed = logRecord(logs, "disconnected; ");
+    assert.deepEqual(closed, { code: 4000, reason: "silent", wasClean: true, localClose: "silent",
+      openMs: 125_000, lastPingAgoMs: 25_000, lastPongAgoMs: 100_000, activeTurns: 0 });
+  } finally {
+    link.stop();
+    mock.timers.reset();
+  }
+});
+
+await step("socket errors and peer close reasons stay on one line with credentials removed", async () => {
+  const net = hubSide();
+  const logs = [];
+  const link = runLink({ url: "wss://r", token: "bt_test", engines: {}, name: "M", secrets: () => ["test_key"],
+    WebSocketImpl: net.Socket, log: (line) => logs.push(line) });
+  try {
+    await tick();
+    const ws = net.state.sockets[0];
+    const cause = Object.assign(new Error("read test_key"), { code: "ECONNRESET" });
+    ws.onerror({ error: new Error("failed bt_test\nupgrade", { cause }) });
+    ws.peer.close(4000, "replaced bt_test test_key");
+    await tick();
+    assert.ok(logs.every((line) => !/bt_test|test_key|\n/.test(line)));
+    const error = logRecord(logs, "WebSocket error; ");
+    assert.deepEqual(error, { message: "failed [key]\nupgrade", code: null, cause: "read [key]", causeCode: "ECONNRESET" });
+    const closed = logRecord(logs, "disconnected; ");
+    assert.equal(closed.reason, "replaced [key] [key]");
+    assert.equal(closed.localClose, null);
+  } finally {
+    link.stop();
+  }
 });
 
 await step("a revoked box is closed with 4401 and stops for good, not retrying", async () => {

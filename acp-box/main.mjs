@@ -14,6 +14,7 @@
 //
 // The helpers' keys are read from this machine: KIRO_API_KEY and CLAUDE_CODE_OAUTH_TOKEN in the environment, or the
 // creds.json in the config folder (asked for once on a terminal). They never leave it.
+import { channel } from "node:diagnostics_channel";
 import { parseArgs } from "node:util";
 import { terminalAsk } from "./ask.mjs";
 import { configDir, loadCredentials, loadLink, saveLink } from "./config.mjs";
@@ -26,6 +27,10 @@ import { byAddress } from "./session.mjs";
 const { values } = parseArgs({ options: { resident: { type: "string" }, code: { type: "string" }, name: { type: "string" }, home: { type: "string" }, "pair-only": { type: "boolean" } } });
 const dir = values.home || configDir();
 const say = (text) => console.log(`aelios-box: ${text}`);
+// Node can report a broken TCP socket here without firing WebSocket.onerror. This channel is process-wide.
+channel("undici:websocket:socket_error").subscribe((error) => {
+  say(`WebSocket transport error; ${JSON.stringify({ code: error.code ?? null, syscall: error.syscall ?? null })}`);
+});
 
 let link = await loadLink(dir);
 if (values.code) {
