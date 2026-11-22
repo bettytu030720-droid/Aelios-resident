@@ -54,6 +54,17 @@ await test("an MP3's length comes from its first frame, past an ID3 tag; anythin
   assert.equal(v.mp3Seconds(new Uint8Array([0x4f, 0x67, 0x67, 0x53, 0, 0, 0, 0])), 0);
 });
 
+await test("a joined MP3 keeps all audio frames and drops per-clip tags and seek headers", () => {
+  const head = MP3.slice(0, 30);
+  const frames = MP3.slice(30);
+  const infoFrame = frames.slice(0, 417);
+  infoFrame.set(new TextEncoder().encode("Info"), 36);
+  const footer = new Uint8Array(128);
+  footer.set(new TextEncoder().encode("TAG"));
+  const clips = [Uint8Array.of(...head, ...infoFrame, ...frames), Uint8Array.of(...head, ...frames, ...footer)];
+  assert.deepEqual(v.joinMp3(clips), Uint8Array.of(...frames, ...frames));
+});
+
 await test("what is said leaves out links, markdown and emoji, and keeps the voice model's own marks", () => {
   assert.equal(v.speakable("## 好呀 😊\n> 看 **这个** https://a.b/c `代码`"), "好呀\n看 这个 代码");
   assert.equal(v.speakable('[laughs] 你呀 <break time="500ms"/> 真是'), '[laughs] 你呀 <break time="500ms"/> 真是');

@@ -2811,6 +2811,31 @@ if (phase === "stall") {
     const out = await waitForSends(before, 1, 20000);
     assert.ok(out.length >= 1, JSON.stringify(out));
   });
+  await step("the recovered web reply speaks the saved prefix and its continuation", async () => {
+    const key = "test-web-key";
+    for (const [name, text] of Object.entries({
+      VOICE_PROVIDER: "elevenlabs", VOICE_API_KEY: "test-voice-key", VOICE_ID: "voice-123",
+      VOICE_BASE_URL: "http://127.0.0.1:9999/voice", VOICE_REPLY: "always"
+    })) {
+      const config = await web("/web/config", key, { key: name, text });
+      assert.equal(config.status, 200, await config.text());
+    }
+    const send = web("/web/say", key, { text: "语音续写测试" });
+    const prefix = "这段是恢复前已经写下的第一句话。";
+    const suffix = "这段是恢复之后接着写的末尾，现在答完了。";
+    const deadline = Date.now() + 25000;
+    let reply;
+    while (Date.now() < deadline && !reply) {
+      const { data } = await (await web("/web/messages", key)).json();
+      reply = data.find(line => !line.pending && line.text === prefix + suffix && line.voice?.key);
+      if (!reply) await sleep(150);
+    }
+    assert.equal((await send).status, 200);
+    assert.ok(reply?.voice, "the same assistant message contains both halves and has saved audio");
+    assert.equal((await web("/web/media?key=" + reply.voice.key, key)).status, 200);
+    const spoken = (await log()).filter(entry => entry.kind === "voice").map(entry => entry.body.text);
+    assert.match(spoken.join(""), /恢复前已经写下的第一句话。.*恢复之后接着写的末尾/);
+  });
 }
 
 if (phase === "crash-1") {
@@ -2931,7 +2956,7 @@ if (phase === "web") {
     let all = await lines();
     const mine = all.findLast((line) => line.role === "user");
     assert.deepEqual([mine.text, mine.voice.seconds, Boolean(mine.voice.missed)], ["网页上说的话", 1, false]);
-    // The voice is made after the reply is in, so it can take a moment.
+    // For a short reply the voice can finish a moment after the text.
     const start = Date.now();
     while (!(all.at(-1).voice && all.at(-1).voice.key) && Date.now() - start < 15000) {
       await sleep(300);
@@ -2961,6 +2986,53 @@ if (phase === "web") {
     assert.equal((await json("/web/speak", { id: earlier.id })).data.key, read.data.key, "a voice already made still plays");
     const unspoken = (await lines()).find((line) => line.role === "assistant" && !line.voice);
     assert.match((await json("/web/speak", { id: unspoken.id })).data.error ?? "", /还没设置声音/);
+  });
+
+  await step("live speech starts while the web reply is still being written, replays, and is cancelled with its turn", async () => {
+    await set({ VOICE_BASE_URL: "http://127.0.0.1:9999/voice", VOICE_API_KEY: "test-voice-key",
+      VOICE_PROVIDER: "elevenlabs", VOICE_ID: "voice-123", VOICE_REPLY: "always" });
+    const start = () => web("/web/say", KEY, { text: "流式语音测试" });
+    const wait = async (find) => {
+      const until = Date.now() + 18000;
+      while (Date.now() < until) {
+        const { data } = await json("/web/messages");
+        const found = find(data);
+        if (found) return found;
+        await sleep(80);
+      }
+      assert.fail("did not see the expected voice in web history");
+    };
+    const capturing = start();
+    const draft = await wait(({ data }) => data.find(line => line.pending && line.liveVoice?.live));
+    assert.match(draft.text, /第一句话/);
+    assert.doesNotMatch(draft.text, /末尾/);
+    assert.equal((await web("/web/media?key=" + draft.liveVoice.key + "&part=1", KEY)).status, 200);
+    assert.equal((await capturing).status, 200);
+    const completed = await wait(({ data }) => data.find(line => !line.pending && line.voice?.key === draft.liveVoice.key && !line.voice.live));
+    assert.match(completed.text, /末尾/);
+    assert.ok(completed.voice.parts.length > 1);
+    assert.equal(completed.voice.parts[0], draft.liveVoice.key);
+    assert.deepEqual((await json("/web/speak", { id: completed.id })).data, completed.voice);
+    const legacy = await web("/web/media?key=" + completed.voice.key, KEY);
+    const joined = await legacy.arrayBuffer();
+    const parts = await Promise.all(completed.voice.parts.map(async (key) => {
+      const file = await web("/web/media?key=" + key + "&part=1", KEY);
+      assert.equal(file.status, 200);
+      return file.arrayBuffer();
+    }));
+    assert.ok(joined.byteLength > parts[0].byteLength, "the original media URL still plays the whole reply");
+
+    const stopping = start();
+    const { turn, voice } = await wait(({ data, turn }) => {
+      const line = data.find(line => line.pending && line.liveVoice?.live);
+      return line && turn && { turn, voice: line.liveVoice };
+    });
+    const stopped = await json("/web/stop", { requestId: turn.requestId });
+    assert.equal(stopped.data.status, "stopping");
+    await stopping;
+    assert.equal((await web("/web/media?key=" + voice.key, KEY)).status, 404);
+    assert.ok((await lines()).every(line => line.voice?.key !== voice.key));
+    await set({ VOICE_PROVIDER: "", VOICE_ID: "", VOICE_API_KEY: "", VOICE_BASE_URL: "", VOICE_REPLY: "" });
   });
 
   await step("a sticker of hers from an imported pack: the model reads what it means, the page shows it", async () => {

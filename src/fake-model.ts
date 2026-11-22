@@ -13,8 +13,11 @@ type Prompt = LanguageModelV4CallOptions["prompt"];
 let checkins = 0;
 // What the previous call sent, to check that the letter turn repeats it exactly (and so is read from cache).
 let previous: { system: string; tools: string; messages: string[] } | null = null;
-// Whether 卡住测试 has had its one quiet call.
+// Stall once before any text, and once after a spoken prefix, to exercise retry and continuation separately.
 let stalledOnce = false;
+let voiceStalledOnce = false;
+const VOICE_RECOVERY_PREFIX = "这段是恢复前已经写下的第一句话。";
+const VOICE_RECOVERY_SUFFIX = "这段是恢复之后接着写的末尾，现在答完了。";
 // How many times 重来测试 has been answered.
 let redos = 0;
 
@@ -330,6 +333,11 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("重来测试")) return { text: `第 ${++redos} 回` };
   if (said.includes("你上一句说了什么")) return { text: `上一句：${lastOf(prompt, "assistant") || "没有"}` };
   if (said.includes("卡住测试")) return { text: "刚才卡住了，现在好了。" };
+  if (lastOf(prompt, "assistant") === VOICE_RECOVERY_PREFIX) return { text: VOICE_RECOVERY_SUFFIX };
+  if (said.includes("流式语音测试")) return {
+    text: "这段是第一句话，先从这里慢慢读给你听。接下来这一段还要等一会儿才念出来，语音任务同时合成，浏览器会按照原来的位置播放，播完第一段以后才会让下一段接上来。然后才是末尾。",
+    delayMs: 6000
+  };
   if (said.includes("慢慢说")) return { text: "第一段，慢慢说。\n\n第二段，还在说。\n\n第三段，说完了。", delayMs: 4000 };
   // Fill real-sized chat windows in letter tests without echoing thousands of characters back to Telegram.
   if (said.startsWith("交接信测试材料")) return { text: "材料收到了。" };
@@ -460,14 +468,20 @@ export function fakeModel(): LanguageModelV4 {
       if (lastOf(options.prompt, "user").includes("做个文件然后出错") && options.prompt.at(-1)?.role === "tool") {
         throw Object.assign(new Error("the model fell over after the file"), { statusCode: 400 });
       }
-      // The first time 卡住测试 is asked the model goes quiet and stays so, as a hung provider does, until the turn
-      // is cut; the turn run again is answered.
-      if (lastOf(options.prompt, "user").includes("卡住测试") && !stalledOnce) {
-        stalledOnce = true;
+      const asked = lastOf(options.prompt, "user");
+      const stallAfterText = asked.includes("语音续写测试") && !voiceStalledOnce;
+      if (stallAfterText || (asked.includes("卡住测试") && !stalledOnce)) {
+        if (stallAfterText) voiceStalledOnce = true;
+        else stalledOnce = true;
         const signal = options.abortSignal;
         const stream = new ReadableStream<LanguageModelV4StreamPart>({
           start(controller) {
             controller.enqueue({ type: "stream-start", warnings: [] });
+            if (stallAfterText) {
+              controller.enqueue({ type: "text-start", id: "t" });
+              controller.enqueue({ type: "text-delta", id: "t", delta: VOICE_RECOVERY_PREFIX });
+              controller.enqueue({ type: "text-end", id: "t" });
+            }
             signal?.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")));
           }
         });

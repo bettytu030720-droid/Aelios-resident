@@ -387,7 +387,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
     }
     case "GET /web/media": {
       const key = url.searchParams.get("key") ?? "";
-      const file = /^[0-9a-f]{32}$/.test(key) ? await agent.webMedia(key) : null;
+      const file = /^[0-9a-f]{32}$/.test(key) ? await agent.webMedia(key, url.searchParams.get("part") === "1") : null;
       if (!file) return new Response("not found", { status: 404 });
       return new Response(file.bytes, { headers: privateFile(file.type) });
     }
