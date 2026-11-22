@@ -16,6 +16,18 @@ export type Activity =
 
 const MAX_DETAIL = 16000;
 const SECRET = /^(authorization|cookie|set-cookie|.*(?:api[_-]?key|token|password|secret|signature))$/i;
+
+/** Tasks a reply sent, plus the task it was reporting on, when there is one. */
+export function taskIdsOf(parts: readonly HistoryPart[], about: string | null): string[] {
+  const ids = new Set<string>(about ? [about] : []);
+  for (const part of parts) {
+    const name = part.toolName ?? (part.type.startsWith("tool-") ? part.type.slice(5) : "");
+    const id = (part.output as { task?: unknown } | undefined)?.task;
+    if (name === "cloud_task" && typeof id === "string") ids.add(id);
+  }
+  return [...ids];
+}
+
 export function detail(value: unknown): string {
   if (value == null) return "";
   try {

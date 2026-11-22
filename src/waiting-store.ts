@@ -14,9 +14,8 @@ export class WaitingStore {
 
   #built(now: number) {
     this.sql`DELETE FROM res_waiting_seen WHERE at < ${now - ITEM_DROPPED_MS}`;
-    const threads = this.tasks.threads(THREADS_LOOKED_AT).flatMap((card) => {
-      const task = this.tasks.latest(card.id);
-      return task && !task.test && task.runs !== "retired"
+    const threads = this.tasks.threadsWithLatest(THREADS_LOOKED_AT).flatMap(({ card, latest: task }) => {
+      return !task.test && task.runs !== "retired"
         ? [{ id: card.id, taskId: task.id, title: card.title, status: task.status, runs: task.runs, summary: task.summary, choices: task.choices ?? [], reason: task.reason ?? "", waiting: card.waiting, updatedAt: task.updatedAt }]
         : [];
     });

@@ -212,7 +212,7 @@ import { MEMORY_HEADER, aeliosModel, listModels, onMessages, type AeliosModel, t
 import { effortOf } from "./thinking";
 import { takeBack } from "./take-back";
 import { WebBurst } from "./web-burst";
-import { activityOf, WebDraft, type Activity } from "./web/history";
+import { activityOf, taskIdsOf, WebDraft, type Activity } from "./web/history";
 import { ChatStop, type ChatTurn, type StopResult } from "./chat-stop";
 import { GROUPS_MAX, GROUP_HEAD, GROUP_PICTURES_MAX, GROUP_TEXT_MAX, GroupStore, HER, afterTurn, cleanReply, groupConfigFrom, groupHeard, membersOf, named, speakersFor, type Group, type GroupLine, type GroupSticker, type Member } from "./group";
 import { AROUND, SEARCH_PAGE, SEARCH_ROWS, hitIn, searchQuery, searchable, storedLike, type ChatHit, type ChatLine } from "./chat-search";
@@ -332,6 +332,10 @@ export type WebLine = {
   files?: MadeFile[];
   pending?: boolean;
 };
+
+type WebNotice = { id: string; at: number; text: string };
+type StoredWebHistory = { lines: WebLine[]; taskIds: Map<string, string[]> };
+type StoredWebView = { lines: WebLine[]; notices: WebNotice[] };
 
 /** A message from the web page (webSay): words, and any of pictures, a voice message, a sticker, a reply to. */
 export type WebSay = {
@@ -495,7 +499,7 @@ function secondsOf(clockText: string): number {
  * The page's own notices (the model was changed) among the conversation, each before the first line that came
  * after it. Lines without a time (a letter) keep their place.
  */
-function withNotices(lines: WebLine[], notices: { id: string; at: number; text: string }[]): WebLine[] {
+function withNotices(lines: WebLine[], notices: WebNotice[]): WebLine[] {
   // Notices older than everything shown are left out: their moment has scrolled away with the chat.
   const shownFrom = lines.find((line) => line.at !== null)?.at ?? Infinity;
   let next = notices.findIndex((notice) => notice.at >= shownFrom);
@@ -550,6 +554,14 @@ function stampEvent(event: MessengerEvent, timeZone: string): MessengerEvent {
 }
 
 export class Resident extends Think<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Register before Think's mirror so an awaited rehydrate for an append or fold cannot delay invalidation.
+    this.sessions.subscribe(({ sessionId }) => {
+      if (sessionId === this.session?.sessionId) this.webHistoryChanged();
+    });
+  }
+
   // Think otherwise rewrites old tool results/text every eight messages and queues media eviction.
   // Both change an already-cached prefix. Our read-only view reduces history once per cache window.
   override truncationStep = Infinity;
@@ -2082,17 +2094,11 @@ export class Resident extends Think<Env> {
     await this.submitMessages([message], { idempotencyKey: message.id }).catch((error) => console.error("task: note not queued", { error: String(error) }));
   }
 
-  /** The cards of the tasks a reply sent (cloud_task calls in its parts), and of the one it reports on. */
-  private taskCards(parts: readonly { type: string; toolName?: string; output?: unknown }[], about: string | null): TaskCard[] | undefined {
-    const ids = new Set<string>(about ? [about] : []);
-    for (const part of parts) {
-      const name = part.toolName ?? (part.type.startsWith("tool-") ? part.type.slice(5) : "");
-      const id = (part.output as { task?: unknown } | undefined)?.task;
-      if (name === "cloud_task" && typeof id === "string") ids.add(id);
-    }
-    if (!ids.size) return undefined;
+  /** The current cards of the tasks a reply sent or reported on. */
+  private taskCards(ids: readonly string[]): TaskCard[] | undefined {
+    if (!ids.length) return undefined;
     const store = this.cloudTasks();
-    const cards = [...ids].map((id) => store.get(id)).filter((task): task is Task => Boolean(task)).map((task) => store.card(task));
+    const cards = ids.map((id) => store.get(id)).filter((task): task is Task => Boolean(task)).map((task) => store.card(task));
     return cards.length ? cards : undefined;
   }
 
@@ -2263,7 +2269,7 @@ export class Resident extends Think<Env> {
   #stickerStore: StickerStore | null = null;
 
   private stickers(): StickerStore {
-    this.#stickerStore ??= new StickerStore((strings, ...values) => this.sql(strings, ...(values as never[])));
+    this.#stickerStore ??= new StickerStore(this.sqlShownOnWeb(() => this.webHistoryChanged()));
     return this.#stickerStore;
   }
 
@@ -3511,7 +3517,7 @@ export class Resident extends Think<Env> {
   }
 
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
-    if (result.requestId) this.#drafts.delete(result.requestId);
+    if (result.requestId && this.#drafts.delete(result.requestId)) this.webChanged();
     if (!this.#drafts.size) this.#draftActive = null;
     const searches = (result.requestId && this.#searches.get(result.requestId)) || [];
     const web = result.requestId ? this.#webTurns.get(result.requestId) : undefined;
@@ -3775,9 +3781,10 @@ export class Resident extends Think<Env> {
     return `语音：收到的用 ${hear} 听；${send}${failed && !gap ? `；${stamp(new Date(failed.at), this.tz)} 那条没发出去：${failed.reason}` : ""}`;
   }
 
-  /** The conversation as the web page shows it: what the resident currently carries, letters included. */
-  async webHistory(): Promise<WebLine[]> {
+  /** Read the stored branch once, keeping the light web projection in memory instead of the SDK's raw messages. */
+  private async readWebHistory(): Promise<StoredWebHistory> {
     const lines: WebLine[] = [];
+    const taskIds = new Map<string, string[]>();
     let via: WebLine["via"] = null;
     // The task the latest note was about: its card goes with the reply to it.
     let about: string | null = null;
@@ -3847,7 +3854,8 @@ export class Resident extends Think<Env> {
       }
       // A check-in or a thread's report it passed on says nothing; a group chat's answer was posted there.
       if (((via === "checkin" || via === "task") && said === SKIP) || via === "group") continue;
-      const tasks = this.taskCards(message.parts as never, about);
+      const ids = taskIdsOf(message.parts, about);
+      if (ids.length) taskIds.set(message.id, ids);
       about = null;
       lines.push({
         id: message.id,
@@ -3857,42 +3865,69 @@ export class Resident extends Think<Env> {
         at,
         via,
         ...(activity.length ? { activity } : {}),
-        ...(stickers ? { stickers } : {}),
-        ...(tasks ? { tasks } : {})
+        ...(stickers ? { stickers } : {})
       });
     }
-    // The voice each reply was said in on the web page, or read out in since.
+    return { lines, taskIds };
+  }
+
+  /** Refresh cards and attachments when their stores change, without walking the message branch again. */
+  private async projectWebHistory(): Promise<StoredWebView> {
+    const read = this.#webHistoryRead ??= this.readWebHistory();
+    const { lines, taskIds } = await read.catch((error) => {
+      if (this.#webHistoryRead === read) this.#webHistoryRead = null;
+      throw error;
+    });
+    const replies = lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id);
     const media = this.media();
-    const spoken = media.spokenOf(lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id));
-    const files = this.madeFiles().ofReplies(lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id));
-    for (const line of lines) {
+    const spoken = media.spokenOf(replies);
+    const files = this.madeFiles().ofReplies(replies);
+    const cards = new Map(this.taskCards([...new Set([...taskIds.values()].flat())])?.map((card) => [card.id, card]));
+    const decorated = lines.map((line) => {
       const key = spoken.get(line.id);
-      if (key) line.voice = { key, seconds: media.seconds(key) };
       const made = files.get(line.id);
-      if (made) line.files = made;
-    }
+      const tasks = taskIds.get(line.id)?.map((id) => cards.get(id)).filter((card) => card !== undefined);
+      if (!key && !made && !tasks?.length) return line;
+      return { ...line, ...(key ? { voice: { key, seconds: media.seconds(key) } } : {}), ...(made ? { files: made } : {}), ...(tasks?.length ? { tasks } : {}) };
+    });
+    return { lines: decorated, notices: this.notices() };
+  }
+
+  /** The page's stored conversation plus a transient draft. Never edit the shared stored lines. */
+  private async webHistory(): Promise<WebLine[]> {
+    const projection = this.#webProjection ??= this.projectWebHistory();
+    const { lines: stored, notices } = await projection.catch((error) => {
+      if (this.#webProjection === projection) this.#webProjection = null;
+      throw error;
+    });
+    const lines = this.#drafts.size ? [...stored] : stored;
     // Only include a running draft when the SDK has not already exposed its assistant row.
     for (const [requestId, draft] of this.#drafts) {
-      if (!this.#draftActive?.()) { this.#drafts.delete(requestId); continue; }
+      if (!this.#draftActive?.()) {
+        this.#drafts.delete(requestId);
+        this.webChanged();
+        continue;
+      }
       if (draft.via === "checkin") continue;
       const finalUser = lines.findLastIndex((line) => line.role === "user");
-      const partial = lines.slice(finalUser + 1).find((line) => line.role === "assistant" && line.kind === "chat");
+      const partialIndex = lines.findIndex((line, i) => i > finalUser && line.role === "assistant" && line.kind === "chat");
       const activity = activityOf(draft.parts);
       const text = withoutStickerMarks(textOf({ parts: draft.parts }));
       const stickers = this.sentStickers(draft.parts);
-      const tasks = this.taskCards(draft.parts, null);
-      if (partial) {
-        partial.pending = true;
+      const tasks = this.taskCards(taskIdsOf(draft.parts, null));
+      if (partialIndex >= 0) {
+        const partial = { ...lines[partialIndex], pending: true };
         if (activity.length) partial.activity = activity;
         if (text) partial.text = text;
         if (stickers) partial.stickers = stickers;
         if (tasks) partial.tasks = tasks;
+        lines[partialIndex] = partial;
       } else if (text || activity.length || stickers) {
         lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true, ...(stickers ? { stickers } : {}), ...(tasks ? { tasks } : {}) });
       }
     }
     this.#webSeenAt = Date.now();
-    return withNotices(lines, this.notices());
+    return withNotices(lines, notices);
   }
 
   /**
@@ -4322,28 +4357,24 @@ export class Resident extends Think<Env> {
     this.webChanged();
   }
 
-  // ---- "nothing new": the web page's look every few seconds, answered without reading the conversation ----
-  // Each look at the whole conversation reads every row of it, and Durable Objects on the free plan read 5 million
-  // rows a day. So the page says which version it has, and gets "the same" back while nothing it shows has changed
-  // and no reply is being written. The version is counted in memory; a new instance starts a new one, so a page
-  // from before reads it all again.
+  // ---- The web poll's version and its two cached views ----
+  // Only a stored message or sticker change invalidates the branch projection. Other writes refresh its cards,
+  // attachments and notices. Draft text is always added live. A new instance gets a fresh version and cold caches.
 
   #webBoot = crypto.randomUUID().slice(0, 8);
   #webRev = 0;
-  #webWatching = false;
+  #webHistoryRead: Promise<StoredWebHistory> | null = null;
+  #webProjection: Promise<StoredWebView> | null = null;
 
   /** Something the web page shows has changed. */
   private webChanged(): void {
     this.#webRev += 1;
+    this.#webProjection = null;
   }
 
-  /** The version of what the web page shows. The conversation's own writes come through the session's change feed. */
-  private webRevision(): string {
-    if (!this.#webWatching) {
-      this.#webWatching = true;
-      this.sessions.subscribe(() => this.webChanged());
-    }
-    return `${this.#webBoot}.${this.#webRev}`;
+  private webHistoryChanged(): void {
+    this.#webHistoryRead = null;
+    this.webChanged();
   }
 
   /**
@@ -4351,25 +4382,24 @@ export class Resident extends Think<Env> {
    * One that changes none does not: every look reads the waiting list, whose reads first clear out old rows, and
    * counting those would give every look a new version, so the page would never get `same` back (webLook).
    */
-  private sqlShownOnWeb(): Sql {
+  private sqlShownOnWeb(changed = () => this.webChanged()): Sql {
     return (strings, ...values) => {
       if (!/^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(strings[0])) return this.sql(strings, ...(values as never[])) as never;
       const query = strings.reduce((text, part, i) => text + part + (i < values.length ? "?" : ""), "");
       const cursor = this.ctx.storage.sql.exec(query, ...(values as SqlStorageValue[]));
       const rows = cursor.toArray();
-      if (cursor.rowsWritten > 0) this.webChanged();
+      if (cursor.rowsWritten > 0) changed();
       return rows as never;
     };
   }
 
   /**
-   * The web page's look at the conversation: all of it with its version, or `same` when it has that version and no
-   * reply is being written (a draft changes with every word, so then it is read in full).
+   * Return `same` for an unchanged version without a live draft. A draft is overlaid on the cached conversation.
    */
   async webLook(since: string | null): Promise<({ data: WebLine[]; rev: string } | { same: true; rev: string }) & { turn: ChatTurn | null; permissions: ReturnType<typeof chatPermissions>; waiting: ReturnType<WaitingStore["list"]> }> {
     const waiting = this.waiting().list();
     const permissions = chatPermissions(waiting.items);
-    const rev = this.webRevision();
+    const rev = `${this.#webBoot}.${this.#webRev}`;
     const turn = this.#chatStop.current();
     if (since && since === rev && !this.#drafts.size) {
       this.#webSeenAt = Date.now();
@@ -4741,6 +4771,7 @@ export class Resident extends Think<Env> {
     if (value) this.saveSetting(`env:${key}`, value);
     else this.sql`DELETE FROM res_settings WHERE key = ${`env:${key}`}`;
     this.#cfg = null;
+    if (key === "STICKERS") this.webHistoryChanged();
   }
 
   /** Who may talk to the resident on Telegram (TG_ALLOWED as now in effect), for the Worker's check. */

@@ -1215,13 +1215,19 @@ if (phase === "stickers") {
 
   await step("the system prompt lists every sticker of the packs that are on; a pack or the whole thing can be turned off", async () => {
     const tools = async () => (await ask("表情工具有哪些")).text;
+    const look = async (since) => (await web(`/web/messages${since ? `?since=${encodeURIComponent(since)}` : ""}`, KEY)).json();
     // The list is held while the cache is warm: the one it drew joins it in the next window, so the prompt stays the same.
     assert.equal(await tools(), "make_sticker；清单：test/wave|test/love|testpack/1|testpack/2|testpack/3", "no send_sticker tool");
     await web("/web/stickers/pack", KEY, { id: "testpack", on: false });
     // A change on the settings page shows from the next message, as any setting does, and the drawn one comes with it.
     assert.equal(await tools(), "make_sticker；清单：mine/heart|test/wave|test/love");
+    const shown = await look();
+    const marked = shown.data.findLast((line) => line.text.startsWith("嗨～") && line.stickers?.length);
+    assert.ok(marked);
     // A mark of a sticker whose pack is off, or with stickers off, goes nowhere: not on Telegram, not on the page.
     await web("/web/stickers/pack", KEY, { id: "test", on: false });
+    const hidden = await look(shown.rev);
+    assert.equal(hidden.data.find((line) => line.id === marked.id).stickers, undefined, "a pack change refreshes the visible history without a new message");
     const before = (await sent()).length;
     const stickers = (await tgLog("sendSticker")).length;
     await post("发表情");
@@ -1230,8 +1236,11 @@ if (phase === "stickers") {
     assert.equal((await tgLog("sendSticker")).length, stickers);
     assert.deepEqual([(await ask("发表情")).stickers], [undefined], "its pack is off");
     await web("/web/stickers/pack", KEY, { id: "test", on: true });
+    const enabled = await look();
+    assert.ok(enabled.data.find((line) => line.id === marked.id).stickers?.length);
     const off = await web("/web/config", KEY, { key: "STICKERS", text: "off" });
     assert.equal(off.status, 200);
+    assert.equal((await look(enabled.rev)).data.find((line) => line.id === marked.id).stickers, undefined, "the global switch also updates an already open chat");
     assert.equal(await tools(), "没有");
     assert.deepEqual([(await ask("发表情")).stickers], [undefined], "stickers are off");
     assert.match(await (await fetch(`${WORKER}/web/stickers`, { headers: { "x-web-key": KEY } })).text(), /"on":false/);
