@@ -1810,6 +1810,42 @@ if (phase === "tasks" || phase === "tasks-quiet" || phase === "tasks-roles") {
       assert.equal(await file.text(), content);
       assert.equal((await fetch(`${WORKER}/web/file?key=${line.files[0].key}`)).status, 401);
       assert.equal((await web(`/web/file?key=${"0".repeat(32)}`, KEY)).status, 404);
+
+      const key = line.files[0].key;
+      const revision = crypto.createHash("sha256").update(content).digest("hex");
+      const notes = `/web/reading-notes?key=${key}&revision=${revision}`;
+      assert.deepEqual((await (await web(notes, KEY)).json()).notes, []);
+      assert.equal((await fetch(WORKER + notes)).status, 401);
+      const start = "周末计划去公园".length;
+      const payload = { document: { key }, revision, selection: { start, end: start + 3, quote: "早点睡" } };
+      assert.equal((await web("/web/reading-notes", KEY, { ...payload, revision: "a".repeat(64) })).status, 409);
+      assert.equal((await web("/web/reading-notes", KEY, { ...payload, selection: { ...payload.selection, quote: "假引文" } })).status, 400);
+      const beforeNotes = (await (await web("/web/messages", KEY)).json()).rev;
+      const cutQuote = "去公园";
+      const cutStart = "周末计划".length;
+      const cut = await web("/web/reading-notes", KEY, {
+        ...payload, selection: { start: cutStart, end: cutStart + cutQuote.length, quote: cutQuote }
+      });
+      assert.equal(cut.status, 502);
+      assert.match((await cut.json()).error, /输出上限/);
+      assert.deepEqual((await (await web(notes, KEY)).json()).notes, [], "a cut-off annotation was not saved");
+      const add = () => web("/web/reading-notes", KEY, payload);
+      const replies = await Promise.all([add(), add()]);
+      for (const response of replies) assert.equal(response.status, 200, await response.clone().text());
+      const [{ note }, second] = await Promise.all(replies.map((response) => response.json()));
+      assert.deepEqual(note, second.note, "the same selection has one persisted note");
+      assert.equal(note.quote, "早点睡");
+      assert.ok(note.note.trim());
+      const usage = await (await web("/web/usage", KEY)).json();
+      assert.equal(usage.rows.filter(row => row.kind === "annotation").length, 2, "the coalesced save only calls the model once");
+      assert.equal((await (await web("/web/messages?since=" + beforeNotes, KEY)).json()).same, true);
+      assert.deepEqual((await (await web(notes, KEY)).json()).notes, [note]);
+      await set({ READING_NOTES: "off" });
+      assert.equal((await (await web(notes, KEY)).json()).notes, null);
+      assert.equal((await add()).status, 403);
+      await set({ READING_NOTES: "" });
+      assert.deepEqual((await (await web(notes, KEY)).json()).notes, [note]);
+      assert.equal((await web(notes.replace(key, "b".repeat(32)), KEY)).status, 404);
     });
 
     await step("a file made in a reply that then fails still shows under what was kept of that reply", async () => {

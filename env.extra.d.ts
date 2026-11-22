@@ -29,6 +29,7 @@ interface Env {
   // What lasts from a web search goes into Aelios as world knowledge (web/learn.ts); off turns it off.
   WEB_LEARN?: string;
   WEB_FETCH?: string;
+  READING_NOTES?: string;
   // Stickers (stickers.ts): on (default) or off, which takes send_sticker and make_sticker away.
   STICKERS?: string;
   WEB_FETCH_MODEL?: string;

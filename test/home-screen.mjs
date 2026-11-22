@@ -1,3 +1,4 @@
+import { markdownPlain } from '../public/markdown.js';
 // The web door on the home screen: public/home-screen.js (the card and the settings row), public/sw.js (the page with
 // no network) and /manifest.webmanifest (one app per resident).
 // Usage:
@@ -182,7 +183,8 @@ async function openedOn(startUrl, remembered) {
   context.window = context;
   context.telegramReady = Promise.resolve(true);
   vm.createContext(context);
-  for (const file of ["public/markdown.js", "public/machine-ask-kind.js", "public/app.js", "public/home-screen.js"]) vm.runInContext(readFileSync(file, "utf8"), context);
+  context.markdownPlain = markdownPlain;
+  for (const file of ["public/machine-ask-kind.js", "public/app.js", "public/home-screen.js"]) vm.runInContext(readFileSync(file, "utf8"), context);
   const page = vm.runInContext("resident()", context);
   page.$nextTick = noop;
   await page.start();

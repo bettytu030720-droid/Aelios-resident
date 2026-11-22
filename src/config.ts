@@ -81,6 +81,7 @@ export const FIELDS: readonly Field[] = [
   { key: "PERPLEXITY_API_KEY", kind: "secret" },
   { key: "WEB_LEARN", kind: "choice", choices: ["on", "off"] },
   { key: "WEB_FETCH", kind: "choice", choices: ["on", "off"] },
+  { key: "READING_NOTES", kind: "choice", choices: ["on", "off"] },
   { key: "WEB_FETCH_MODEL", kind: "text" },
   { key: "STICKERS", kind: "choice", choices: ["on", "off"] },
   { key: "VOICE_PROVIDER", kind: "choice", choices: VOICE_PROVIDERS },

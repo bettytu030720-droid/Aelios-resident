@@ -164,6 +164,8 @@ function resident() {
       { key: 'WEB_SEARCH', label: '搜网', def: 'on', help: '先用你自己的搜索 key（在「更多设置」里填），都没有就用 Cloudflare 的，按次扣 Gateway 额度。',
         labels: { on: '开', off: '关', ceramic: 'Ceramic', exa: 'Exa', linkup: 'Linkup' } },
       { key: 'WEB_FETCH', label: '读网页', def: 'on', labels: ON_OFF },
+      { key: 'READING_NOTES', label: '文件选段批注', def: 'on', labels: ON_OFF,
+        help: '选中文本或 Markdown 文件中的一段，点写批注才会调用当前聊天模型。' },
       { key: 'WEB_LEARN', label: '搜到的知识存进 Aelios', help: '挑几条长期都对的存起来，下次聊到不用再搜。要接着 Aelios。', def: 'on', labels: ON_OFF },
       { key: 'TAVILY_API_KEY', label: 'Tavily key', help: '自己的搜索 key，有几个填几个，按 Tavily、Brave、Perplexity 的顺序用。', more: true },
       { key: 'BRAVE_API_KEY', label: 'Brave key', more: true },
@@ -679,6 +681,7 @@ function resident() {
       this.loaded = false;
       this.unseen = 0;
       this.view = 'chat';
+      this.closeFile();
       this.draft = '';
       this.pics = [];
       this.quote = null;
@@ -782,6 +785,7 @@ function resident() {
       this.picker.open = false;
       this.residents.list = [];
       this.groups = [];
+      this.closeFile();
       this.search = freshSearch();
       clearTimeout(pollTimer);
       clearTimeout(residentsTimer);
@@ -1934,11 +1938,12 @@ function resident() {
     // Pictures as pictures, a page in a sandboxed frame (its scripts run apart from this page and its sign-in), text as text.
     async viewFile(file) {
       this.closeFile();
-      var key = file.key || '';
-      this.fileView = { path: file.path, key: key, size: file.size, busy: true, kind: '', text: '', url: '' };
+      var ref = file.key ? { key: file.key } : { id: this.thread.id, path: file.path };
+      this.fileView = { path: file.path, key: file.key || '', size: file.size, busy: true, kind: '', text: '', url: '' };
+      var view = this.fileView;
       try {
         var bytes = await this.fileBytes(file);
-        if (this.fileView.path !== file.path || this.fileView.key !== key) return;
+        if (this.fileView !== view) return;
         var ext = extOf(file.path);
         var kind = 'other';
         var text = '';
@@ -1956,11 +1961,13 @@ function resident() {
           }
           if (kind === 'other') text = '';
         }
-        this.fileView = { path: file.path, key: key, size: file.size, busy: false, kind: kind, text: text, url: url };
+        Object.assign(view, { busy: false, kind: kind, text: text, url: url });
+        if ((kind === 'text' || kind === 'markdown') && this.loadReadingNotes) this.loadReadingNotes(view, bytes, ref);
         var card = this.$refs && this.$refs.fileView;
         if (card && card.scrollIntoView) this.$nextTick(function () { card.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
       } catch (error) {
-        this.fileView = emptyFileView();
+        if (this.fileView !== view) return;
+        this.closeFile();
         this.notify(error.message);
       }
     },
@@ -2072,7 +2079,7 @@ function resident() {
     },
     kindText(row) {
       var kind = { chat: '聊天', letter: '写交接信', checkin: '定时找你', heartbeat: '心跳', alarm: '闹钟', task: '线程交回', worker: '线程干活',
-        note: '系统提示', compress: '压缩网页', learn: '记下搜到的', file: '读文件', trial: '试模型', group: '群聊' }[row.kind] || row.kind;
+        note: '系统提示', compress: '压缩网页', learn: '记下搜到的', file: '读文件', annotation: '文件批注', trial: '试模型', group: '群聊' }[row.kind] || row.kind;
       var via = { web: '网页', telegram: 'Telegram', wecom: '企业微信' }[row.via];
       return kind + (via ? ' · ' + via : '') + (row.step ? ' · 工具后' : '');
     },
@@ -3128,5 +3135,5 @@ function resident() {
       this.toast = message;
       setTimeout(function () { if (self.toast === message) self.toast = ''; }, 2400);
     }
-  }, typeof groupPage === 'function' ? groupPage() : {}, typeof machinePage === 'function' ? machinePage() : {}, typeof boxesPage === 'function' ? boxesPage() : {}, typeof attachPage === 'function' ? attachPage() : {}, typeof waitingPage === 'function' ? waitingPage() : {}, typeof chatPermissionsPage === 'function' ? chatPermissionsPage() : {}, typeof progressPage === 'function' ? progressPage() : {}, typeof recommendedRolesPage === 'function' ? recommendedRolesPage() : {}, typeof chatStopPage === 'function' ? chatStopPage() : {}, typeof homeScreenPage === 'function' ? homeScreenPage() : {});
+  }, typeof groupPage === 'function' ? groupPage() : {}, typeof machinePage === 'function' ? machinePage() : {}, typeof boxesPage === 'function' ? boxesPage() : {}, typeof attachPage === 'function' ? attachPage() : {}, typeof waitingPage === 'function' ? waitingPage() : {}, typeof chatPermissionsPage === 'function' ? chatPermissionsPage() : {}, typeof progressPage === 'function' ? progressPage() : {}, typeof recommendedRolesPage === 'function' ? recommendedRolesPage() : {}, typeof chatStopPage === 'function' ? chatStopPage() : {}, typeof homeScreenPage === 'function' ? homeScreenPage() : {}, typeof readingNotesPage === 'function' ? readingNotesPage() : {});
 }

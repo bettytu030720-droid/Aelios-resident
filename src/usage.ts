@@ -22,7 +22,7 @@ export const USAGE_PAGE = 100;
  * report, another system note; or work outside the conversation: shrinking a web page, saving what a search found,
  * reading an attached file for its summary, the trial call when a model is picked; a turn in the group chat.
  */
-export type UsageKind = "chat" | "letter" | "checkin" | "heartbeat" | "alarm" | "task" | "worker" | "note" | "compress" | "learn" | "file" | "trial" | "group";
+export type UsageKind = "chat" | "letter" | "checkin" | "heartbeat" | "alarm" | "task" | "worker" | "note" | "compress" | "learn" | "file" | "annotation" | "trial" | "group";
 /** Where the turn came from; "" for a turn the resident started itself and for work outside the conversation. */
 export type UsageVia = "web" | "telegram" | "wecom" | "";
 export type UsageLabel = { kind: UsageKind; via: UsageVia };

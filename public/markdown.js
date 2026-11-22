@@ -178,25 +178,34 @@ function mdBlocks(lines) {
 }
 
 /** Markdown as a tree of plain nodes: what renderMarkdown draws, and what tests read. */
-function parseMarkdown(text) {
+export function parseMarkdown(text) {
   return mdBlocks(String(text || '').replace(/\r\n?/g, '\n').split('\n'));
 }
 
-/** The words of some Markdown without its marks, on one line: for a preview. */
-function markdownPlain(text) {
+// A null run marks a rendered boundary without occupying a DOM text offset.
+export function markdownTextRuns(text) {
   var words = [];
   var walk = function (nodes) {
     nodes.forEach(function (node) {
       if (node.v !== undefined) words.push(node.v);
-      if (node.t === 'br') words.push(' ');
+      if (node.t === 'br') words.push(null);
       if (node.c) walk(node.c);
-      if (node.items) node.items.forEach(function (item) { walk(item); words.push(' '); });
-      if (node.head) [node.head].concat(node.rows).forEach(function (row) { row.forEach(function (cell) { walk(cell); words.push(' '); }); });
-      if (/^(p|h3|h4|pre|blockquote)$/.test(node.t)) words.push(' ');
+      if (node.items) node.items.forEach(function (item) { walk(item); words.push(null); });
+      if (node.head) [node.head].concat(node.rows).forEach(function (row) { row.forEach(function (cell) { walk(cell); words.push(null); }); });
+      if (/^(p|h3|h4|pre|blockquote|hr)$/.test(node.t)) words.push(null);
     });
   };
   walk(parseMarkdown(text));
-  return words.join('').replace(/\s+/g, ' ').trim();
+  return words;
+}
+
+// With no separators this matches the offsets used by a DOM Range.
+export function markdownText(text, separator = '') {
+  return markdownTextRuns(text).map(function (run) { return run ?? separator; }).join('');
+}
+
+export function markdownPlain(text) {
+  return markdownText(text, ' ').replace(/\s+/g, ' ').trim();
 }
 
 var MD_TAGS = { p: 'p', h3: 'h3', h4: 'h4', strong: 'strong', em: 'em', del: 'del', blockquote: 'blockquote', code: 'code', hr: 'hr', br: 'br' };
@@ -259,12 +268,13 @@ function mdAppend(doc, parent, nodes) {
 }
 
 /** Draws some Markdown into an element, in place of what was there. */
-function renderMarkdown(el, text) {
+export function renderMarkdown(el, text) {
   while (el.firstChild) el.removeChild(el.firstChild);
   mdAppend(el.ownerDocument, el, parseMarkdown(text));
 }
 
 if (typeof document !== 'undefined' && document.addEventListener) {
+  window.markdownPlain = markdownPlain;
   document.addEventListener('alpine:init', function () {
     window.Alpine.directive('markdown', function (el, binding, utils) {
       var read = utils.evaluateLater(binding.expression);
