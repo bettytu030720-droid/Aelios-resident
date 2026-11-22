@@ -87,9 +87,6 @@ function urlBase64ToBytes(text) {
 function resident() {
   var POLL_MS = 5000;
   var FAST_MS = 900;
-  // A look that asks "anything new since this version?" reads nothing when nothing is; the whole conversation is
-  // read again at least this often all the same.
-  var FULL_MS = 2 * 60 * 1000;
   // How often the sidebar looks whether another resident said something.
   var RESIDENTS_MS = 60 * 1000;
   var PERSONA_MAX = 30000;
@@ -288,9 +285,8 @@ function resident() {
   var recorder = null;
   var player = null;
   var mediaUrls = {};
-  // The version of the conversation the page has (GET /web/messages?since=), and when it last read all of it.
+  // The version of the conversation the page has (GET /web/messages?since=).
   var seenRev = '';
-  var fullAt = 0;
   var picLoading = {};
   // The Android app's notifications (Capacitor): one sign-up per installation, whichever resident is open.
   var nativeListening = false;
@@ -446,7 +442,7 @@ function resident() {
       } catch (e) {}
       document.addEventListener('visibilitychange', function () {
         if (document.hidden || !self.authed) return;
-        self.refresh(true).catch(function () {});
+        self.refresh().catch(function () {});
         if (!self.miniApp) self.loadResidents().catch(function () {});
         // Back from an MCP sign-in in another tab: show how it went.
         if (self.view === 'config') self.loadMcp().catch(function () {});
@@ -673,7 +669,6 @@ function resident() {
       remember('resident.seen', JSON.stringify(this.residents.seen));
       // Everything on the page was the last resident's.
       seenRev = '';
-      fullAt = 0;
       settled = {};
       picLoading = {};
       this.identity = known ? { name: known.name, avatar: known.avatar } : { name: '住户', avatar: null };
@@ -767,7 +762,6 @@ function resident() {
     logout() {
       writeKey('');
       seenRev = '';
-      fullAt = 0;
       this.key = '';
       this.miniToken = '';
       this.miniExpires = 0;
@@ -1010,12 +1004,11 @@ function resident() {
       if (data && data.rev) seenRev = data.rev;
       if (data && this.syncChatTurn && Object.prototype.hasOwnProperty.call(data, 'turn')) this.syncChatTurn(data.turn);
       if (data && data.same) return null;
-      fullAt = Date.now();
       return (data && data.data) || [];
     },
     async refresh(full) {
       if (!this.authed) return;
-      var since = !full && seenRev && Date.now() - fullAt < FULL_MS ? seenRev : '';
+      var since = full ? '' : seenRev;
       var lines = this.took(await this.api('/web/messages' + (since ? '?since=' + encodeURIComponent(since) : '')));
       if (!lines) return;
       var before = this.lines.length;

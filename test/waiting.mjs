@@ -85,15 +85,44 @@ await test("the same ask twice is one item; read news goes; a newer note replace
 
 function fixture() {
   const db = new DatabaseSync(":memory:");
+  const queries = [];
   const sql = (strings, ...values) => {
-    const statement = db.prepare(strings.join("?"));
+    const query = strings.join("?");
+    queries.push(query);
+    const statement = db.prepare(query);
     return /^\s*SELECT/i.test(strings[0]) ? statement.all(...values) : (statement.run(...values), []);
   };
   const atomic = (fn) => { db.exec("BEGIN IMMEDIATE"); try { const out = fn(); db.exec("COMMIT"); return out; } catch (error) { db.exec("ROLLBACK"); throw error; } };
   const tasks = new cloud.TaskStore(sql);
   const machines = new machine.MachineStore(sql, tasks, atomic);
-  return { tasks, machines, list: new store.WaitingStore(sql, tasks, machines) };
+  return { db, queries, tasks, machines, list: new store.WaitingStore(sql, tasks, machines) };
 }
+
+await test("the waiting list scans tasks once, reuses the thread heads, and refreshes them after a task changes", (test) => {
+  test.mock.method(Date, "now", () => now);
+  const f = fixture();
+  const add = (title, extra = {}) => f.tasks.add({ title, job: "do it", execution: "linux", ...extra }).task;
+  const first = add("Original title");
+  f.db.prepare("UPDATE res_tasks SET root = '' WHERE id = ?").run(first.id);
+  const next = add("Follow-up title", { follows: first.id });
+  f.tasks.result(next.id, { status: "needs_you", summary: "Which option?", choices: ["A"], links: [] });
+  const hidden = add("Test only", { follows: first.id, test: true });
+  const retired = add("Retired thread");
+  f.db.prepare("UPDATE res_tasks SET runs = '' WHERE id = ?").run(retired.id);
+  f.tasks.result(retired.id, { status: "failed", summary: "Needs a key", reason: "missing_key", links: [] });
+  const counts = () => f.queries.filter((query) => /^SELECT.*FROM res_tasks/.test(query)).length;
+  f.queries.length = 0;
+  assert.deepEqual(f.list.list().items, [], "a newer test hides its thread from Waiting, and retired threads do not appear");
+  assert.equal(counts(), 1);
+  assert.deepEqual(f.list.list().items, []);
+  assert.equal(counts(), 1, "an idle poll does not scan tasks");
+  f.tasks.drop(hidden.id);
+  assert.deepEqual(f.list.list().items.map(({ thread, task, title, options }) => [thread, task, title, options]),
+    [[first.id, next.id, "Original title", ["A"]]], "legacy root and first title are retained; rowid breaks the created-at tie");
+  assert.equal(counts(), 2, "a task change causes one new scan");
+  assert.equal(f.tasks.settle(next.id), true);
+  assert.deepEqual(f.list.list().items, [], "settling the current task invalidates the cache immediately");
+});
 
 await test("the store: an ask from a receipt is listed and pushed once; resolving it removes it; a done is read once", async () => {
   const f = fixture();

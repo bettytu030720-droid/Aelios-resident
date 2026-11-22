@@ -1341,8 +1341,7 @@ await filePage.viewFile({ path: '小米网页推送报告.md', size: 10 });
 assert.equal(filePage.fileView.kind, 'markdown');
 console.log('PASS a thread\'s .md file is shown as Markdown');
 
-// The page's look every few seconds: it says which version it has, and nothing is read or redrawn while the
-// resident says nothing has changed; all of it is read when told to, and at least every 2 minutes all the same.
+// The page keeps its version across idle polls. An explicit refresh can still ask for all lines.
 const looker = vm.runInContext('testPage()', context);
 const looked = [];
 let answers = [];
@@ -1364,19 +1363,19 @@ await looker.refresh();
 assert.equal(looked.at(-1), '/web/messages?since=b00t.2', 'the new version is the one asked about');
 answers = [{ data: looker.lines, rev: 'b00t.2' }];
 await looker.refresh(true);
-assert.equal(looked.at(-1), '/web/messages', 'told to: all of it (the page shown again)');
+assert.equal(looked.at(-1), '/web/messages', 'an action can still ask for all lines');
 const realNow = Date.now;
 Date.now = () => realNow() + 3 * 60 * 1000;
-answers = [{ data: looker.lines, rev: 'b00t.2' }];
+answers = [{ same: true, rev: 'b00t.2' }];
 await looker.refresh();
 Date.now = realNow;
-assert.equal(looked.at(-1), '/web/messages', 'two minutes on: all of it, whatever the version says');
+assert.equal(looked.at(-1), '/web/messages?since=b00t.2', 'an idle tab keeps its version after two minutes');
 looker.logout();
 answers = [{ data: [], rev: 'other.1' }];
 looker.authed = true;
 await looker.refresh();
 assert.equal(looked.at(-1), '/web/messages', 'after locking the door, no version is kept');
-console.log('PASS the page asks for what changed since its version, reads all of it when told to and every 2 minutes');
+console.log('PASS idle polls keep their version and an explicit refresh can still read all lines');
 
 // Searching the conversation: pages of hits put together, a new search starts over, a hit opened reads its
 // neighbours once, and the words searched for are marked as text.

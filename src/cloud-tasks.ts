@@ -488,6 +488,13 @@ export function prPath(links: string[]): string | null {
 export class TaskStore {
   /** When each task's pull request was last asked about (this isolate only: a restart asks once more). */
   readonly #prChecked = new Map<string, number>();
+  #threadHeads: { card: Readonly<ThreadCard>; latest: Readonly<Task> }[] | null = null;
+
+  // Task mutations go through this tag so polling never needs to rescan an unchanged task table.
+  private writeTask: Sql = (strings, ...values) => {
+    this.#threadHeads = null;
+    return this.sql(strings, ...values);
+  };
 
   constructor(private readonly sql: Sql) {
     sql`CREATE TABLE IF NOT EXISTS res_tasks (id TEXT PRIMARY KEY, code TEXT NOT NULL, title TEXT NOT NULL, job TEXT NOT NULL,
@@ -526,6 +533,8 @@ export class TaskStore {
         add();
       }
     }
+    // A reply's task card counts and compares tasks in its own thread.
+    sql`CREATE INDEX IF NOT EXISTS res_tasks_root_created ON res_tasks (root, created_at)`;
   }
 
   /** A new task, not sent yet: its id and its one-time code. */
@@ -540,7 +549,7 @@ export class TaskStore {
     const now = Date.now();
     const follows = input.follows ? this.get(input.follows) : null;
     const root = follows?.root ?? id;
-    this.sql`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, role, unasked, status, session_url, progress,
+    this.writeTask`INSERT INTO res_tasks (id, code, title, job, repo, follows, root, runs, direct, role, unasked, status, session_url, progress,
       progress_at, progress_count, summary, links, notices, test, created_at, updated_at)
       VALUES (${id}, ${code}, ${title}, ${job}, ${repo}, ${input.follows ?? ""}, ${root}, ${input.execution ?? "local"},
       ${input.direct ? 1 : 0}, ${input.role ?? follows?.role ?? ""}, ${input.unasked ?? 0}, ${"sent"}, ${""}, ${""}, ${null}, ${0}, ${""}, ${"[]"}, ${0}, ${input.test ? 1 : 0}, ${now}, ${now})`;
@@ -566,7 +575,7 @@ export class TaskStore {
   }
 
   sent(id: string, sessionUrl: string): void {
-    this.sql`UPDATE res_tasks SET session_url = ${sessionUrl}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    this.writeTask`UPDATE res_tasks SET session_url = ${sessionUrl}, updated_at = ${Date.now()} WHERE id = ${id}`;
   }
 
   /**
@@ -576,14 +585,14 @@ export class TaskStore {
   rerun(id: string): boolean {
     const task = this.get(id);
     if (!task || task.runs !== "linux" || (task.status !== "failed" && task.status !== "quiet")) return false;
-    this.sql`UPDATE res_tasks SET status = ${"working"}, progress = ${""}, progress_at = ${null}, progress_count = ${0}, summary = ${""},
+    this.writeTask`UPDATE res_tasks SET status = ${"working"}, progress = ${""}, progress_at = ${null}, progress_count = ${0}, summary = ${""},
       links = ${"[]"}, choices = ${"[]"}, reason = ${""}, note = ${""}, queued = ${0}, chosen = ${""}, settled = ${0}, updated_at = ${Date.now()} WHERE id = ${id}`;
     return true;
   }
 
   /** A task that could not be sent is not kept: it cost nothing and counts for nothing. */
   drop(id: string): void {
-    this.sql`DELETE FROM res_tasks WHERE id = ${id}`;
+    this.writeTask`DELETE FROM res_tasks WHERE id = ${id}`;
   }
 
   /** `queued`: this line says it waits in line (the machine is at work on something else); any later line says it no longer does. */
@@ -591,7 +600,7 @@ export class TaskStore {
     const [row] = this.sql<{ progress_count: number }>`SELECT progress_count FROM res_tasks WHERE id = ${id}`;
     if (!row || row.progress_count >= PROGRESS_MAX) return false;
     const now = Date.now();
-    this.sql`UPDATE res_tasks SET progress = ${line}, progress_at = ${now}, progress_count = progress_count + 1, updated_at = ${now}, queued = ${queued ? 1 : 0},
+    this.writeTask`UPDATE res_tasks SET progress = ${line}, progress_at = ${now}, progress_count = progress_count + 1, updated_at = ${now}, queued = ${queued ? 1 : 0},
       status = CASE WHEN status IN ('sent', 'quiet') THEN 'working' ELSE status END WHERE id = ${id}`;
     return true;
   }
@@ -601,7 +610,7 @@ export class TaskStore {
    * test, and not for what they wrote to a thread themselves (they read the answer there).
    */
   result(id: string, result: { status: TaskStatus; summary: string; links: string[]; choices?: string[]; reason?: string; note?: string }): boolean {
-    this.sql`UPDATE res_tasks SET status = ${result.status}, summary = ${result.summary}, links = ${JSON.stringify(result.links)},
+    this.writeTask`UPDATE res_tasks SET status = ${result.status}, summary = ${result.summary}, links = ${JSON.stringify(result.links)},
       choices = ${JSON.stringify(result.choices ?? [])}, reason = ${result.reason ?? ""}, note = ${result.note ?? ""}, queued = ${0}, chosen = ${""}, settled = ${0}, updated_at = ${Date.now()}, notices = notices + 1 WHERE id = ${id}`;
     const [row] = this.sql<{ notices: number; test: number; direct: number }>`SELECT notices, test, direct FROM res_tasks WHERE id = ${id}`;
     return Boolean(row && !row.test && !row.direct && row.notices <= NOTICES_MAX);
@@ -609,7 +618,7 @@ export class TaskStore {
 
   /** A task's state moved by the world outside (a pull request merged): not a report, so no notice and no turn. */
   moved(id: string, status: TaskStatus, summary: string, reason = ""): void {
-    this.sql`UPDATE res_tasks SET status = ${status}, summary = ${summary}, choices = ${"[]"}, reason = ${reason}, queued = ${0}, chosen = ${""}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    this.writeTask`UPDATE res_tasks SET status = ${status}, summary = ${summary}, choices = ${"[]"}, reason = ${reason}, queued = ${0}, chosen = ${""}, updated_at = ${Date.now()} WHERE id = ${id}`;
   }
 
   /**
@@ -653,7 +662,7 @@ export class TaskStore {
   choose(id: string, choice: string): boolean {
     const task = this.get(id);
     if (!task || !this.card(task).waiting || !task.choices.includes(choice)) return false;
-    this.sql`UPDATE res_tasks SET chosen = ${choice}, settled = ${1}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    this.writeTask`UPDATE res_tasks SET chosen = ${choice}, settled = ${1}, updated_at = ${Date.now()} WHERE id = ${id}`;
     return true;
   }
 
@@ -661,7 +670,7 @@ export class TaskStore {
   settle(id: string): boolean {
     const task = this.get(id);
     if (!task || !this.card(task).waiting) return false;
-    this.sql`UPDATE res_tasks SET settled = ${1}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    this.writeTask`UPDATE res_tasks SET settled = ${1}, updated_at = ${Date.now()} WHERE id = ${id}`;
     return true;
   }
 
@@ -680,7 +689,7 @@ export class TaskStore {
     if (!task || (task.status !== "sent" && task.status !== "working")) return null;
     const age = Date.now() - task.createdAt;
     if (task.progressAt && Date.now() - task.progressAt < 60 * 60_000 && age < QUIET_MAX_MINUTES * 60_000) return "wait";
-    this.sql`UPDATE res_tasks SET status = ${"quiet"}, updated_at = ${Date.now()} WHERE id = ${id}`;
+    this.writeTask`UPDATE res_tasks SET status = ${"quiet"}, updated_at = ${Date.now()} WHERE id = ${id}`;
     return task.test || task.direct ? null : "quiet";
   }
 
@@ -712,8 +721,24 @@ export class TaskStore {
 
   /** Threads, the one with the newest task first. Tests are left out. */
   threads(limit = 30): ThreadCard[] {
+    return this.threadsWithLatest(limit).map(({ card }) => ({ ...card }));
+  }
+
+  /** Both views used by the waiting list, from one ordered scan shared across polls. */
+  threadsWithLatest(limit: number) {
+    this.#threadHeads ??= this.readThreadHeads();
+    return this.#threadHeads.slice(0, Math.max(0, Math.ceil(limit)));
+  }
+
+  private readThreadHeads() {
     const cards = new Map<string, ThreadCard>();
-    for (const task of this.sql<Row>`SELECT * FROM res_tasks WHERE test = 0 ORDER BY created_at DESC, rowid DESC`.map(taskOf)) {
+    const latest = new Map<string, Task>();
+    for (const row of this.sql<Row>`SELECT * FROM res_tasks ORDER BY created_at DESC, rowid DESC`) {
+      const task = taskOf(row);
+      // Match latest(root), including a legacy root row or a newer test in the same thread.
+      if (!latest.has(task.root)) latest.set(task.root, task);
+      if (!latest.has(task.id)) latest.set(task.id, task);
+      if (task.test) continue;
       const card = cards.get(task.root);
       // Newest first, so the title ends up the first task's: a thread keeps its name.
       if (card) {
@@ -721,13 +746,13 @@ export class TaskStore {
         card.title = task.title;
         // An earlier task of it is at work: the thread works, whatever waits behind.
         if ((task.status === "sent" || task.status === "working") && !task.queued) card.queued = false;
-      } else if (cards.size < limit) {
+      } else {
         const waiting = task.status === "needs_you" && !task.settled;
         const queued = task.queued && (task.status === "sent" || task.status === "working");
         cards.set(task.root, { id: task.root, title: task.title, status: task.status, runs: task.runs, tasks: 1, updatedAt: task.updatedAt, waiting, queued });
       }
     }
-    return [...cards.values()];
+    return [...cards].map(([root, card]) => ({ card, latest: latest.get(root)! }));
   }
 
   /**
@@ -819,7 +844,7 @@ export class TaskStore {
   prune(): string[] {
     // Threads here, and ones on GitHub Actions, which keep the files their runs handed back here.
     const before = new Set(this.sql<{ root: string }>`SELECT DISTINCT root FROM res_tasks WHERE runs IN ('local', 'linux') AND root != ''`.map((row) => row.root));
-    this.sql`DELETE FROM res_tasks WHERE id NOT IN (SELECT id FROM res_tasks ORDER BY created_at DESC, rowid DESC LIMIT ${TASKS_KEPT})`;
+    this.writeTask`DELETE FROM res_tasks WHERE id NOT IN (SELECT id FROM res_tasks ORDER BY created_at DESC, rowid DESC LIMIT ${TASKS_KEPT})`;
     this.sql`DELETE FROM res_thread_files WHERE root NOT IN (SELECT root FROM res_tasks)`;
     const after = new Set(this.sql<{ root: string }>`SELECT DISTINCT root FROM res_tasks WHERE runs IN ('local', 'linux') AND root != ''`.map((row) => row.root));
     return [...before].filter((root) => !after.has(root));
