@@ -52,6 +52,7 @@ function residentField(name) {
 const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, truncationKeepRecent, SDK_STEP, LETTER_PREFIX } = await compile(`
   import { historyCutoff, historyAnchor, historyForWindow } from "./src/cache-history.ts";
   import { opensWindow, cacheTtlMs } from "./src/cache-window.ts";
+  import { buildContext } from "./src/request-context.ts";
   import { LETTER_PREFIX } from "./src/prompts.ts";
   import { taskOfNote } from "./src/cloud-tasks.ts";
   import { usageLabel } from "./src/usage.ts";
@@ -98,7 +99,7 @@ const { historyCutoff, historyAnchor, historyForWindow, ResidentWindowHarness, t
     setLetter(active: boolean) { this.#letterPromptId = active ? "synthetic-letter-prompt" : null; }
     ${residentField("truncationStep")}
     ${residentField("mediaEviction")}
-    ${["windowHistory", "windowState", "setWindow", "cacheWindow", "letterJob", "saveLetterJob", "deleteLetterJob", "performWriteLetter", "beforeTurn"].map(residentMethod).join("\n")}
+    ${["windowHistory", "windowState", "setWindow", "cacheWindow", "letterCache", "letterJob", "saveLetterJob", "deleteLetterJob", "performWriteLetter", "beforeTurn"].map(residentMethod).join("\n")}
   }
 `, "cache-history-harness.ts");
 
@@ -204,12 +205,37 @@ test("Resident's actual overrides disable both SDK text/tool truncation and medi
   assert.equal(outputOf(model, "sdk-regression").value.length, 3261);
 });
 
-test("beforeTurn source wiring passes ctx.messages through windowHistory and uses that view for letters too", () => {
-  // Static wiring guard, not a claim to execute the full DO lifecycle.
-  const beforeTurn = residentMethod("beforeTurn");
-  assert.match(beforeTurn, /const messages = this\.windowHistory\(ctx\.messages\);/);
-  assert.match(beforeTurn, /markedForLetter\(messages, this\.letterCache\(\)\)/);
-  assert.match(beforeTurn, /\{ messages, providerOptions: promptCache\(this\.cfg\) \}/);
+test("Resident assembles the same prefix for different turns and marks only the previous message for a letter", async (t) => {
+  const fixture = sqliteFixture(t);
+  const resident = fixture.resident;
+  resident.boot = async () => "synthetic diary";
+  resident.stickerList = () => "synthetic stickers";
+  resident.getTools = () => ({});
+  const assemble = (messages) => resident.beforeTurn({ messages, system: "synthetic persona and rules", tools: {} });
+  const latest = { role: "user", content: "[11-23 周一 12:34] synthetic chat" };
+  const messages = freeze([...historyFixture().slice(1), latest]);
+
+  const first = await assemble(messages);
+  assert.equal(first.instructions, "synthetic persona and rules\n\nsynthetic stickers\n\n[长期记忆开机包]\nsynthetic diary");
+  assert.deepEqual(first.messages, historyForWindow(messages, fixture.row().cutoff));
+  const marker = { type: "ephemeral", ttl: "1h" };
+  assert.deepEqual(first.providerOptions, { anthropic: { cacheControl: marker } });
+
+  fixture.advance(60_000);
+  const group = { role: "user", content: '[11-23 周一 12:35] [group chat "test"; round 2]\n[them] Next subject' };
+  const groupMessages = freeze([...messages, { role: "assistant", content: "A reply" }, group]);
+  const second = await assemble(groupMessages);
+  assert.deepEqual(bytes(second.messages.slice(0, first.messages.length)), bytes(first.messages));
+  assert.equal(second.instructions, first.instructions);
+  assert.equal(second.messages.at(-1), group);
+
+  resident.saveLetterJob({ promptId: "letter", reason: "handoff", fromMessageId: "first", toMessageId: "last", summary: null, createdAt: fixture.now });
+  const letterPrompt = { role: "user", content: `${LETTER_PREFIX}; synthetic instructions` };
+  const letter = await assemble([...groupMessages, letterPrompt]);
+  assert.equal(letter.instructions, first.instructions);
+  assert.equal(letter.providerOptions, undefined);
+  assert.deepEqual(letter.messages, [...second.messages.slice(0, -1), { ...group, providerOptions: first.providerOptions }, letterPrompt]);
+  assert.equal("providerOptions" in group, false);
 });
 
 test("fixed cutoff preserves the entire serialized prefix after 8+ appended messages and multiple turns", () => {

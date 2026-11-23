@@ -480,6 +480,12 @@ if (phase === "main") {
     await post("再来一句");
     const [second] = await waitForSends(before, 1);
     assert.match(second, /^Aelios 收到 \d+ 条，缓存标记有，旧思考块 0 个$/, "earlier thinking stays home");
+    const next = (await log()).filter((e) => e.kind === "aelios.messages").at(-1);
+    assert.equal(next.purpose, null);
+    assert.match(JSON.stringify(next.body.messages.at(-1)), /再来一句/);
+    assert.deepEqual(next.body.system, turn.body.system, "the new turn keeps the same system prefix");
+    assert.deepEqual(next.body.tools, turn.body.tools, "the new turn keeps the same tools");
+    assert.deepEqual(next.body.messages.slice(0, turn.body.messages.length), turn.body.messages, "the new turn keeps the earlier Claude messages");
   });
 
   await step("the letter written through Aelios is marked as not hers", async () => {
