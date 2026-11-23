@@ -104,13 +104,13 @@ const compiled = await build({
     import { resumeLetterCompaction } from './src/letter-recovery.ts';
     import { LetterStateStore } from './src/letter-state.ts';
     import { LETTER_PREFIX, isNote, letterPrompt, stamp } from './src/prompts.ts';
-    import { markedForLetter } from './src/cache-window.ts';
+    import { buildContext } from './src/request-context.ts';
     import { taskOfNote } from './src/cloud-tasks.ts';
     import { usageLabel } from './src/usage.ts';
     import { ChatStop } from './src/chat-stop.ts';
     import { quietAfterTools } from './src/after-tools.ts';
     export { LETTER_PREFIX, installEffectiveHistory, readAuxiliaryAnswer, removeAuxiliaryTurn };
-    const promptCache = () => ({});
+    const promptCache = () => ({ anthropic: { cacheControl: { type: 'ephemeral', ttl: '1h' } } });
     class WebDraft { constructor(..._args) {} }
     export class ResidentHarness {
       #letterState = null;

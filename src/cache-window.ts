@@ -33,7 +33,7 @@ export function opensWindow(state: WindowState, now: number, ttlMs: number): boo
   return now - state.usedAt > ttlMs;
 }
 
-type CacheControl = { type: "ephemeral"; ttl: "5m" | "1h" };
+export type CacheControl = { type: "ephemeral"; ttl: "5m" | "1h" };
 
 /**
  * The messages of the handoff letter's turn. The conversation is folded right after it, so nothing would ever read
