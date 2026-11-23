@@ -423,9 +423,10 @@ export function fakeModel(): LanguageModelV4 {
           warnings: []
         };
       }
+      const cutAnnotation = system.includes("You are a reading companion") && lastOf(options.prompt, "user").includes('"passage":"去公园"');
       return {
-        content: [{ type: "text", text: "好" }],
-        finishReason: { unified: "stop", raw: "stop" },
+        content: [{ type: "text", text: cutAnnotation ? "这句还没说完" : "好" }],
+        finishReason: cutAnnotation ? { unified: "length", raw: "length" } : { unified: "stop", raw: "stop" },
         usage: usage(prompt.length, 20),
         warnings: []
       };

@@ -38,7 +38,7 @@ import { machineReply, readMachineJson } from "./machine";
 import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini-app";
 import { MCP_CALLBACK_PATH } from "./mcp-servers";
 import { MAX_ZIP_BYTES } from "./stickers";
-import { REPORT_MAX_BYTES } from "./cloud-tasks";
+import { REPORT_MAX_BYTES, THREAD_ID } from "./cloud-tasks";
 import { THREAD_FILE_MAX } from "./task-worker";
 import { TELEGRAM_WEBHOOK_PATH, commandOf, isAllowed, timingSafeEqual, type TelegramUpdate } from "./telegram";
 import { DEFAULT_RESIDENT, RESIDENTS_MAX, residentOfPath, residentPrefix } from "./residents";
@@ -49,8 +49,6 @@ export { BoxHub } from "./box-hub";
 export { TaskWorker } from "./task-worker";
 
 const WECOM_PATH = "/messengers/wecom/webhook";
-// A thread goes by its first task's id (cloud-tasks.ts).
-const THREAD_ID = /^t_[0-9a-f]{10}$/;
 // A WeCom push is a few kilobytes of XML.
 const WECOM_MAX_BYTES = 64 * 1024;
 // The first resident; the others are found by their ids (residents.ts).
@@ -324,6 +322,9 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
           subscription?: unknown;
           token?: unknown;
           previousToken?: unknown;
+          document?: unknown;
+          revision?: unknown;
+          selection?: unknown;
           endpoint?: string;
           execution?: string;
           template?: string;
@@ -399,6 +400,15 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       return new Response(bytes, {
         headers: { "content-type": "application/octet-stream", "content-disposition": "attachment", "content-security-policy": "sandbox", "x-content-type-options": "nosniff", "cache-control": "private, max-age=86400" }
       });
+    }
+    case "GET /web/reading-notes": {
+      const file = Object.fromEntries(url.searchParams);
+      const notes = await agent.webReadingNotes(file, file.revision);
+      return Response.json(notes, { status: "error" in notes ? notes.status : 200, headers: { "cache-control": "no-store" } });
+    }
+    case "POST /web/reading-notes": {
+      const note = await agent.webReadingNote(body?.document, body?.revision, body?.selection);
+      return Response.json(note, { status: "error" in note ? note.status : 200, headers: { "cache-control": "no-store" } });
     }
     case "POST /web/speak": {
       const spoken = await agent.webSpeak(String(body.id ?? ""));

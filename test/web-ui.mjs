@@ -1,3 +1,4 @@
+import { markdownPlain, parseMarkdown, renderMarkdown } from '../public/markdown.js';
 // The page's renderer is plain JS: exercise its real functions without a live account.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -5,13 +6,14 @@ import vm from 'node:vm';
 const html = readFileSync('public/index.html', 'utf8');
 const code = readFileSync('public/app.js', 'utf8');
 const markdown = readFileSync('public/markdown.js', 'utf8');
+
 // The parts app.js mixes into the page's state, as the page loads them.
-const mixins = { chatPermissionsPage: 'public/chat-permissions.js', groupPage: 'public/group.js', machinePage: 'public/machine.js', waitingPage: 'public/waiting.js', attachPage: 'public/attach.js', recommendedRolesPage: 'public/recommended-roles.js', chatStopPage: 'public/chat-stop.js', homeScreenPage: 'public/home-screen.js' };
+const mixins = { chatPermissionsPage: 'public/chat-permissions.js', groupPage: 'public/group.js', machinePage: 'public/machine.js', waitingPage: 'public/waiting.js', attachPage: 'public/attach.js', recommendedRolesPage: 'public/recommended-roles.js', chatStopPage: 'public/chat-stop.js', homeScreenPage: 'public/home-screen.js', readingNotesPage: 'public/reading-notes.js' };
 assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
 for (const file of Object.values(mixins)) assert.ok(html.includes(`<script src="/${file.slice('public/'.length)}"></script>`), `the page loads ${file}`);
 const resized = [];
 const context = vm.createContext({ addEventListener() {}, document: { documentElement: { dataset: { theme: 'dark' } } }, localStorage: { getItem() { return ''; }, setItem() {}, removeItem() {} }, setTimeout, clearTimeout, console, Date, URL, Blob, TextDecoder, TextEncoder, atob, btoa, confirm: () => true, window: {}, ResizeObserver: class { constructor(fn) { resized.push(fn); } observe() {} } });
-vm.runInContext(markdown, context);
+Object.assign(context, { markdownPlain, parseMarkdown, renderMarkdown });
 vm.runInContext(readFileSync('public/machine-ask-kind.js', 'utf8'), context);
 vm.runInContext(code, context);
 // A mixed-in part must not reuse a name the page already has: Object.assign would replace it (waiting.js once
@@ -45,7 +47,7 @@ assert.ok(!/">(保存|存上|删掉|拿掉|下载|关掉|清掉|改时间|打开
 for (const button of html.match(/<(button|a) class="icon-btn[^>]*>/g)) assert.ok(/ :?aria-label="/.test(button) && / :?title="/.test(button), button);
 assert.ok(readFileSync('public/app.css', 'utf8').includes('.i-trash { --i: url("data:image/svg+xml,'), 'icons are masks in the stylesheet');
 assert.ok(!code.includes('innerHTML') && !markdown.includes('innerHTML') && !markdown.includes('insertAdjacentHTML') && !markdown.includes('outerHTML'), 'the scripts never write HTML');
-assert.ok(html.indexOf('<script src="/markdown.js"></script>') < html.indexOf('<script src="/app.js"></script>') && html.indexOf('<script src="/app.js"></script>') < html.indexOf('alpine-3.14.9.min.js'), 'x-markdown is there before Alpine starts');
+assert.ok(html.indexOf('<script type="module" src="/markdown.js"></script>') < html.indexOf('<script src="/app.js"></script>') && html.indexOf('<script src="/app.js"></script>') < html.indexOf('alpine-3.14.9.min.js'), 'x-markdown is there before Alpine starts');
 const line = { id: 'quoted"<>', role: 'assistant', text: '答复<script>unsafe</script>', kind: 'chat', via: 'web', at: null, activity: [
   { type: 'reasoning', text: '<img src=x onerror=unsafe()>' },
   { type: 'tool', id: 'one', name: 'web_fetch', input: '{"url":"https://example.com"}', output: '# Example Domain\n</pre><script>unsafe()</script>', state: 'output-available' },
@@ -456,6 +458,35 @@ assert.ok(html.includes('<audio class="file-media" controls :src="fileView.url">
 await page.viewFile({ path: 'blob.bin', size: 2 });
 assert.equal(page.fileView.kind, 'other');
 assert.equal(page.fileView.text, '');
+// A saved range inside the scrollable plain text reader must move its own viewport.
+{
+  const reader = vm.runInContext('resident()', context);
+  reader.fileView = { kind: 'text' };
+  context.NodeFilter = { SHOW_TEXT: 4 };
+  context.window.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+  const quote = '目标';
+  const text = '字'.repeat(200) + quote;
+  let outerScrolled = false;
+  const root = {
+    textContent: text, scrollHeight: 1400, clientHeight: 400, clientTop: 0, scrollTop: 0,
+    getBoundingClientRect: () => ({ top: 50 }),
+    scrollIntoView() { outerScrolled = true; },
+    ownerDocument: {
+      createTreeWalker: () => ({ nextNode: () => ({ length: text.length, parentElement: root }) }),
+      createRange: () => ({
+        setStart(node, start) { this.startContainer = node; assert.equal(start, 200); },
+        setEnd(_node, end) { assert.equal(end, 202); },
+        getClientRects: () => [{ top: 600, height: 20 }]
+      })
+    }
+  };
+  reader.showReadingPassage({ querySelector: () => root }, { start: 200, end: 202, quote });
+  assert.equal(root.scrollTop, 360);
+  assert.equal(outerScrolled, true);
+  delete context.window.getSelection;
+  delete context.NodeFilter;
+}
+
 // A file a reply handed over (make_file): fetched by its key, on a page of its own; back closes it.
 assert.ok(html.includes('@click="openChatFile(f)"'), 'a file card under the reply');
 page.closeFile();
@@ -475,6 +506,13 @@ assert.deepEqual([page.view, page.fileView.path, page.fileView.key], ['chat', ''
 page.closeFile();
 assert.equal(page.fileView.path, '');
 assert.equal(page.backText(), '回到聊天');
+
+// Inline Markdown contributes its displayed characters to a reading anchor.
+const { markdownText } = await import('../public/markdown.js');
+assert.equal(markdownText('这段有**斜线**和[链接](https://r.example)。'), '这段有斜线和链接。');
+assert.match(html, /@click="saveReadingNote\(\)"/);
+assert.match(html, /x-text="note\.note"/);
+
 page.view = 'thread';
 assert.equal(page.backText(), '回到线程');
 page.view = 'chat';

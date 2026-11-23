@@ -34,7 +34,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/threads.css">
 <link rel="stylesheet" href="/chat-stop.css">
-<script src="/markdown.js"></script>
+<script type="module" src="/markdown.js"></script>
 <script src="/group.js"></script>
 <script src="/machine.js"></script>
 <script src="/boxes.js"></script>
@@ -47,6 +47,7 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 <script src="/recommended-roles.js"></script>
 <script src="/chat-stop.js"></script>
 <script src="/home-screen.js"></script>
+<script src="/reading-notes.js"></script>
 <script src="/app.js"></script>
 <script defer src="/vendor/alpine-3.14.9.min.js"></script>
 </head>
@@ -621,8 +622,33 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
   </header>
   <section class="page" x-show="authed && view === 'file'">
     <p class="hint" x-show="fileView.busy">在读…</p>
-    <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
-    <div class="file-md md" x-show="fileView.kind === 'markdown'" x-markdown="fileView.text"></div>
+    <div x-show="fileView.kind === 'text' || fileView.kind === 'markdown'" class="reading-document" @selectionchange.document="trackReadingSelection($el, 'file')">
+      <template x-if="fileView.reading">
+        <div class="reading-notes">
+          <p class="hint" x-show="!fileView.reading.selection && !fileView.reading.notes.length">选一段文字，可以让住户写批注。</p>
+          <template x-if="fileView.reading.selection">
+            <div class="reading-selection">
+              <blockquote x-text="fileView.reading.selection.quote"></blockquote>
+              <button class="btn small" type="button" @click="saveReadingNote()" :disabled="fileView.reading.loading || fileView.reading.busy || !fileView.reading.revision || fileView.reading.selection.quote.length > 1200" x-text="fileView.reading.busy ? '在写批注…' : '写批注'"></button>
+            </div>
+          </template>
+          <p class="hint" x-show="fileView.reading.error" role="status" x-text="fileView.reading.error"></p>
+          <details x-show="fileView.reading.notes.length" :open="fileView.reading.savedOpen" @toggle="if (fileView.reading) fileView.reading.savedOpen = $el.open">
+            <summary x-text="'批注（' + fileView.reading.notes.length + '）'"></summary>
+            <div class="reading-saved">
+              <template x-for="note in fileView.reading.notes" :key="note.start + ':' + note.end">
+                <article class="reading-note">
+                  <button class="reading-quote" type="button" title="回到原文" @click="showReadingPassage($el.closest('.reading-document'), note)" x-text="note.quote"></button>
+                  <p x-text="note.note"></p>
+                </article>
+              </template>
+            </div>
+          </details>
+        </div>
+      </template>
+      <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
+      <div class="file-md md" x-show="fileView.kind === 'markdown'" x-markdown="fileView.text"></div>
+    </div>
     <template x-if="fileView.kind === 'html' && view === 'file'">
       <iframe class="file-page" sandbox="allow-scripts" referrerpolicy="no-referrer" :srcdoc="fileView.text" title="页面预览"></iframe>
     </template>
@@ -828,8 +854,33 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
         <button class="icon-btn sm" type="button" @click="closeFile()" title="关掉" aria-label="关掉"><i class="i i-x" aria-hidden="true"></i></button>
       </div>
       <p class="hint" x-show="fileView.busy">在读…</p>
-      <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
-      <div class="file-md md" x-show="fileView.kind === 'markdown'" x-markdown="fileView.text"></div>
+      <div x-show="fileView.kind === 'text' || fileView.kind === 'markdown'" class="reading-document" @selectionchange.document="trackReadingSelection($el, 'thread')">
+        <template x-if="fileView.reading">
+          <div class="reading-notes">
+            <p class="hint" x-show="!fileView.reading.selection && !fileView.reading.notes.length">选一段文字，可以让住户写批注。</p>
+            <template x-if="fileView.reading.selection">
+              <div class="reading-selection">
+                <blockquote x-text="fileView.reading.selection.quote"></blockquote>
+                <button class="btn small" type="button" @click="saveReadingNote()" :disabled="fileView.reading.loading || fileView.reading.busy || !fileView.reading.revision || fileView.reading.selection.quote.length > 1200" x-text="fileView.reading.busy ? '在写批注…' : '写批注'"></button>
+              </div>
+            </template>
+            <p class="hint" x-show="fileView.reading.error" role="status" x-text="fileView.reading.error"></p>
+            <details x-show="fileView.reading.notes.length" :open="fileView.reading.savedOpen" @toggle="if (fileView.reading) fileView.reading.savedOpen = $el.open">
+              <summary x-text="'批注（' + fileView.reading.notes.length + '）'"></summary>
+              <div class="reading-saved">
+                <template x-for="note in fileView.reading.notes" :key="note.start + ':' + note.end">
+                  <article class="reading-note">
+                    <button class="reading-quote" type="button" title="回到原文" @click="showReadingPassage($el.closest('.reading-document'), note)" x-text="note.quote"></button>
+                    <p x-text="note.note"></p>
+                  </article>
+                </template>
+              </div>
+            </details>
+          </div>
+        </template>
+        <pre class="file-text" x-show="fileView.kind === 'text'" x-text="fileView.text"></pre>
+        <div class="file-md md" x-show="fileView.kind === 'markdown'" x-markdown="fileView.text"></div>
+      </div>
       <img class="file-image" x-show="fileView.kind === 'image'" :src="fileView.url || ''" alt="">
       <template x-if="fileView.kind === 'audio'"><audio class="file-media" controls :src="fileView.url"></audio></template>
       <template x-if="fileView.kind === 'video'"><video class="file-media" controls playsinline :src="fileView.url"></video></template>
