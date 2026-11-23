@@ -25,6 +25,8 @@ export const UNASKED_FOLLOW_UPS = 2;
 export const QUIET_MINUTES = 180;
 const QUIET_MAX_MINUTES = 12 * 60;
 export const REPORT_DAYS = 7;
+// A thread goes by its first task's id.
+export const THREAD_ID = /^t_[0-9a-f]{10}$/;
 export const REPORT_MAX_BYTES = 16 * 1024;
 const TITLE_MAX = 60;
 const JOB_MAX = 6000;

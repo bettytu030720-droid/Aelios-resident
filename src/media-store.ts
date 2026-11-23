@@ -34,7 +34,7 @@ function newKey(): string {
 }
 
 export class MediaStore {
-  constructor(private readonly sql: Sql) {
+  constructor(private readonly sql: Sql, private readonly onFileRemoved?: (key: string) => void) {
     sql`CREATE TABLE IF NOT EXISTS res_media (key TEXT PRIMARY KEY, kind TEXT NOT NULL, type TEXT NOT NULL, size INTEGER NOT NULL,
       seconds REAL, at INTEGER NOT NULL)`;
     sql`CREATE TABLE IF NOT EXISTS res_media_pieces (key TEXT NOT NULL, n INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (key, n))`;
@@ -103,10 +103,11 @@ export class MediaStore {
     this.sql`DELETE FROM res_media_text WHERE key = ${key}`;
     if (text) this.remove(text);
     this.sql`DELETE FROM res_media_pieces WHERE key = ${key}`;
-    this.sql`DELETE FROM res_media WHERE key = ${key}`;
+    const [removed] = this.sql<{ kind: MediaKind }>`DELETE FROM res_media WHERE key = ${key} RETURNING kind`;
     this.sql`DELETE FROM res_media_spoken WHERE key = ${key} OR EXISTS (
       SELECT 1 FROM json_each(res_media_spoken.parts) WHERE json_extract(value, '$.key') = ${key}
     )`;
+    if (removed?.kind === "file") this.onFileRemoved?.(key);
   }
 
   /** The voice a reply was said in, if it was. */
