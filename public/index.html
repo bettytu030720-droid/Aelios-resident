@@ -257,12 +257,12 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
               </template>
               <template x-if="row.line.voice && row.line.voice.key">
                 <div class="voice">
-                  <button class="play" type="button" @click="play(row.line.voice.key)" :disabled="audioBusy === row.line.voice.key" :aria-label="playing === row.line.voice.key ? '停下' : '听它说'">
+                  <button class="play" type="button" @click="play(row.line.voice.key, null, row.line.voice)" :aria-label="playing === row.line.voice.key ? '停下' : '听它说'">
                     <svg x-show="playing !== row.line.voice.key" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg>
                     <svg x-show="playing === row.line.voice.key" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
                   </button>
                   <span class="wave" :class="playing === row.line.voice.key && 'playing'" aria-hidden="true"><template x-for="(h, i) in waveOf(row.line.voice)" :key="i"><i :style="{ height: h + 'px' }"></i></template></span>
-                  <span class="len" x-text="voiceLen(row.line.voice)"></span>
+                  <span class="len" x-text="row.line.voice.live ? '边写边听' : voiceLen(row.line.voice)"></span>
                 </div>
               </template>
               <template x-for="(b, i) in bubblesOf(row.line)" :key="i">

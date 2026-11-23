@@ -486,6 +486,51 @@ assert.equal(page.fileView.text, '');
   delete context.window.getSelection;
   delete context.NodeFilter;
 }
+// A live player waits for the next ordered clip and survives the draft becoming a saved reply.
+let audio;
+context.Audio = class {
+  constructor() { audio = this; }
+  pause() {}
+  async play() {}
+};
+let releaseAudio;
+const voiceRequests = [];
+let voicePolls = 0;
+const voicePage = vm.runInContext('resident()', context);
+voicePage.api = async (path) => {
+  if (path.startsWith('/web/messages')) {
+    voicePolls++;
+    return { data: [{ id: 'saved', voice: { key: 'first', parts: ['first', 'second'] } }] };
+  }
+  voiceRequests.push(path);
+  if (path.endsWith('late')) return new Promise(resolve => { releaseAudio = resolve; });
+  return new Blob(['sound']);
+};
+await voicePage.play('first', null, { key: 'first', live: true });
+audio.onended();
+assert.equal(voicePage.playing, 'first', 'wait for the rest of the live voice');
+const realTimer = context.setTimeout;
+let voiceTick;
+context.setTimeout = fn => { voiceTick = fn; };
+context.document.hidden = true;
+voicePage.authed = true;
+voicePage.isNearBottom = () => false;
+voicePage.poll();
+await voiceTick();
+await new Promise(resolve => setTimeout(resolve, 0));
+audio.onended();
+assert.equal(voicePage.playing, '');
+assert.equal(voicePolls, 1, 'refresh a playing live voice even when the page is hidden');
+await voiceTick();
+assert.equal(voicePolls, 1, 'an idle hidden page skips history polling');
+context.document.hidden = false;
+context.setTimeout = realTimer;
+assert.deepEqual(voiceRequests, ['/web/media?key=first&part=1', '/web/media?key=second&part=1']);
+const late = voicePage.play('late');
+voicePage.stopPlaying();
+releaseAudio(new Blob(['stale']));
+await late;
+assert.equal(voicePage.playing, '', 'a cancelled request cannot start playing later');
 
 // A file a reply handed over (make_file): fetched by its key, on a page of its own; back closes it.
 assert.ok(html.includes('@click="openChatFile(f)"'), 'a file card under the reply');

@@ -287,6 +287,7 @@ function resident() {
   var recorder = null;
   var player = null;
   var mediaUrls = {};
+  var playback = null;
   // The version of the conversation the page has (GET /web/messages?since=).
   var seenRev = '';
   var picLoading = {};
@@ -663,6 +664,7 @@ function resident() {
       if (id === this.resident && this.view === 'group') { this.view = 'chat'; this.scrollSoon(true); }
       if (id === this.resident || !this.authed) return;
       clearTimeout(pollTimer);
+      this.clearVoicePlayback();
       this.resident = id;
       remember('resident.current', id);
       try { history.replaceState(null, '', id === 'default' ? '/' : '/?r=' + id); } catch (e) {}
@@ -763,6 +765,7 @@ function resident() {
     },
 
     logout() {
+      this.clearVoicePlayback();
       writeKey('');
       seenRev = '';
       this.key = '';
@@ -998,9 +1001,9 @@ function resident() {
       var self = this;
       clearTimeout(pollTimer);
       pollTimer = setTimeout(async function () {
-        if (self.authed && !document.hidden) await self.refresh().catch(function () {});
+        if (self.authed && (!document.hidden || playback?.live)) await self.refresh().catch(function () {});
         if (self.authed) self.poll(self.replying());
-      }, fast ? FAST_MS : POLL_MS);
+      }, fast || playback?.live ? FAST_MS : POLL_MS);
     },
     // What /web/messages gave: the lines, or null when nothing has changed since the version the page has.
     took(data) {
@@ -1008,7 +1011,9 @@ function resident() {
       if (data && data.rev) seenRev = data.rev;
       if (data && this.syncChatTurn && Object.prototype.hasOwnProperty.call(data, 'turn')) this.syncChatTurn(data.turn);
       if (data && data.same) return null;
-      return (data && data.data) || [];
+      var lines = (data && data.data) || [];
+      for (var line of lines) if (line.liveVoice) line.voice = line.liveVoice;
+      return lines;
     },
     async refresh(full) {
       if (!this.authed) return;
@@ -1018,6 +1023,7 @@ function resident() {
       var before = this.lines.length;
       var stick = this.isNearBottom();
       this.lines = lines;
+      this.syncVoicePlayback();
       this.settleOutbox();
       if (lines.length > before && !stick) this.unseen += lines.length - before;
       // Something new was said, as when it comes back with what a thread did: the threads' count follows.
@@ -1249,29 +1255,78 @@ function resident() {
     },
 
     // ---- playing a voice ----
-    async play(key, url) {
+    async play(key, url, voice) {
       var id = key || url;
+      if (!id) return;
+      var wasPlaying = playback?.id === id;
+      this.stopPlaying();
+      if (wasPlaying) return;
       if (!player) player = new Audio();
-      if (this.playing === id) { player.pause(); this.playing = ''; return; }
+      playback = { id: id, url: url, parts: voice?.parts || [id], segmented: Boolean(voice?.parts || voice?.live),
+        live: Boolean(voice?.live), index: 0, active: false };
+      this.playing = id;
+      await this.playNextPart(playback);
+    },
+    stopPlaying() {
+      playback = null;
+      if (player) {
+        player.onended = null;
+        player.onerror = null;
+        player.pause();
+      }
+      this.playing = '';
+      this.audioBusy = '';
+    },
+    clearVoicePlayback() {
+      this.stopPlaying();
+      Object.values(mediaUrls).forEach(function (url) { URL.revokeObjectURL(url); });
+      mediaUrls = {};
+    },
+    syncVoicePlayback() {
+      var state = playback;
+      if (!state?.live) return;
+      // The draft and the saved reply share the first audio key.
+      var line = this.lines.find(function (line) { return line.voice?.key === state.id; });
+      if (!line) { this.stopPlaying(); return; }
+      state.parts = line.voice.parts || [state.id];
+      state.live = Boolean(line.voice.live);
+      this.playNextPart(state);
+    },
+    async playNextPart(state) {
+      if (playback !== state || state.active) return;
+      var key = state.parts[state.index];
+      if (!key) {
+        if (!state.live) this.stopPlaying();
+        return;
+      }
       var self = this;
+      state.active = true;
+      this.audioBusy = state.id;
       try {
-        this.audioBusy = id;
-        var src = url || mediaUrls[key];
+        var src = state.url || mediaUrls[key];
         if (!src) {
-          var blob = await this.api('/web/media?key=' + encodeURIComponent(key), { blob: true });
+          var blob = await this.api('/web/media?key=' + encodeURIComponent(key) + (state.segmented ? '&part=1' : ''), { blob: true });
+          if (playback !== state) return;
           src = mediaUrls[key] = URL.createObjectURL(blob);
         }
-        player.pause();
         player.src = src;
-        player.onended = function () { self.playing = ''; };
-        player.onerror = function () { self.playing = ''; };
+        player.onended = function () {
+          if (playback !== state) return;
+          state.index += 1;
+          state.active = false;
+          self.playNextPart(state);
+        };
+        player.onerror = function () {
+          if (playback === state) self.stopPlaying();
+        };
         await player.play();
-        this.playing = id;
       } catch (error) {
-        this.notify('放不出来：' + error.message);
-        this.playing = '';
+        if (playback === state) {
+          this.stopPlaying();
+          this.notify('放不出来：' + error.message);
+        }
       } finally {
-        this.audioBusy = '';
+        if (playback === state) this.audioBusy = '';
       }
     },
     async speak(id) {
@@ -1281,7 +1336,7 @@ function resident() {
         var spoken = await this.api('/web/speak', { method: 'POST', body: { id: id } });
         await this.refresh().catch(function () {});
         this.audioBusy = '';
-        await this.play(spoken.key);
+        await this.play(spoken.key, null, spoken);
       } catch (error) {
         this.notify(error.message);
       } finally {

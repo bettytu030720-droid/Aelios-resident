@@ -180,6 +180,7 @@ import {
 import type { Rgb } from "./gif";
 import {
   SPEAK_MAX_CHARS,
+  joinMp3,
   VOICE_MARK,
   audioTypeOf,
   clock,
@@ -202,6 +203,7 @@ import {
   byWhatItIs,
   type Spoken
 } from "./voice";
+import { ReplyVoice, type VoicePlayback } from "./web/reply-voice";
 import { DEFAULT_COMPRESS_MODEL, type Compressor } from "./web/compress";
 import { readerFor, webFetchTool, webFetchVia, type Page, type PageCache } from "./web/fetch";
 import { SiteKeyStore } from "./web/site-keys";
@@ -324,7 +326,8 @@ export type WebLine = {
   /** Files she attached: names and sizes. */
   attached?: { name: string; size: number }[];
   /** A voice message: hers (its recording when she made it on the web page), or the voice this reply was said in. */
-  voice?: { key: string | null; seconds: number | null; missed?: boolean };
+  voice?: { key: string | null; seconds: number | null; missed?: boolean; parts?: string[] };
+  liveVoice?: VoicePlayback;
   /** The message she was replying to. */
   quote?: { who: "user" | "assistant"; text: string };
   /** Cloud tasks this reply sent, or reported on, as cards. */
@@ -590,7 +593,11 @@ export class Resident extends Think<Env> {
 
   override onChunk({ chunk }: ChunkContext): void {
     const id = this.activeTurn?.requestId;
-    if (id) this.#drafts.get(id)?.chunk(chunk as { type: string; [key: string]: unknown });
+    if (!id) return;
+    this.#drafts.get(id)?.chunk(chunk as { type: string; [key: string]: unknown });
+    const speech = this.#webTurns.get(id)?.speech;
+    if (chunk.type === "text-delta" && typeof chunk.text === "string") speech?.push(chunk.text);
+    if (chunk.type === "tool-call" && chunk.toolName === "send_voice") speech?.cancel();
   }
 
   // What web_search found in each turn, for learnFromSearch once the turn is answered.
@@ -2767,6 +2774,8 @@ export class Resident extends Think<Env> {
     }
     // A failed turn can finish before an assistant row exists, so no response hook is guaranteed.
     this.#drafts.clear();
+    for (const web of this.#webTurns.values()) web.speech?.cancel();
+    this.#webTurns.clear();
     this.#spoke = null;
     this.#turnVoice = null;
     this.#draftActive = null;
@@ -2780,11 +2789,24 @@ export class Resident extends Think<Env> {
         : ctx.trigger === "scheduled" || ctx.trigger === "submission"
           ? "checkin"
           : "web";
-      this.#drafts.set(ctx.requestId, new WebDraft(`live_${ctx.requestId}`, Date.now(), via));
+      const draft = new WebDraft(`live_${ctx.requestId}`, Date.now(), via);
+      const previous = ctx.trigger === "recovery-continue" ? this.messages.at(-1) : undefined;
+      // Think appends recovery-continue to its saved assistant leaf. A retry generates a new reply.
+      const prefix = previous?.role === "assistant" ? textOf(previous) : "";
+      if (prefix) draft.chunk({ type: "text-delta", text: prefix });
+      this.#drafts.set(ctx.requestId, draft);
       if (via === "web") {
-        // A reply to a voice message she recorded there can be said in the voice too (speakOnWeb).
-        if (this.#webTurns.size > 20) this.#webTurns.clear();
-        this.#webTurns.set(ctx.requestId, { voice: Boolean(lastSaid?.voice) });
+        const speak = this.webSpeaker(Boolean(lastSaid?.voice));
+        const speech = speak ? new ReplyVoice({
+          speak,
+          maxBytes: MEDIA_MAX_BYTES,
+          keep: (spoken) => this.keepSpoken(spoken),
+          release: (key) => this.media().remove(key),
+          changed: () => this.webChanged(),
+          waitUntil: (work) => this.ctx.waitUntil(work)
+        }) : undefined;
+        if (prefix) speech?.push(prefix);
+        this.#webTurns.set(ctx.requestId, { speech });
       }
       // activeTurn is async-context-local; a separate history RPC must check it inside the captured turn.
       const withinTurn = AsyncLocalStorage.snapshot();
@@ -3523,89 +3545,107 @@ export class Resident extends Think<Env> {
     if (!this.#drafts.size) this.#draftActive = null;
     const searches = (result.requestId && this.#searches.get(result.requestId)) || [];
     const web = result.requestId ? this.#webTurns.get(result.requestId) : undefined;
-    const door = result.requestId ? this.#turnThread.get(result.requestId) : undefined;
-    if (result.requestId) {
-      this.#webTurns.delete(result.requestId);
-      this.#searches.delete(result.requestId);
-      this.#theirTurns.delete(result.requestId);
-      this.#readOutside.delete(result.requestId);
-      this.clearTurn(result.requestId);
-      this.#turnThread.delete(result.requestId);
-      this.#stickerSent.delete(result.requestId);
-      this.#turnTasks.delete(result.requestId);
-      this.#usageLabels.delete(result.requestId);
+    const speech = web?.speech;
+    if (speech) {
+      if (result.status === "completed") {
+        this.dropWebVoice(result.message.id);
+        this.#finishingVoices.set(result.message.id, speech);
+      } else speech.cancel();
     }
-    const before = this.userMessageBefore(result.message.id);
-    const letter = this.letterJob();
-    if (letter && before?.id === letter.promptId) {
-      await this.finishLetter(letter, result.status, result.message.id);
-      return;
-    }
-    if (await this.#chatStop.finish(result, (id) => this.session.deleteMessages([id]))) {
-      if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
+    let finishingVoice = false;
+    try {
+      const door = result.requestId ? this.#turnThread.get(result.requestId) : undefined;
+      if (result.requestId) {
+        this.#webTurns.delete(result.requestId);
+        this.#searches.delete(result.requestId);
+        this.#theirTurns.delete(result.requestId);
+        this.#readOutside.delete(result.requestId);
+        this.clearTurn(result.requestId);
+        this.#turnThread.delete(result.requestId);
+        this.#stickerSent.delete(result.requestId);
+        this.#turnTasks.delete(result.requestId);
+        this.#usageLabels.delete(result.requestId);
+      }
+      const before = this.userMessageBefore(result.message.id);
+      const letter = this.letterJob();
+      if (letter && before?.id === letter.promptId) {
+        await this.finishLetter(letter, result.status, result.message.id);
+        return;
+      }
+      if (await this.#chatStop.finish(result, (id) => this.session.deleteMessages([id]))) {
+        if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
+        this.#turnVoice = null;
+        this.dropWebVoice(result.message.id);
+        this.webChanged();
+        return;
+      }
+      // Files make_file made go with this reply even when it did not finish: a file made stays made.
+      if (result.requestId) this.madeFiles().withReply(result.requestId, result.message.id);
+      const asked = before?.text ?? "";
+      // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
+      const fromThem = Boolean(asked) && !isNote(asked);
+      // A completed alarm turn (even SKIP) starts a new quiet activity cycle, without becoming her message.
+      // Check-ins, heartbeats and failed alarms leave the current cycle's deadline and count alone.
+      const activity = fromThem || (result.status === "completed" && asked.startsWith(ALARM_PREFIX));
+      if (activity) {
+        await this.ctx.storage.put("wrote_since_letter", true);
+        await this.stopHeartbeats();
+      }
+      await this.planIdleLetter(activity);
+      if (result.status !== "completed") {
+        if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
+        return;
+      }
+      // A sticker it sent with a mark is not part of what it said (sticker-marks.ts).
+      const marked = stickerMarks(textOf(result.message).trim());
+      const reply = marked.text;
+      // When it last said something, for the dot on its avatar in the sidebar (/web/residents).
+      if (reply && reply !== SKIP) await this.ctx.storage.put("said_at", Date.now());
+      const trigger = this.activeTurn?.trigger;
+      // A check-in, heartbeat, alarm or task result has no messenger turn to reply into: post it ourselves. Told by
+      // its note too, because a response hook replayed after a restart has no trigger.
+      const proactive =
+        isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
+      if (proactive && reply && reply !== SKIP) {
+        let delivered = await this.checkinAsVoice(reply, result.message.id);
+        if (!delivered) for (const bubble of splitIntoBubbles(reply)) delivered = (await this.toHer(bubble)) || delivered;
+        this.ctx.waitUntil(this.pushOut(reply, delivered ? "delivered" : "proactive"));
+      }
+      // A voice message send_voice sent in this turn shows on the web page with this reply.
+      const voiced = this.#turnVoice;
       this.#turnVoice = null;
-      this.webChanged();
-      return;
+      if (voiced) this.media().saySpoken(result.message.id, voiced);
+      // A reply to Telegram or WeCom said as a voice message is made after this: it finds its reply here (voiceReply).
+      if (door) this.#lastReply.set(door, { id: result.message.id, at: Date.now() });
+      // A reply on the web page: said in the voice too when it should be, and pushed when the page has been left.
+      // Not one in a group: it is posted there, where she is.
+      if (web && !proactive && !GROUP_HEAD.test(asked.replace(STAMP_PREFIX, "")) && reply && reply !== SKIP) {
+        if (!voiced && speech) {
+          this.ctx.waitUntil(this.finishWebVoice(result.message.id, reply, speech));
+          finishingVoice = true;
+        }
+        if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
+      }
+      // A sticker a check-in or a thread's report named goes after its words, as one make_sticker sent does.
+      const named = proactive && this.stickersOn() ? marked.stickers.map((handle) => this.stickers().find(handle)).find(Boolean) : null;
+      if (named && result.requestId && !this.#outbox.get(`req:${result.requestId}`)?.length) this.#outbox.set(`req:${result.requestId}`, [named.key]);
+      if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
+        const thread = await this.herThread();
+        if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
+        else await this.flushStickers(`req:${result.requestId}`, thread);
+      }
+      // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
+      // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
+      const memory = aeliosConfig(this.cfg);
+      if (proactive && memory && reply && reply !== SKIP) {
+        this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: reply }], "aelios-resident:checkin"));
+      }
+      if (fromThem && !proactive && searches.length) this.learn(asked, searches, reply);
+    } finally {
+      if (!finishingVoice && speech && this.#finishingVoices.get(result.message.id) === speech) {
+        this.dropWebVoice(result.message.id);
+      }
     }
-    // Files make_file made go with this reply even when it did not finish: a file made stays made.
-    if (result.requestId) this.madeFiles().withReply(result.requestId, result.message.id);
-    const asked = before?.text ?? "";
-    // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
-    const fromThem = Boolean(asked) && !isNote(asked);
-    // A completed alarm turn (even SKIP) starts a new quiet activity cycle, without becoming her message.
-    // Check-ins, heartbeats and failed alarms leave the current cycle's deadline and count alone.
-    const activity = fromThem || (result.status === "completed" && asked.startsWith(ALARM_PREFIX));
-    if (activity) {
-      await this.ctx.storage.put("wrote_since_letter", true);
-      await this.stopHeartbeats();
-    }
-    await this.planIdleLetter(activity);
-    if (result.status !== "completed") {
-      if (result.requestId) this.#outbox.delete(`req:${result.requestId}`);
-      return;
-    }
-    // A sticker it sent with a mark is not part of what it said (sticker-marks.ts).
-    const marked = stickerMarks(textOf(result.message).trim());
-    const reply = marked.text;
-    // When it last said something, for the dot on its avatar in the sidebar (/web/residents).
-    if (reply && reply !== SKIP) await this.ctx.storage.put("said_at", Date.now());
-    const trigger = this.activeTurn?.trigger;
-    // A check-in, heartbeat, alarm or task result has no messenger turn to reply into: post it ourselves. Told by
-    // its note too, because a response hook replayed after a restart has no trigger.
-    const proactive =
-      isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
-    if (proactive && reply && reply !== SKIP) {
-      let delivered = await this.checkinAsVoice(reply, result.message.id);
-      if (!delivered) for (const bubble of splitIntoBubbles(reply)) delivered = (await this.toHer(bubble)) || delivered;
-      this.ctx.waitUntil(this.pushOut(reply, delivered ? "delivered" : "proactive"));
-    }
-    // A voice message send_voice sent in this turn shows on the web page with this reply.
-    const voiced = this.#turnVoice;
-    this.#turnVoice = null;
-    if (voiced) this.media().saySpoken(result.message.id, voiced);
-    // A reply to Telegram or WeCom said as a voice message is made after this: it finds its reply here (voiceReply).
-    if (door) this.#lastReply.set(door, { id: result.message.id, at: Date.now() });
-    // A reply on the web page: said in the voice too when it should be, and pushed when the page has been left.
-    // Not one in a group: it is posted there, where she is.
-    if (web && !proactive && !GROUP_HEAD.test(asked.replace(STAMP_PREFIX, "")) && reply && reply !== SKIP) {
-      if (!voiced) this.ctx.waitUntil(this.speakOnWeb(result.message.id, reply, web.voice));
-      if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
-    }
-    // A sticker a check-in or a thread's report named goes after its words, as one make_sticker sent does.
-    const named = proactive && this.stickersOn() ? marked.stickers.map((handle) => this.stickers().find(handle)).find(Boolean) : null;
-    if (named && result.requestId && !this.#outbox.get(`req:${result.requestId}`)?.length) this.#outbox.set(`req:${result.requestId}`, [named.key]);
-    if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
-      const thread = await this.herThread();
-      if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
-      else await this.flushStickers(`req:${result.requestId}`, thread);
-    }
-    // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
-    // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
-    const memory = aeliosConfig(this.cfg);
-    if (proactive && memory && reply && reply !== SKIP) {
-      this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: reply }], "aelios-resident:checkin"));
-    }
-    if (fromThem && !proactive && searches.length) this.learn(asked, searches, reply);
   }
 
   /** What lasts from her turn's web searches goes into Aelios as world knowledge (web/learn.ts), after the reply. */
@@ -3886,11 +3926,12 @@ export class Resident extends Think<Env> {
     const files = this.madeFiles().ofReplies(replies);
     const cards = new Map(this.taskCards([...new Set([...taskIds.values()].flat())])?.map((card) => [card.id, card]));
     const decorated = lines.map((line) => {
-      const key = spoken.get(line.id);
+      const voice = spoken.get(line.id);
+      const liveVoice = voice ? undefined : this.#finishingVoices.get(line.id)?.live();
       const made = files.get(line.id);
       const tasks = taskIds.get(line.id)?.map((id) => cards.get(id)).filter((card) => card !== undefined);
-      if (!key && !made && !tasks?.length) return line;
-      return { ...line, ...(key ? { voice: { key, seconds: media.seconds(key) } } : {}), ...(made ? { files: made } : {}), ...(tasks?.length ? { tasks } : {}) };
+      if (!voice && !liveVoice && !made && !tasks?.length) return line;
+      return { ...line, ...(voice ? { voice } : {}), ...(liveVoice ? { liveVoice } : {}), ...(made ? { files: made } : {}), ...(tasks?.length ? { tasks } : {}) };
     });
     return { lines: decorated, notices: this.notices() };
   }
@@ -3907,12 +3948,14 @@ export class Resident extends Think<Env> {
     for (const [requestId, draft] of this.#drafts) {
       if (!this.#draftActive?.()) {
         this.#drafts.delete(requestId);
+        this.#webTurns.get(requestId)?.speech?.cancel();
         this.webChanged();
         continue;
       }
       if (draft.via === "checkin") continue;
       const finalUser = lines.findLastIndex((line) => line.role === "user");
       const partialIndex = lines.findIndex((line, i) => i > finalUser && line.role === "assistant" && line.kind === "chat");
+      const voice = this.#webTurns.get(requestId)?.speech?.live();
       const activity = activityOf(draft.parts);
       const text = withoutStickerMarks(textOf({ parts: draft.parts }));
       const stickers = this.sentStickers(draft.parts);
@@ -3920,12 +3963,13 @@ export class Resident extends Think<Env> {
       if (partialIndex >= 0) {
         const partial = { ...lines[partialIndex], pending: true };
         if (activity.length) partial.activity = activity;
+        if (voice) partial.liveVoice = voice;
         if (text) partial.text = text;
         if (stickers) partial.stickers = stickers;
         if (tasks) partial.tasks = tasks;
         lines[partialIndex] = partial;
       } else if (text || activity.length || stickers) {
-        lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true, ...(stickers ? { stickers } : {}), ...(tasks ? { tasks } : {}) });
+        lines.push({ id: draft.id, role: "assistant", kind: "chat", text, at: draft.at, via: draft.via, activity, pending: true, ...(voice ? { liveVoice: voice } : {}), ...(stickers ? { stickers } : {}), ...(tasks ? { tasks } : {}) });
       }
     }
     this.#webSeenAt = Date.now();
@@ -4138,8 +4182,8 @@ export class Resident extends Think<Env> {
     if (again && !plan.again) return { error: "这条不是回你的话，没法重新回" };
     await this.session.deleteMessages(plan.ids);
     for (const message of plan.ids) {
-      const voice = this.media().spokenFor(message);
-      if (voice) this.media().remove(voice);
+      this.dropWebVoice(message);
+      this.media().removeSpoken(message);
     }
     // Files it made go with it from the web page (a copy sent to a chat stays there).
     for (const files of this.madeFiles().ofReplies(plan.ids).values()) for (const file of files) this.media().remove(file.key);
@@ -4206,8 +4250,9 @@ export class Resident extends Think<Env> {
   #madeFileStore: MadeFiles | null = null;
   /** When the web page last asked for the conversation: a reply while it is closed is pushed (web push). */
   #webSeenAt = 0;
-  /** Web turns now running, and whether her message in it was a voice message (so the reply can be one). */
-  #webTurns = new Map<string, { voice: boolean }>();
+  /** Web turns now running, with their optional speech jobs. */
+  #webTurns = new Map<string, { speech?: ReplyVoice }>();
+  #finishingVoices = new Map<string, ReplyVoice>();
 
   private media(): MediaStore {
     this.#mediaStore ??= new MediaStore(this.sqlShownOnWeb(), (key) => this.readingNotes().remove({ key }));
@@ -4305,19 +4350,34 @@ export class Resident extends Think<Env> {
   }
 
   /** A voice recording or read-out kept for the web page. The avatar is public and goes by /avatar/ instead. */
-  webMedia(key: string): MediaFile | null {
-    const kind = this.media().kindOf(key);
-    return kind === "voice" || kind === "spoken" ? this.media().get(key) : null;
+  webMedia(key: string, part = false): MediaFile | null {
+    const media = this.media();
+    const kind = media.kindOf(key);
+    if (kind !== "voice" && kind !== "spoken") return null;
+    const clips = kind === "spoken" && !part ? media.spokenParts(key) : null;
+    if (!clips) return media.get(key);
+
+    // Desktop and older web pages expect this key to fetch the complete message as one MP3.
+    const bytes: Uint8Array[] = [];
+    let seconds = 0;
+    for (const clip of clips) {
+      const file = media.get(clip.key);
+      if (!file) return null;
+      bytes.push(file.bytes);
+      seconds += clip.seconds ?? 0;
+    }
+    return { type: "audio/mpeg", seconds: seconds || null, bytes: joinMp3(bytes) };
   }
 
   /**
    * 「念给我听」: a reply read out in the voice set up on the settings page. Once said, it is kept and played again
    * without asking the voice provider twice.
    */
-  async webSpeak(id: string): Promise<{ key: string; seconds: number | null } | { error: string }> {
+  async webSpeak(id: string): Promise<VoicePlayback | { error: string }> {
     const media = this.media();
     const had = media.spokenFor(id);
-    if (had && media.kindOf(had)) return { key: had, seconds: media.seconds(had) };
+    if (had) return had;
+    if (this.#finishingVoices.has(id)) return { error: "语音还在生成，等一下就能听" };
     const speak = speaker(this.cfg);
     if (!speak) return { error: "还没设置声音：去设置 →「语音」选一家" };
     const message = await this.session.getMessage(id).catch(() => null);
@@ -4345,20 +4405,31 @@ export class Resident extends Think<Env> {
   }
 
   /** A reply on the web page said in the voice too (VOICE_REPLY always, or mirror after a voice message of hers). */
-  private async speakOnWeb(messageId: string, reply: string, heardVoice: boolean): Promise<void> {
+  private webSpeaker(heardVoice: boolean) {
     const mode = replyOf(this.cfg);
-    if (mode === "tool" || (mode === "mirror" && !heardVoice)) return;
-    const speak = speaker(this.cfg);
-    const said = speakable(reply);
-    if (!speak || !said || said.length > SPEAK_MAX_CHARS) return;
+    return mode === "always" || (mode === "mirror" && heardVoice) ? speaker(this.cfg) : null;
+  }
+
+  private dropWebVoice(messageId: string): void {
+    this.#finishingVoices.get(messageId)?.cancel();
+    this.#finishingVoices.delete(messageId);
+  }
+
+  private async finishWebVoice(messageId: string, reply: string, speech: ReplyVoice): Promise<void> {
     try {
-      const key = this.keepSpoken(await speak(said));
-      if (key) this.media().saySpoken(messageId, key);
+      const clips = await speech.finish(reply);
+      if (!clips?.length || this.#finishingVoices.get(messageId) !== speech) return;
+      this.media().saySpoken(messageId, clips[0].key, clips);
       await this.ctx.storage.delete("voice_error");
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).slice(0, 300);
       console.error("voice: no voice for a web reply", { error: reason });
       await this.ctx.storage.put("voice_error", { at: Date.now(), reason });
+    } finally {
+      if (this.#finishingVoices.get(messageId) === speech) {
+        this.#finishingVoices.delete(messageId);
+        this.webChanged();
+      }
     }
   }
 
@@ -4478,7 +4549,10 @@ export class Resident extends Think<Env> {
 
   /** Cancels only the current chat turn; queued messages and machine jobs are untouched. */
   webStop(requestId?: string): StopResult {
-    const result = this.#chatStop.stop(requestId, (id) => this.cancelChat(id, "Stopped by the user."));
+    const result = this.#chatStop.stop(requestId, (id) => {
+      this.#webTurns.get(id)?.speech?.cancel();
+      this.cancelChat(id, "Stopped by the user.");
+    });
     this.webChanged();
     return result;
   }

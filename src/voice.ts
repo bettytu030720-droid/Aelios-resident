@@ -89,7 +89,8 @@ function sender(env: Env): Send {
   const ai = env.AI as unknown as { fetch(url: string, init: RequestInit): Promise<Response> } | undefined;
   const gateway = encodeURIComponent(env.AI_GATEWAY_ID?.trim() || "default");
   return (provider, endpoint, init) => {
-    const signal = AbortSignal.timeout(TIMEOUT_MS);
+    const timeout = AbortSignal.timeout(TIMEOUT_MS);
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     if (base) return fetch(`${base}/${endpoint}`, { ...init, signal });
     if (ai) return ai.fetch(`${GATEWAY_ORIGIN}/${gateway}/${provider}/${endpoint}`, { ...init, signal });
     return fetch(`${HOSTS[provider]}/${endpoint}`, { ...init, signal });
@@ -289,7 +290,7 @@ export function dialectOf(env: Env): Dialect {
 
 /** A voice message ready to send. */
 export type Spoken = { audio: Uint8Array; seconds: number };
-export type Speak = (text: string, options?: { style?: string }) => Promise<Spoken>;
+export type Speak = (text: string, options?: { style?: string; signal?: AbortSignal }) => Promise<Spoken>;
 
 export function providerOf(env: Env): VoiceProvider | null {
   const name = env.VOICE_PROVIDER?.trim().toLowerCase();
@@ -340,22 +341,22 @@ export function speaker(env: Env): Speak | null {
   const model = modelOf(env, provider);
   const gateway = keyFromGateway(env);
   const send = sender(env);
-  const post = (endpoint: string, headers: Record<string, string>, body: unknown) =>
-    send(provider, endpoint, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const post = (endpoint: string, headers: Record<string, string>, body: unknown, signal?: AbortSignal) =>
+    send(provider, endpoint, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal });
   // Empty: AI Gateway puts in the key stored for this provider.
   const bearer: Record<string, string> = key ? { authorization: `Bearer ${key}` } : {};
 
-  const speak: Record<VoiceProvider, (text: string, style?: string) => Promise<Uint8Array>> = {
-    async openrouter(text, style) {
+  const speak: Record<VoiceProvider, (text: string, style?: string, signal?: AbortSignal) => Promise<Uint8Array>> = {
+    async openrouter(text, style, signal) {
       const body = { model, input: text, ...(voice ? { voice } : {}), ...(style ? { instructions: style } : {}), response_format: "mp3" };
-      return audioOf("OpenRouter", await post("v1/audio/speech", bearer, body), gateway);
+      return audioOf("OpenRouter", await post("v1/audio/speech", bearer, body, signal), gateway);
     },
-    async elevenlabs(text) {
+    async elevenlabs(text, _style, signal) {
       const endpoint = `v1/text-to-speech/${encodeURIComponent(voice)}?output_format=mp3_44100_128`;
       const headers = { accept: "audio/mpeg", ...(key ? { "xi-api-key": key } : {}) };
-      return audioOf("ElevenLabs", await post(endpoint, headers, { text, model_id: model }), gateway);
+      return audioOf("ElevenLabs", await post(endpoint, headers, { text, model_id: model }, signal), gateway);
     },
-    async cartesia(text) {
+    async cartesia(text, _style, signal) {
       const language = languageOf(text);
       const body = {
         model_id: model,
@@ -364,11 +365,11 @@ export function speaker(env: Env): Speak | null {
         output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
         ...(language ? { language } : {})
       };
-      return audioOf("Cartesia", await post("tts/bytes", { ...bearer, "cartesia-version": CARTESIA_VERSION }, body), gateway);
+      return audioOf("Cartesia", await post("tts/bytes", { ...bearer, "cartesia-version": CARTESIA_VERSION }, body, signal), gateway);
     }
   };
   return async (text, options) => {
-    const audio = await speak[provider](text, options?.style?.trim() || undefined);
+    const audio = await speak[provider](text, options?.style?.trim() || undefined, options?.signal);
     if (!audio.length) throw new Error(`${provider} sent back no audio`);
     return { audio, seconds: mp3Seconds(audio) };
   };
@@ -380,21 +381,54 @@ const BITRATES = {
   2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
 };
 
-/** How long an MP3 plays, from its first frame's bitrate (the providers send constant bitrate). 0 when unknown. */
-export function mp3Seconds(bytes: Uint8Array): number {
-  let at = 0;
-  // An ID3v2 tag in front: "ID3", version, flags, then its size in four 7-bit bytes.
-  if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33 && bytes.length > 10) {
-    at = 10 + ((bytes[6] << 21) | (bytes[7] << 14) | (bytes[8] << 7) | bytes[9]);
-  }
-  for (const end = Math.min(bytes.length - 4, at + 4096); at < end; at += 1) {
-    if (bytes[at] !== 0xff || (bytes[at + 1] & 0xe0) !== 0xe0) continue;
+function tagAt(bytes: Uint8Array, offset: number, tag: string): boolean {
+  return [...tag].every((char, i) => bytes[offset + i] === char.charCodeAt(0));
+}
+
+function firstMp3Frame(bytes: Uint8Array) {
+  // ID3v2 sizes are synchsafe; an ID3v2.4 footer, when present, occupies another ten bytes.
+  const tagBytes = bytes.length >= 10 && tagAt(bytes, 0, "ID3")
+    ? 10 + ((bytes[6] << 21) | (bytes[7] << 14) | (bytes[8] << 7) | bytes[9]) + ((bytes[5] & 16) ? 10 : 0)
+    : 0;
+  for (let at = tagBytes; at < Math.min(bytes.length - 3, tagBytes + 4096); at++) {
+    if (bytes[at] !== 0xff || (bytes[at + 1] & 0xe0) !== 0xe0 || ((bytes[at + 1] >> 1) & 3) !== 1) continue;
     const version = (bytes[at + 1] >> 3) & 3;
-    const kbps = BITRATES[version === 3 ? 1 : 2][bytes[at + 2] >> 4];
-    if (!kbps || ((bytes[at + 1] >> 1) & 3) !== 1) continue;
-    return ((bytes.length - at) * 8) / (kbps * 1000);
+    const mpeg1 = version === 3;
+    const kbps = BITRATES[mpeg1 ? 1 : 2][bytes[at + 2] >> 4];
+    const rate = [44100, 48000, 32000][(bytes[at + 2] >> 2) & 3] / (mpeg1 ? 1 : version === 2 ? 2 : 4);
+    if (!kbps || !rate || version === 1) continue;
+    const mono = (bytes[at + 3] >> 6) === 3;
+    const crcBytes = bytes[at + 1] & 1 ? 0 : 2;
+    const sideInfo = mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+    const size = Math.floor((mpeg1 ? 144000 : 72000) * kbps / rate) + ((bytes[at + 2] >> 1) & 1);
+    return { at, kbps, size, xing: at + 4 + crcBytes + sideInfo };
   }
-  return 0;
+  return null;
+}
+
+/** Estimate the duration from the first audio frame's bitrate. */
+export function mp3Seconds(bytes: Uint8Array): number {
+  const frame = firstMp3Frame(bytes);
+  return frame ? (bytes.length - frame.at) * 8 / (frame.kbps * 1000) : 0;
+}
+
+/** Join playable MP3 frames for clients that fetch one file. Drop tags and each clip's private seek/duration header. */
+export function joinMp3(clips: Uint8Array[]): Uint8Array {
+  const frames = clips.map(bytes => {
+    const frame = firstMp3Frame(bytes);
+    if (!frame) return bytes;
+    const end = tagAt(bytes, bytes.length - 128, "TAG") ? bytes.length - 128 : bytes.length;
+    const header = tagAt(bytes, frame.xing, "Xing") || tagAt(bytes, frame.xing, "Info") || tagAt(bytes, frame.at + 36, "VBRI");
+    const start = header && frame.at + frame.size < end ? frame.at + frame.size : frame.at;
+    return bytes.subarray(start, end);
+  });
+  const joined = new Uint8Array(frames.reduce((n, bytes) => n + bytes.length, 0));
+  let at = 0;
+  for (const bytes of frames) {
+    joined.set(bytes, at);
+    at += bytes.length;
+  }
+  return joined;
 }
 
 /** How long a WAV recording plays, from its byte rate and its data chunk. 0 when it is not one this can read. */
