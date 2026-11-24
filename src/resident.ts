@@ -351,6 +351,8 @@ export type WebSay = {
   files?: { name?: string; data?: string }[];
   /** A voice message recorded there (WAV, WebM or MP4), base64. */
   voice?: { data?: string };
+  /** The voice message was said on a call: answered at once, and spoken back whatever VOICE_REPLY says. */
+  call?: boolean;
   /** A sticker's key, from a pack that is on. */
   sticker?: string;
   /** The id of the message she replies to. */
@@ -467,6 +469,8 @@ type WebSaidMeta = {
   at?: number;
   /** A voice message recorded on the web page: its recording (media-store.ts) and length. */
   voice?: { key: string; seconds: number | null };
+  /** That voice message was said on a call. */
+  call?: boolean;
   /** A sticker she sent, by its key. */
   sticker?: string;
   /** Files attached: their names and sizes, for the web page (the content is in the message's parts). */
@@ -2797,7 +2801,7 @@ export class Resident extends Think<Env> {
       if (prefix) draft.chunk({ type: "text-delta", text: prefix });
       this.#drafts.set(ctx.requestId, draft);
       if (via === "web") {
-        const speak = this.webSpeaker(Boolean(lastSaid?.voice));
+        const speak = this.webSpeaker(Boolean(lastSaid?.voice), Boolean(lastSaid?.call));
         const speech = speak ? new ReplyVoice({
           speak,
           maxBytes: MEDIA_MAX_BYTES,
@@ -4118,11 +4122,12 @@ export class Resident extends Think<Env> {
     if (input.sticker && !sticker) return { error: "这张表情包不在开着的包里了" };
     const stored: string[] = [];
     if (input.voice) {
-      const heardIt = await this.hearWebVoice(input.voice);
+      const heardIt = await this.hearWebVoice(input.voice, Boolean(input.call));
       if ("error" in heardIt) return heardIt;
       stored.push(heardIt.key);
       said = said ? `${said}\n${heardIt.line}` : heardIt.line;
       metadata.voice = { key: heardIt.key, seconds: heardIt.seconds };
+      if (input.call) metadata.call = true;
     }
     const aux = loaded.length ? this.compressor("file") : null;
     const files = loaded as Exclude<(typeof loaded)[number], { error: string }>[];
@@ -4157,13 +4162,17 @@ export class Resident extends Think<Env> {
         }
       }
     }
-    // Answered together with what else she sends within DEBOUNCE_SECONDS, as on Telegram (web-burst.ts).
-    return this.#webBurst.add({
-      id: crypto.randomUUID(),
-      role: "user",
-      parts: [{ type: "text", text: `[${stamp(new Date(), this.tz)}] ${lead}${said}` }, ...pictures],
-      metadata
-    });
+    // Answered together with what else she sends within DEBOUNCE_SECONDS, as on Telegram (web-burst.ts). On a call
+    // the page has already waited for her to stop talking, so the reply starts at once.
+    return this.#webBurst.add(
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        parts: [{ type: "text", text: `[${stamp(new Date(), this.tz)}] ${lead}${said}` }, ...pictures],
+        metadata
+      },
+      metadata.call ? 0 : undefined
+    );
   }
 
   #webBurst = new WebBurst(
@@ -4222,7 +4231,7 @@ export class Resident extends Think<Env> {
   }
 
   /** A voice message recorded on the web page: kept to play back, and heard into her words like one on Telegram. */
-  private async hearWebVoice(voice: { data?: unknown }): Promise<{ line: string; key: string; seconds: number | null } | { error: string }> {
+  private async hearWebVoice(voice: { data?: unknown }, call = false): Promise<{ line: string; key: string; seconds: number | null } | { error: string }> {
     let bytes: Uint8Array;
     try {
       bytes = Uint8Array.from(atob(String(voice.data ?? "")), (c) => c.charCodeAt(0));
@@ -4236,14 +4245,15 @@ export class Resident extends Think<Env> {
     const saved = this.media().put("voice", type, bytes, seconds || null);
     if ("error" in saved) return saved;
     const mark = seconds ? `voice ${clock(seconds)}` : "voice";
+    const onCall = call ? ", on a call" : "";
     const hear = hearing(this.cfg);
     try {
       if (!hear) throw new Error("nothing to hear it with: the Worker has no AI binding");
       const text = (await hear(bytes, type)).trim().replace(/\s+/g, " ");
-      return { line: `[${mark}] ${text || "…"}`, key: saved.key, seconds: seconds || null };
+      return { line: `[${mark}${onCall}] ${text || "…"}`, key: saved.key, seconds: seconds || null };
     } catch (error) {
       console.error("voice: could not hear a web voice message", { error: String(error) });
-      return { line: `[${mark}, could not be heard]`, key: saved.key, seconds: seconds || null };
+      return { line: `[${mark}, could not be heard${onCall}]`, key: saved.key, seconds: seconds || null };
     }
   }
 
@@ -4404,10 +4414,13 @@ export class Resident extends Think<Env> {
     return "error" in saved ? null : saved.key;
   }
 
-  /** A reply on the web page said in the voice too (VOICE_REPLY always, or mirror after a voice message of hers). */
-  private webSpeaker(heardVoice: boolean) {
+  /**
+   * A reply on the web page said in the voice too: VOICE_REPLY always, mirror after a voice message of hers, and
+   * whatever the mode on a call.
+   */
+  private webSpeaker(heardVoice: boolean, call = false) {
     const mode = replyOf(this.cfg);
-    return mode === "always" || (mode === "mirror" && heardVoice) ? speaker(this.cfg) : null;
+    return call || mode === "always" || (mode === "mirror" && heardVoice) ? speaker(this.cfg) : null;
   }
 
   private dropWebVoice(messageId: string): void {

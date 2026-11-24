@@ -86,3 +86,11 @@ await test("a failed turn fails every message of its burst", async () => {
   const said = [burst.add(say("a")), burst.add(say("b"))];
   for (const result of await Promise.allSettled(said)) assert.equal(result.reason?.message, "model down");
 });
+
+await test("a message said on a call starts its turn without the quiet time", async () => {
+  const { turns, burst } = host();
+  const started = Date.now();
+  await burst.add(say("a"), 0);
+  assert.ok(Date.now() - started < WAIT, "no quiet time");
+  assert.deepEqual(turns, [["a"]]);
+});

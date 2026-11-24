@@ -178,8 +178,11 @@ export function clock(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/** The mark a voice message leaves in their text: "[voice 0:12]", "[voice]" or "[voice 0:12, could not be heard]". */
-export const VOICE_MARK = /\[voice(?: (\d+:\d\d))?(, could not be heard)?\]/g;
+/**
+ * The mark a voice message leaves in their text: "[voice 0:12]", "[voice]" or "[voice 0:12, could not be heard]";
+ * said on a call on the web page, it ends ", on a call".
+ */
+export const VOICE_MARK = /\[voice(?: (\d+:\d\d))?(, could not be heard)?(?:, on a call)?\]/g;
 
 /**
  * Telegram says how long a voice message is, but only in the raw update: kept on the attachment (its fetchMetadata
@@ -474,12 +477,16 @@ export function voiceRules(env: Env): string {
   if (!speaker(env)) return "";
   const { marks } = dialectOf(env);
   const say = "write it the way you would say it, with no emoji, links or markdown.";
+  // A call on the web page is spoken back whatever VOICE_REPLY says.
+  const call = (withMarks: boolean) =>
+    "\n- A message marked [voice …, on a call] was said to you on a call: your reply is played to them at once, so answer " +
+    `as you would on the phone, in a sentence or two, with no emoji, links or markdown.${withMarks && marks ? ` ${marks}` : ""}`;
   switch (replyOf(env)) {
     case "always":
-      return `- Your replies are sent as voice messages: ${say}${marks ? ` ${marks}` : ""}`;
+      return `- Your replies are sent as voice messages: ${say}${marks ? ` ${marks}` : ""}${call(false)}`;
     case "tool":
-      return `- Your replies are sent as text. To send a voice message, use send_voice.${marks ? ` In it: ${marks}` : ""}`;
+      return `- Your replies are sent as text. To send a voice message, use send_voice.${marks ? ` In it: ${marks}` : ""}${call(true)}`;
     default:
-      return `- A message of theirs marked [voice …] was a voice message, and your reply to one is sent as a voice message: ${say}${marks ? ` ${marks}` : ""} At other times you can send one with send_voice.`;
+      return `- A message of theirs marked [voice …] was a voice message, and your reply to one is sent as a voice message: ${say}${marks ? ` ${marks}` : ""} At other times you can send one with send_voice.${call(false)}`;
   }
 }

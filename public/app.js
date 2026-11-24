@@ -94,6 +94,20 @@ function resident() {
   // A model list longer than this is not browsed, only searched: it is the upstream's whole catalog, not a chosen list.
   var BROWSE_MAX = 150;
   var RECORD_MAX_SECONDS = 60;
+  // A call: the microphone stays open; what she says between pauses goes out as a voice message, and the reply's voice
+  // plays as it comes. Loudness is the RMS of one 4096-sample chunk (about 85 ms).
+  var CALL_SPEECH_RMS = 0.02;
+  // While the reply plays, the speaker leaks into the microphone even with echo cancellation: talking over it has to
+  // be louder, for longer.
+  var CALL_BARGE_RMS = 0.06;
+  var CALL_START_CHUNKS = 2;
+  var CALL_BARGE_CHUNKS = 3;
+  var CALL_PREROLL_CHUNKS = 4;
+  var CALL_PAUSE_MS = 900;
+  // Less loud audio than this is a cough or a knock, not words: not sent.
+  var CALL_MIN_SECONDS = 0.4;
+  // A reply that came with no voice: back to listening after this long.
+  var CALL_NO_VOICE_MS = 4000;
   // Shown first in the picker, under the ones used recently.
   var FAVORITES = ['anthropic/claude-opus-5.5', 'anthropic/claude-sonnet-5.5', 'anthropic/claude-fable-5.2', 'anthropic/claude-haiku-5.5', '@cf/zai-org/glm-4.7-flash'];
   // The settings: a list of sections, each opened on its own. A field marked `more` waits behind 更多设置. `labels`
@@ -285,6 +299,8 @@ function resident() {
   var residentsTimer = 0;
   var holdTimer = 0;
   var recorder = null;
+  // The call now on (startCall): the microphone, what she is saying, and the reply it waits for.
+  var call = null;
   var player = null;
   var mediaUrls = {};
   var playback = null;
@@ -366,6 +382,8 @@ function resident() {
     panel: '',
     panelTab: 'tools',
     recording: null,
+    // A call: { phase: 'listening' | 'hearing' | 'thinking' | 'speaking' }.
+    calling: null,
     stickerList: [],
     // sheets and menus
     menu: { open: false, id: '', role: '', text: '', x: 0, y: 0, voice: false, local: '', backdropPressed: false },
@@ -1001,9 +1019,9 @@ function resident() {
       var self = this;
       clearTimeout(pollTimer);
       pollTimer = setTimeout(async function () {
-        if (self.authed && (!document.hidden || playback?.live)) await self.refresh().catch(function () {});
+        if (self.authed && (!document.hidden || playback?.live || call)) await self.refresh().catch(function () {});
         if (self.authed) self.poll(self.replying());
-      }, fast || playback?.live ? FAST_MS : POLL_MS);
+      }, fast || playback?.live || call ? FAST_MS : POLL_MS);
     },
     // What /web/messages gave: the lines, or null when nothing has changed since the version the page has.
     took(data) {
@@ -1254,6 +1272,142 @@ function resident() {
       this.send(payload, shown);
     },
 
+    // ---- a call: voice messages back and forth, hands free ----
+    async startCall() {
+      if (this.calling || this.recording) return;
+      this.panel = '';
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.notify('这个浏览器录不了音'); return; }
+      // Both made while she is still pressing the button: the reply plays later with no tap of hers, and the
+      // microphone's audio runs (Safari holds back either otherwise).
+      if (!player) player = new Audio();
+      player.src = 'data:audio/wav;base64,' + base64Of(encodeWav([new Float32Array(1600)], 16000, 16000));
+      player.play().catch(function () {});
+      var Context = window.AudioContext || window.webkitAudioContext;
+      var context = new Context();
+      try { this.config = await this.api('/web/config'); this.fillDrafts(); } catch (e) {}
+      var gap = this.config.voice && this.config.voice.gap;
+      if (gap) {
+        context.close().catch(function () {});
+        this.notify(gap === 'off' ? '它还不会说话：先在 设置 → 声音 里选一家' : '它的声音还差' + this.voiceGapLabel() + '，在 设置 → 声音 里填好再打');
+        return;
+      }
+      var stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      } catch (error) {
+        context.close().catch(function () {});
+        this.notify('没拿到麦克风：在浏览器设置里允许这个网页用麦克风');
+        return;
+      }
+      if (context.state === 'suspended') context.resume().catch(function () {});
+      var source = context.createMediaStreamSource(stream);
+      var node = context.createScriptProcessor(4096, 1, 1);
+      var self = this;
+      call = { stream: stream, context: context, source: source, node: node, rate: context.sampleRate, phase: 'listening',
+        preroll: [], loud: 0, utterance: null, known: null, played: new Set(), quietSince: 0,
+        tick: setInterval(function () { self.followCall(); }, 250) };
+      node.onaudioprocess = function (event) { self.callHeard(new Float32Array(event.inputBuffer.getChannelData(0))); };
+      source.connect(node);
+      node.connect(context.destination);
+      this.calling = { phase: 'listening' };
+      this.poll(true);
+    },
+    endCall() {
+      var c = call;
+      if (!c) return;
+      call = null;
+      clearInterval(c.tick);
+      c.node.onaudioprocess = null;
+      try { c.source.disconnect(); c.node.disconnect(); } catch (e) {}
+      c.stream.getTracks().forEach(function (track) { track.stop(); });
+      c.context.close().catch(function () {});
+      if (playback) this.stopPlaying();
+      this.calling = null;
+    },
+    setCallPhase(phase) {
+      if (!call) return;
+      call.phase = phase;
+      this.calling = { phase: phase };
+    },
+    // One chunk from the microphone.
+    callHeard(chunk) {
+      var c = call;
+      if (!c) return;
+      var sum = 0;
+      for (var i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+      var rms = Math.sqrt(sum / chunk.length);
+      if (c.utterance) {
+        c.utterance.chunks.push(chunk);
+        c.utterance.samples += chunk.length;
+        var now = Date.now();
+        if (rms >= CALL_SPEECH_RMS) { c.utterance.lastLoud = now; c.utterance.loud += 1; }
+        if (now - c.utterance.lastLoud >= CALL_PAUSE_MS || c.utterance.samples / c.rate >= RECORD_MAX_SECONDS) this.sendCallUtterance();
+        return;
+      }
+      c.preroll.push(chunk);
+      if (c.preroll.length > CALL_PREROLL_CHUNKS) c.preroll.shift();
+      // Over its voice, only talking clearly over it counts, and stops the voice. The reply itself is left to finish
+      // (stopping it would delete it), so what she says then is answered in the turn after.
+      var over = c.phase === 'speaking';
+      c.loud = rms >= (over ? CALL_BARGE_RMS : CALL_SPEECH_RMS) ? c.loud + 1 : 0;
+      var started = c.loud;
+      if (started < (over ? CALL_BARGE_CHUNKS : CALL_START_CHUNKS)) return;
+      c.loud = 0;
+      if (over) this.stopPlaying();
+      c.utterance = { chunks: c.preroll.slice(), samples: c.preroll.reduce(function (n, part) { return n + part.length; }, 0), lastLoud: Date.now(), loud: started };
+      c.preroll = [];
+      this.setCallPhase('hearing');
+    },
+    sendCallUtterance() {
+      var c = call;
+      var u = c && c.utterance;
+      if (!u) return;
+      c.utterance = null;
+      var seconds = u.samples / c.rate;
+      if ((u.loud * 4096) / c.rate < CALL_MIN_SECONDS) { this.setCallPhase(playback ? 'speaking' : c.known ? 'thinking' : 'listening'); return; }
+      var wav = encodeWav(u.chunks, c.rate, 16000);
+      var url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+      // The reply to play is one that was not there yet.
+      c.known = new Set(this.lines.map(function (line) { return line.id; }));
+      c.quietSince = 0;
+      this.setCallPhase('thinking');
+      this.send({ voice: { data: base64Of(wav) }, call: true }, { voice: { url: url, seconds: seconds } });
+    },
+    // Every quarter second: whether its reply has a voice to play yet, and whether it has finished playing.
+    followCall() {
+      var c = call;
+      if (!c || c.utterance) return;
+      if (c.phase === 'speaking') {
+        if (playback) return;
+        this.setCallPhase(c.known ? 'thinking' : 'listening');
+      }
+      if (c.phase !== 'thinking' || !c.known) return;
+      var known = c.known;
+      // Its replies since she spoke, but for ones already played (the live draft and the saved reply share a key).
+      var replies = this.lines.filter(function (line) {
+        return line.role === 'assistant' && line.kind === 'chat' && !known.has(line.id) && !(line.voice && c.played.has(line.voice.key));
+      });
+      var spoken = replies.find(function (line) { return line.voice && line.voice.key; });
+      if (spoken) {
+        c.played.add(spoken.voice.key);
+        this.setCallPhase('speaking');
+        this.play(spoken.voice.key, null, spoken.voice);
+        return;
+      }
+      var done = !this.replying() && !this.outbox.some(function (item) { return item.state === 'sending'; });
+      if (!done) { c.quietSince = 0; return; }
+      // Its voice is made after the words: a moment more before going back to listening.
+      if (!c.quietSince) c.quietSince = Date.now();
+      if (replies.length && Date.now() - c.quietSince < CALL_NO_VOICE_MS) return;
+      if (replies.length) this.notify('这句它没念出来，回在聊天里了');
+      c.known = null;
+      this.setCallPhase('listening');
+    },
+    callLabel() {
+      var phase = this.calling && this.calling.phase;
+      return { listening: '在听', hearing: '在听你说', thinking: '在想', speaking: '在说' }[phase] || '';
+    },
+
     // ---- playing a voice ----
     async play(key, url, voice) {
       var id = key || url;
@@ -1278,6 +1432,7 @@ function resident() {
       this.audioBusy = '';
     },
     clearVoicePlayback() {
+      if (call) this.endCall();
       this.stopPlaying();
       Object.values(mediaUrls).forEach(function (url) { URL.revokeObjectURL(url); });
       mediaUrls = {};

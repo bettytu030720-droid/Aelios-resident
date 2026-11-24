@@ -315,6 +315,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
           pictures?: { data?: string }[];
           files?: { name?: string; data?: string }[];
           voice?: { data?: string };
+          call?: boolean;
           sticker?: string;
           quote?: string;
           again?: boolean;
@@ -362,6 +363,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
         ...(Array.isArray(body.pictures) ? { pictures: body.pictures.map((picture) => ({ data: String(picture?.data ?? "") })) } : {}),
         ...(Array.isArray(body.files) ? { files: body.files.map((file) => ({ name: String(file?.name ?? ""), data: String(file?.data ?? "") })) } : {}),
         ...(body.voice ? { voice: { data: String(body.voice.data ?? "") } } : {}),
+        ...(body.voice && body.call === true ? { call: true } : {}),
         ...(body.sticker ? { sticker: String(body.sticker) } : {}),
         ...(body.quote ? { quote: String(body.quote) } : {})
       });

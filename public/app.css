@@ -339,6 +339,9 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
   color: var(--accent-text); font-size: 14px; }
 .rec .red { width: 10px; height: 10px; border-radius: 50%; background: var(--err); animation: blink 1.2s infinite; }
 .rec .len { font-variant-numeric: tabular-nums; }
+.rec.call .red { background: var(--accent); animation: none; opacity: .45; transition: opacity .2s, transform .2s; }
+.rec.call-hearing .red, .rec.call-speaking .red { opacity: 1; transform: scale(1.25); animation: blink 1.2s infinite; }
+.rec.call .hang { border: 0; border-radius: 16px; padding: 6px 14px; background: var(--err); color: #fff; font: inherit; cursor: pointer; }
 .panel { display: flex; flex-direction: column; gap: 14px; padding: 12px 20px 6px; }
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 10px; }
 .tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--text-2); font-size: 12px; position: relative; }

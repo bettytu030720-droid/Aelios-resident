@@ -532,6 +532,99 @@ releaseAudio(new Blob(['stale']));
 await late;
 assert.equal(voicePage.playing, '', 'a cancelled request cannot start playing later');
 
+// A call: what she says between pauses goes out as a voice message marked as a call, its reply's voice plays as it
+// comes, talking over it stops it, and the call goes back to listening when it is done.
+{
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  const ticks = [];
+  context.setInterval = (fn) => { ticks.push(fn); return ticks.length; };
+  context.clearInterval = () => {};
+  let processor;
+  const stopped = [];
+  context.navigator = { mediaDevices: { async getUserMedia(wanted) { assert.equal(wanted.audio.echoCancellation, true); return { getTracks: () => [{ stop() { stopped.push('track'); } }] }; } } };
+  context.window.AudioContext = class {
+    constructor() { this.sampleRate = 48000; this.state = 'running'; this.destination = {}; }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { processor = { connect() {}, disconnect() {} }; return processor; }
+    async close() { stopped.push('context'); }
+  };
+  const callPage = vm.runInContext('resident()', context);
+  const notes = [];
+  callPage.notify = (text) => notes.push(text);
+  let config = { voice: { gap: 'off' } };
+  callPage.api = async (path) => {
+    if (path === '/web/config') return config;
+    if (path.startsWith('/web/media')) return new Blob(['sound']);
+    return { data: callPage.lines };
+  };
+  callPage.poll = () => {};
+  await callPage.startCall();
+  assert.equal(callPage.calling, null, 'no call while it cannot speak');
+  assert.match(notes.at(-1), /还不会说话/);
+  assert.deepEqual(stopped.splice(0), ['context'], 'nothing left open');
+  config = { voice: { gap: null } };
+  await callPage.startCall();
+  assert.deepEqual(copy(callPage.calling), { phase: 'listening' });
+  const chunk = (level) => ({ inputBuffer: { getChannelData: () => new Float32Array(4096).fill(level) } });
+  const hear = (level, times, ms = 85) => { for (let i = 0; i < times; i++) { now += ms; processor.onaudioprocess(chunk(level)); } };
+  const sent = [];
+  callPage.send = (payload, shown) => { sent.push({ payload, shown }); };
+  hear(0.001, 5);
+  hear(0.03, 1);
+  assert.equal(callPage.calling.phase, 'listening', 'one loud chunk is not talking');
+  hear(0.001, 1);
+  hear(0.03, 2);
+  assert.equal(callPage.calling.phase, 'hearing');
+  hear(0.03, 12);
+  hear(0.001, 9);
+  assert.equal(sent.length, 0, 'a short breath is not the end');
+  hear(0.001, 3);
+  assert.equal(sent.length, 1, 'the pause sends what she said');
+  assert.equal(sent[0].payload.call, true);
+  assert.equal(atob(sent[0].payload.voice.data).slice(0, 4), 'RIFF');
+  assert.ok(sent[0].shown.voice.seconds > 1);
+  assert.equal(callPage.calling.phase, 'thinking');
+  // A cough is not sent.
+  hear(0.03, 2);
+  hear(0.001, 12);
+  assert.equal(sent.length, 1, 'too short to be words');
+  assert.equal(callPage.calling.phase, 'thinking');
+  // Its reply's voice plays as soon as it has one.
+  callPage.lines = [{ id: 'live_1', role: 'assistant', kind: 'chat', pending: true, text: '嗯' }];
+  ticks[0]();
+  assert.equal(callPage.calling.phase, 'thinking', 'no voice yet');
+  callPage.lines = [{ id: 'live_1', role: 'assistant', kind: 'chat', pending: true, text: '嗯', voice: { key: 'r1', live: true } }];
+  ticks[0]();
+  assert.equal(callPage.calling.phase, 'speaking');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(callPage.playing, 'r1');
+  // Quiet talk under its voice is the speaker's echo; talking clearly over it stops it.
+  hear(0.04, 5);
+  assert.equal(callPage.calling.phase, 'speaking');
+  hear(0.1, 3);
+  assert.equal(callPage.calling.phase, 'hearing');
+  assert.equal(callPage.playing, '', 'stopped for her');
+  hear(0.1, 12);
+  hear(0.001, 12);
+  assert.equal(sent.length, 2);
+  // The saved reply shares the played voice's key: not played again, and the call listens once the turn is done.
+  callPage.lines = [{ id: 'saved_1', role: 'assistant', kind: 'chat', text: '嗯', voice: { key: 'r1' } }];
+  callPage.chatTurn = null;
+  callPage.sending = 0;
+  ticks[0]();
+  assert.equal(callPage.calling.phase, 'listening');
+  assert.equal(callPage.playing, '');
+  callPage.endCall();
+  assert.equal(callPage.calling, null);
+  assert.deepEqual(stopped, ['track', 'context'], 'the microphone is let go');
+  Date.now = realNow;
+  delete context.navigator;
+  delete context.window.AudioContext;
+  console.log('PASS a call: sends what she says between pauses, plays the reply, stops when talked over, listens again');
+}
+
 // A file a reply handed over (make_file): fetched by its key, on a page of its own; back closes it.
 assert.ok(html.includes('@click="openChatFile(f)"'), 'a file card under the reply');
 page.closeFile();

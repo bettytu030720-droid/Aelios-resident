@@ -3024,6 +3024,14 @@ if (phase === "web") {
     assert.ok(sentVoice.activity.some((item) => item.name === "send_voice" && /Sent as a voice message/.test(item.output)), JSON.stringify(sentVoice.activity));
     assert.match(sentVoice.voice?.key ?? "", /^[0-9a-f]{32}$/, "the voice it sent is on the web page");
     assert.equal((await web(`/web/media?key=${sentVoice.voice.key}`, KEY)).headers.get("content-type"), "audio/mpeg");
+    // On a call the reply is said back even though replies here go out as text, and the page shows her words only.
+    await say({ voice: { data: wav(1) }, call: true });
+    all = await lines();
+    const onCall = all.findLast((line) => line.role === "user");
+    assert.deepEqual([onCall.text, onCall.voice.seconds], ["网页上说的话", 1], "the call's mark is taken off");
+    let callReply = all.at(-1);
+    for (const until = Date.now() + 15000; !callReply.voice?.key && Date.now() < until; callReply = (await lines()).at(-1)) await sleep(300);
+    assert.match(callReply.voice?.key ?? "", /^[0-9a-f]{32}$/, "the reply on a call has its voice");
     await set({ VOICE_PROVIDER: "", VOICE_ID: "", VOICE_API_KEY: "", VOICE_BASE_URL: "", VOICE_REPLY: "" });
     assert.equal((await json("/web/speak", { id: earlier.id })).data.key, read.data.key, "a voice already made still plays");
     const unspoken = (await lines()).find((line) => line.role === "assistant" && !line.voice);

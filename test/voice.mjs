@@ -69,6 +69,10 @@ await test("what is said leaves out links, markdown and emoji, and keeps the voi
   assert.equal(v.speakable("## 好呀 😊\n> 看 **这个** https://a.b/c `代码`"), "好呀\n看 这个 代码");
   assert.equal(v.speakable('[laughs] 你呀 <break time="500ms"/> 真是'), '[laughs] 你呀 <break time="500ms"/> 真是');
   assert.equal(v.clock(75), "1:15");
+  // The marks a voice message leaves, a call's among them, all come off the same way.
+  const marks = "[voice 0:03] a [voice] b [voice 0:12, could not be heard] c [voice 0:04, on a call] d [voice 0:05, could not be heard, on a call]";
+  assert.equal(marks.replace(v.VOICE_MARK, "#"), "# a # b # c # d #");
+  assert.deepEqual([..."[voice 0:04, on a call]".matchAll(v.VOICE_MARK)].map((m) => [m[1], m[2]]), [["0:04", undefined]]);
   assert.equal(v.clock(3.4), "0:03");
 });
 
@@ -102,9 +106,15 @@ await test("what is missing before voice messages can be sent; until then no lin
   assert.equal(v.voiceRules({ VOICE_PROVIDER: "elevenlabs", AI: ai }), "");
   assert.equal(v.voiceRules({}), "");
   const set = { VOICE_PROVIDER: "elevenlabs", AI: ai, VOICE_ID: "x" };
-  assert.match(v.voiceRules(set), /^- A message of theirs marked \[voice …\].*\[laughs\].*send_voice\.$/);
+  assert.match(v.voiceRules(set), /^- A message of theirs marked \[voice …\].*\[laughs\].*send_voice\.$/m);
   assert.match(v.voiceRules({ ...set, VOICE_REPLY: "always" }), /^- Your replies are sent as voice messages/);
   assert.match(v.voiceRules({ ...set, VOICE_REPLY: "tool" }), /^- Your replies are sent as text\. To send a voice message, use send_voice\. In it: /);
+  // A call is spoken back in every mode; with tool replies the marks come with it, since only send_voice had them.
+  for (const mode of ["mirror", "always", "tool"]) {
+    const call = v.voiceRules({ ...set, VOICE_REPLY: mode }).split("\n")[1];
+    assert.match(call, /^- A message marked \[voice …, on a call\] was said to you on a call: .*short|^- A message marked \[voice …, on a call\].*sentence or two/);
+    assert.equal(call.includes("[laughs]"), mode === "tool", mode);
+  }
   assert.equal(v.replyOf({ VOICE_REPLY: "sometimes" }), "mirror");
 });
 

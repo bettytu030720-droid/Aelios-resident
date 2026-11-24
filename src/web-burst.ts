@@ -27,8 +27,11 @@ export class WebBurst {
     return this.#open !== null;
   }
 
-  /** Adds her message; resolves with the turn that answers it, together with the others of its burst. */
-  add(message: UIMessage): Promise<BurstResult> {
+  /**
+   * Adds her message; resolves with the turn that answers it, together with the others of its burst. `waitMs` stands
+   * in for the usual quiet time (0 on a call, where the page has already waited for her to stop talking).
+   */
+  add(message: UIMessage, waitMs?: number): Promise<BurstResult> {
     let burst = this.#open;
     if (!burst) {
       let settle!: Burst["settle"];
@@ -40,7 +43,7 @@ export class WebBurst {
     if (!burst.sent) {
       if (burst.timer) clearTimeout(burst.timer);
       const waiting = burst;
-      burst.timer = setTimeout(() => this.#send(waiting), Math.max(0, this.waitMs()));
+      burst.timer = setTimeout(() => this.#send(waiting), Math.max(0, waitMs ?? this.waitMs()));
     }
     return burst.done;
   }

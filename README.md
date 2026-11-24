@@ -395,7 +395,9 @@ Changing the persona, switching models, deleting or branching messages, deployin
 - Links, Markdown and emoji are removed from what is spoken; for a reply with links, the links follow as text after the voice message.
 - If a voice message cannot be sent (a provider error, over 2000 characters, or the recipient does not accept voice), it sends text as usual and `/status` says why.
 
-The code is in `src/voice.ts`. Phone calls (live voice) are not built yet.
+**Calls**: on the web door, More → 打电话 (call). The microphone stays open; when you pause (about 0.9 s) what you said goes out as a voice message, the reply's voice plays as it is written, and then it listens again. Talk clearly over it and it stops to listen. It uses everything above: Scribe or Whisper to hear, your chosen voice to speak, the same key (one stored on AI Gateway will do), nothing more to set up. What is said on a call stays in the chat; the model sees `[voice 0:03, on a call] what you said` and answers briefly, as on the phone, and a call's replies are spoken whatever "when to send voice" says. Without a voice set up there is no call. It is not true streaming: each turn waits for transcription, the reply and its speech, so a round trip takes a few seconds; headphones work best, since on a loudspeaker the echo can be taken for you talking.
+
+The code is in `src/voice.ts`; the call is in `public/app.js` (`startCall`).
 
 ### Stickers
 
