@@ -34,7 +34,7 @@ export function callResult(block) {
 }
 
 /** One JSON-RPC message of Kiro's to a run's server: the answer, or null for a notification. `run` has `tools` and `call`. */
-export async function mcp(run, message) {
+export async function mcp(run, message, signal) {
   if (!message || typeof message !== "object" || message.id === undefined || message.id === null) return null;
   const answer = (result) => ({ jsonrpc: "2.0", id: message.id, result });
   switch (message.method) {
@@ -49,7 +49,7 @@ export async function mcp(run, message) {
     case "tools/list":
       return answer({ tools: run.tools });
     case "tools/call":
-      return answer(await run.call(message.params));
+      return answer(await run.call(message.params, signal));
     default:
       return { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `no method ${String(message.method)}` } };
   }

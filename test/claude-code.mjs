@@ -13,6 +13,10 @@ await build({ entryPoints: ["src/claude-code.ts"], bundle: true, platform: "node
 const code = await import(pathToFileURL(join(process.cwd(), out)).href);
 rmSync(dir, { recursive: true, force: true });
 const box = await import(pathToFileURL(join(process.cwd(), "acp-box/claude/transcript.mjs")).href);
+const boxCwd = mkdtempSync(join("node_modules/.cache", "resident-claude-cwd-"));
+process.env.BOX_CWD = boxCwd;
+const localServer = await import(pathToFileURL(join(process.cwd(), "acp-box/local.mjs")).href);
+const claudeRun = await import(pathToFileURL(join(process.cwd(), "acp-box/claude/run.mjs")).href);
 
 let failures = 0;
 async function step(name, fn) {
@@ -477,6 +481,219 @@ await step("aborted, or no longer read, the call cancels the box's answer, so th
   await assert.rejects(early, (error) => error.name === "AbortError");
   assert.equal(open.state.cancelled, true);
 });
+
+await step("local loopback MCP server timeouts allow long waits", async () => {
+  const local = await localServer.startLocal();
+  try {
+    assert.equal(local.server.requestTimeout, 0);
+    assert.equal(local.server.timeout, 0);
+    assert.ok(local.server.keepAliveTimeout >= 10 * 60_000);
+    assert.ok(local.server.headersTimeout > local.server.keepAliveTimeout);
+  } finally {
+    local.server.close();
+    local.server.closeAllConnections?.();
+  }
+});
+
+await step("a dropped loopback MCP tool call stops the waiting Claude run so the next turn recovers cleanly", async () => {
+  const local = await localServer.startLocal();
+  try {
+    const calls = [];
+    let firstAbort = null;
+    let dropCall = null;
+    const callParked = new Promise((resolve) => {
+      dropCall = resolve;
+    });
+    const fakeQuery = ({ prompt, options }) => {
+      const turnIndex = calls.length;
+      calls.push({ prompt, options });
+      if (turnIndex === 0) {
+        firstAbort = options.abortController.signal;
+        return (async function* () {
+          await options.sessionStore.append({ sessionId: "s" }, [
+            { type: "user", uuid: "u1", message: { role: "user", content: [{ type: "text", text: "remember?" }] } },
+            { type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_drop_1", name: "mcp__resident__memory_recall", input: { query: "hi" } }] } }
+          ]);
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { id: "m1", role: "assistant", model: "claude-opus-5-5" } } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_drop_1", name: "mcp__resident__memory_recall", input: {} } } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_stop", index: 0 } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_stop" } };
+          const mcpConfig = options.mcpServers.resident;
+          const clientAbort = new AbortController();
+          const pending = fetch(mcpConfig.url, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...mcpConfig.headers },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: { name: "memory_recall", arguments: { query: "hi" }, _meta: { "claudecode/toolUseId": "toolu_drop_1" } }
+            }),
+            signal: clientAbort.signal
+          }).catch(() => {});
+          dropCall(() => clientAbort.abort());
+          await new Promise((resolve) => {
+            if (options.abortController.signal.aborted) resolve();
+            else options.abortController.signal.addEventListener("abort", resolve, { once: true });
+          });
+          await pending;
+        })();
+      }
+      return (async function* () {
+        let received = null;
+        for await (const item of prompt) received = item;
+        calls[turnIndex].received = received;
+        await options.sessionStore.append({ sessionId: "s" }, [
+          { type: "user", uuid: "u2", message: { role: "user", content: received.message.content } },
+          { type: "assistant", uuid: "a2", message: { role: "assistant", content: [{ type: "text", text: "got it" }] } }
+        ]);
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { id: "m2", role: "assistant", model: "claude-opus-5-5" } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "got it" } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_stop", index: 0 } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_stop" } };
+      })();
+    };
+
+    const ctx = { base: local.base, credential: () => "tok", query: fakeQuery };
+    const toolDef = [{ name: "memory_recall", description: "recall", input_schema: { type: "object", properties: {} } }];
+    const firstLines = [];
+    await claudeRun.turn(
+      { model: "claude-opus-5-5", system: "sys", tools: toolDef, history: [], prompt: [{ type: "text", text: "remember?" }] },
+      (line) => firstLines.push(line),
+      new AbortController().signal,
+      ctx
+    );
+    const firstDone = firstLines.at(-1)?.done;
+    assert.ok(firstDone, "first turn ends cleanly at the tool call");
+    const abortClient = await callParked;
+    let parked = false;
+    for (let attempt = 0; attempt < 50 && !parked; attempt += 1) {
+      parked = [...claudeRun.runs.values()].some((run) => run.parked.has("toolu_drop_1"));
+      if (!parked) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(parked, true, "MCP tools/call is parked on the waiting run before client disconnect");
+    abortClient();
+    for (let attempt = 0; attempt < 50 && !firstAbort.aborted; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(firstAbort.aborted, true, "dropping the parked MCP HTTP call aborts the waiting run");
+
+    const secondLines = [];
+    await claudeRun.turn(
+      {
+        model: "claude-opus-5-5",
+        system: "sys",
+        tools: toolDef,
+        history: [{ entries: [...firstDone.prompt, ...firstDone.reply] }],
+        prompt: [{ type: "tool_result", tool_use_id: "toolu_drop_1", content: "remembered fact" }]
+      },
+      (line) => secondLines.push(line),
+      new AbortController().signal,
+      ctx
+    );
+    assert.equal(calls.length, 2, "next turn opens a fresh Claude session instead of attaching to the broken one");
+    assert.match(JSON.stringify(calls[1].received.message.content), /remembered fact/);
+    assert.ok(secondLines.some((line) => line.e?.delta?.text === "got it"));
+    assert.ok(secondLines.at(-1)?.done, "fresh turn completes with done instead of going silent");
+  } finally {
+    local.server.close();
+    local.server.closeAllConnections?.();
+  }
+});
+
+await step("a waiting Claude run that streams early stops itself so the resident's tool results do not attach mid-stream", async () => {
+  const local = await localServer.startLocal();
+  try {
+    const calls = [];
+    let firstAbort = null;
+    let emitEarly = null;
+    const readyToEmit = new Promise((resolve) => {
+      emitEarly = resolve;
+    });
+    const fakeQuery = ({ prompt, options }) => {
+      const turnIndex = calls.length;
+      calls.push({ prompt, options });
+      if (turnIndex === 0) {
+        firstAbort = options.abortController.signal;
+        return (async function* () {
+          await options.sessionStore.append({ sessionId: "s" }, [
+            { type: "user", uuid: "u1", message: { role: "user", content: [{ type: "text", text: "check" }] } },
+            { type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_race_1", name: "mcp__resident__memory_recall", input: {} }] } }
+          ]);
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { id: "m1", role: "assistant", model: "claude-opus-5-5" } } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_race_1", name: "mcp__resident__memory_recall", input: {} } } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_stop", index: 0 } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } } };
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_stop" } };
+          await readyToEmit;
+          yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { id: "m_early", role: "assistant", model: "claude-opus-5-5" } } };
+          await new Promise((resolve) => {
+            if (options.abortController.signal.aborted) resolve();
+            else options.abortController.signal.addEventListener("abort", resolve, { once: true });
+          });
+        })();
+      }
+      return (async function* () {
+        let received = null;
+        for await (const item of prompt) received = item;
+        calls[turnIndex].received = received;
+        await options.sessionStore.append({ sessionId: "s" }, [
+          { type: "user", uuid: "u2", message: { role: "user", content: received.message.content } },
+          { type: "assistant", uuid: "a2", message: { role: "assistant", content: [{ type: "text", text: "recovered" }] } }
+        ]);
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { id: "m2", role: "assistant", model: "claude-opus-5-5" } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "recovered" } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_stop", index: 0 } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } } };
+        yield { type: "stream_event", parent_tool_use_id: null, event: { type: "message_stop" } };
+      })();
+    };
+
+    const ctx = { base: local.base, credential: () => "tok", query: fakeQuery };
+    const toolDef = [{ name: "memory_recall", description: "recall", input_schema: { type: "object", properties: {} } }];
+    const firstLines = [];
+    await claudeRun.turn(
+      { model: "claude-opus-5-5", system: "sys", tools: toolDef, history: [], prompt: [{ type: "text", text: "check" }] },
+      (line) => firstLines.push(line),
+      new AbortController().signal,
+      ctx
+    );
+    const firstDone = firstLines.at(-1)?.done;
+    assert.ok(firstDone);
+    emitEarly();
+    for (let attempt = 0; attempt < 50 && !firstAbort.aborted; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(firstAbort.aborted, true, "streaming while waiting aborts the moved-on run");
+
+    const secondLines = [];
+    await claudeRun.turn(
+      {
+        model: "claude-opus-5-5",
+        system: "sys",
+        tools: toolDef,
+        history: [{ entries: [...firstDone.prompt, ...firstDone.reply] }],
+        prompt: [{ type: "tool_result", tool_use_id: "toolu_race_1", content: "fresh result" }]
+      },
+      (line) => secondLines.push(line),
+      new AbortController().signal,
+      ctx
+    );
+    assert.equal(calls.length, 2);
+    assert.match(JSON.stringify(calls[1].received.message.content), /fresh result/);
+    assert.ok(secondLines.some((line) => line.e?.delta?.text === "recovered"));
+    assert.ok(secondLines.at(-1)?.done);
+  } finally {
+    local.server.close();
+    local.server.closeAllConnections?.();
+  }
+});
+
+rmSync(boxCwd, { recursive: true, force: true });
 
 if (failures) {
   console.log(`${failures} failed`);

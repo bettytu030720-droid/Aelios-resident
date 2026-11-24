@@ -8,6 +8,8 @@ import { byAddress } from "./session.mjs";
 import { mcp } from "./tools.mjs";
 
 const MAX_BODY = 8 * 1024 * 1024;
+const KEEP_ALIVE_MS = 10 * 60_000;
+const HEADERS_MS = KEEP_ALIVE_MS + 5_000;
 
 function carries(request, key) {
   const given = Buffer.from(String(request.headers.authorization ?? ""));
@@ -39,10 +41,26 @@ export async function startLocal() {
     } catch {
       return void response.writeHead(400).end();
     }
-    const answer = await mcp(run, message);
+    if (response.destroyed) return;
+    const abort = new AbortController();
+    const onClose = () => {
+      if (!response.writableFinished) abort.abort();
+    };
+    response.on("close", onClose);
+    let answer;
+    try {
+      answer = await mcp(run, message, abort.signal);
+    } finally {
+      response.off("close", onClose);
+    }
+    if (response.destroyed || response.writableEnded) return;
     if (!answer) return void response.writeHead(202).end();
     response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
   });
+  server.requestTimeout = 0;
+  server.timeout = 0;
+  server.keepAliveTimeout = KEEP_ALIVE_MS;
+  server.headersTimeout = HEADERS_MS;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { server, base: () => `http://127.0.0.1:${server.address().port}` };
 }

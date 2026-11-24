@@ -92,7 +92,10 @@ class Run {
 
   event(event) {
     const reply = this.reply;
-    if (!reply) return;
+    if (!reply) {
+      if (this.asked.length) this.stop("Claude Code moved on before the resident's tool results arrived");
+      return;
+    }
     reply.stream.event(event);
     if (event?.type === "message_stop" && reply.stream.calls && reply.stream.uses.length) void this.stopAt(reply);
   }
@@ -101,8 +104,10 @@ class Run {
   async stopAt(reply) {
     const ids = reply.stream.uses.map((use) => use.id);
     const until = Date.now() + WRITTEN_MS;
-    while (!this.ended && Date.now() < until && !ids.every((id) => this.wrote(id))) await new Promise((done) => setTimeout(done, 20));
-    if (this.ended || this.reply !== reply) return;
+    while (!this.ended && !this.abort.signal.aborted && Date.now() < until && !ids.every((id) => this.wrote(id))) {
+      await new Promise((done) => setTimeout(done, 20));
+    }
+    if (this.ended || this.abort.signal.aborted || this.reply !== reply) return;
     this.asked = reply.stream.uses;
     for (const id of ids) waiting.set(id, this);
     this.timer = setTimeout(() => this.stop("the resident's results did not come back"), WAIT_MS);
@@ -143,7 +148,7 @@ class Run {
   }
 
   /** A call Claude Code makes (an MCP tools/call): its result, once the resident has sent it. */
-  call(params) {
+  call(params, signal) {
     let id = params?._meta?.["claudecode/toolUseId"];
     // Claude Code sends the id of the call along; without it, the call is the first one not asked for yet.
     if (typeof id !== "string") id = [...this.given.keys(), ...this.asked.map((use) => use.id)].find((one) => !this.parked.has(one)) ?? randomUUID();
@@ -152,14 +157,33 @@ class Run {
       this.given.delete(id);
       return Promise.resolve(result);
     }
-    if (this.ended) return Promise.resolve(UNANSWERED);
-    return new Promise((resolve) => this.parked.set(id, resolve));
+    if (this.ended || this.abort.signal.aborted) return Promise.resolve(UNANSWERED);
+    if (signal?.aborted) {
+      this.stop("Claude Code dropped the tool call");
+      return Promise.resolve(UNANSWERED);
+    }
+    return new Promise((resolve) => {
+      const onAbort = () => {
+        if (this.parked.get(id) !== finish) return;
+        this.parked.delete(id);
+        resolve(UNANSWERED);
+        this.stop("Claude Code dropped the tool call");
+      };
+      const finish = (value) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      this.parked.set(id, finish);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   stop(reason) {
     if (this.ended) return;
     this.failure ??= reason;
+    clearTimeout(this.timer);
     for (const use of this.asked) if (waiting.get(use.id) === this) waiting.delete(use.id);
+    this.asked = [];
     this.abort.abort();
   }
 
@@ -213,7 +237,7 @@ class Run {
       return replied;
     }
     await mkdir(CWD, { recursive: true });
-    const { query } = await import("@anthropic-ai/claude-agent-sdk");
+    const query = ctx.query ?? (await import("@anthropic-ai/claude-agent-sdk")).query;
     const options = {
       ...(entries.length ? { resume: sessionId } : {}),
       sessionStore: store,
