@@ -290,6 +290,9 @@ document.addEventListener('alpine:init', function () {
                   </button>
                   <span class="wave" :class="playing === row.line.voice.key && 'playing'" aria-hidden="true"><template x-for="(h, i) in waveOf(row.line.voice)" :key="i"><i :style="{ height: h + 'px' }"></i></template></span>
                   <span class="len" x-text="row.line.voice.live ? '边写边听' : voiceLen(row.line.voice)"></span>
+                  <button class="keep" type="button" x-show="keepable(row.line)" :class="row.line.kept && 'on'" :disabled="keeping === row.line.id" @click="toggleKept(row.line)" :aria-label="row.line.kept ? '取消收藏' : '收藏这段语音'" :title="row.line.kept ? '取消收藏' : '收藏这段语音'" :aria-pressed="String(Boolean(row.line.kept))">
+                    <svg viewBox="0 0 24 24" :fill="row.line.kept ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>
+                  </button>
                 </div>
               </template>
               <template x-for="(b, i) in bubblesOf(row.line)" :key="i">
@@ -381,6 +384,9 @@ document.addEventListener('alpine:init', function () {
                   </button>
                   <span class="wave" :class="playing === row.line.voice.key && 'playing'" aria-hidden="true"><template x-for="(h, i) in waveOf(row.line.voice)" :key="i"><i :style="{ height: h + 'px' }"></i></template></span>
                   <span class="len" x-text="voiceLen(row.line.voice)"></span>
+                  <button class="keep" type="button" x-show="keepable(row.line)" :class="row.line.kept && 'on'" :disabled="keeping === row.line.id" @click="toggleKept(row.line)" :aria-label="row.line.kept ? '取消收藏' : '收藏这段语音'" :title="row.line.kept ? '取消收藏' : '收藏这段语音'" :aria-pressed="String(Boolean(row.line.kept))">
+                    <svg viewBox="0 0 24 24" :fill="row.line.kept ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>
+                  </button>
                 </div>
               </template>
               <template x-if="row.line.voice">
@@ -573,6 +579,7 @@ document.addEventListener('alpine:init', function () {
       <button class="li" type="button" @click="openSection('aelios')"><span class="name">记忆</span><span class="val" :class="aelios && 'ok'" x-text="aelios ? '接着 Aelios' : '没接'"></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
       <button class="li" type="button" @click="openSection('heartbeat')"><span class="name">它定的闹钟</span><span class="val" x-text="alarms.on ? nextAlarm() : '关着'"></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
       <button class="li" type="button" @click="openThreads()"><span class="name">线程</span><span class="val" :class="workingTasks() && 'needs'" x-text="workingTasks() ? workingTasks() + ' 个在路上' : (cloud.on ? '看看' : '后台帮忙关着')"></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+      <button class="li" type="button" @click="openKept()"><span class="name">语音收藏</span><span class="val">听收藏的语音</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
       <button class="li" type="button" @click="openUsage()"><span class="name">用量</span><span class="val" x-text="usageToday()"></span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
     </nav>
     <button class="icon-btn sm danger" type="button" x-show="resident !== 'default' && !miniApp" @click="removeResident()" :disabled="residents.busy" title="删除这个住户" aria-label="删除这个住户"><i class="i i-trash" aria-hidden="true"></i></button>
@@ -988,6 +995,35 @@ document.addEventListener('alpine:init', function () {
     </template>
     <div class="empty" x-show="usage.loaded && !usage.rows.length">还没有记录。每次调模型都会记一条。</div>
     <button class="icon-btn sm" type="button" style="align-self: center" x-show="usage.more" :disabled="usage.busy" @click="moreUsage()" title="再往前看" aria-label="再往前看" :aria-busy="String(usage.busy)"><i class="i i-more-down" aria-hidden="true"></i></button>
+  </section>
+
+  <!-- ===== kept voices (语音收藏) ===== -->
+  <header class="top plain" x-show="authed && view === 'kept'">
+    <button class="icon-btn" type="button" @click="goBack()" aria-label="回去" title="回去"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <h1 class="title">语音收藏</h1>
+  </header>
+  <section class="page" x-show="authed && view === 'kept'">
+    <template x-for="item in keptVoices.items" :key="item.id">
+      <div class="urow kept-voice">
+        <div class="top-line">
+          <span class="when" x-text="fmt(item.at || item.keptAt)"></span>
+          <span class="kind" x-text="item.role === 'assistant' ? identity.name : '你'"></span>
+          <span class="spacer"></span>
+          <button class="icon-btn sm" type="button" @click="downloadVoice(item)" title="下载" aria-label="下载这段语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg></button>
+          <button class="icon-btn sm" type="button" @click="unkeepVoice(item)" :disabled="keeping === item.id" title="取消收藏" aria-label="取消收藏"><svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button>
+        </div>
+        <div class="voice">
+          <button class="play" type="button" @click="play(item.voice.key, null, item.voice)" :aria-label="playing === item.voice.key ? '停下' : '听这段语音'">
+            <svg x-show="playing !== item.voice.key" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg>
+            <svg x-show="playing === item.voice.key" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+          </button>
+          <span class="wave" :class="playing === item.voice.key && 'playing'" aria-hidden="true"><template x-for="(h, i) in waveOf(item.voice)" :key="i"><i :style="{ height: h + 'px' }"></i></template></span>
+          <span class="len" x-text="voiceLen(item.voice)"></span>
+        </div>
+        <div class="said" x-text="item.text || '（没听清）'"></div>
+      </div>
+    </template>
+    <div class="empty" x-show="keptVoices.loaded && !keptVoices.items.length">还没有收藏的语音。点聊天里语音条上的星星就能收藏，通话里的也行。收藏的语音不会因为存满被清掉。</div>
   </section>
 
   <!-- ===== settings ===== -->

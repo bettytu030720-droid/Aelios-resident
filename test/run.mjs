@@ -26,7 +26,7 @@
 //   web      the web page's own ways to talk: pictures, a quote, a voice message recorded there and replies said back,
 //            a sticker, the command buttons, a model change in the chat, its name and avatar, notifications, moving an
 //            alarm, answering a thread that needs her, searching the conversation, taking back its latest reply, messages
-//            sent in a row answered as one turn
+//            sent in a row answered as one turn, keeping a voice message (语音收藏)
 //   stall    a model that goes quiet: the turn is cut and run again, and the messages after it are answered
 //            (start wrangler with --var CHAT_STALL_SECONDS:2)
 //   telegram the bot token saved on the settings page instead of Cloudflare (start wrangler with
@@ -3255,6 +3255,58 @@ if (phase === "web") {
     assert.equal((await json("/web/speak", { id: earlier.id })).data.key, read.data.key, "a voice already made still plays");
     const unspoken = (await lines()).find((line) => line.role === "assistant" && !line.voice);
     assert.match((await json("/web/speak", { id: unspoken.id })).data.error ?? "", /还没设置声音/);
+  });
+
+  await step("语音收藏: her voice and a call's reply are kept (no R2 bound here), listed, downloadable, and let go again; the words go to Aelios", async () => {
+    const all = await lines();
+    const hers = all.findLast((line) => line.role === "user" && line.voice?.key);
+    const its = all.findLast((line) => line.role === "assistant" && line.voice?.key);
+    const precious = async () => (await log()).filter((e) => e.kind === "aelios.precious");
+    const before = (await precious()).length;
+    const looked = async () => (await log()).filter((e) => e.kind === "aelios.precious.list").length;
+    // Saved in Aelios but its answer lost: kept, and the next keep finds it there instead of saving it again.
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ preciousLost: 1 }), headers: { "content-type": "application/json" } });
+    assert.deepEqual((await json("/web/voice/keep", { id: hers.id })).data, { kept: true, memory: false });
+    assert.equal(await looked(), 0);
+    // Saved, its answer lost, and not in the list when looked for (written late, or older than the latest 200), by an
+    // Aelios that did not know client_key then: written again with its key, Aelios gives that one back, not a copy.
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ preciousHidden: 1, preciousKeyless: 1 }), headers: { "content-type": "application/json" } });
+    assert.deepEqual((await json("/web/voice/keep", { id: its.id })).data, { kept: true, memory: false });
+    for (const line of [hers, its]) assert.deepEqual((await json("/web/voice/keep", { id: line.id })).data, { kept: true, memory: true });
+    assert.equal(await looked(), 2, "looked once each, for the ones whose answer was lost");
+    const sameAgain = (await log()).filter((e) => e.kind === "aelios.precious.same");
+    assert.equal(sameAgain.length, 1, "the late one was asked again with its key, and given back");
+    const [mine, reply] = (await precious()).slice(before);
+    assert.equal(sameAgain[0].body.client_key, reply.body.client_key);
+    assert.match(mine.body.client_key, new RegExp(`^aelios-resident/default/voice/${hers.id}$`));
+    assert.match(mine.body.content, new RegExp(`^我的语音：「${hers.text}」（语音收藏，resident 音频 ${hers.voice.key}）$`));
+    assert.ok(reply.body.content.includes(its.voice.key) && reply.body.content.includes(its.text), reply.body.content);
+    assert.deepEqual((await json("/web/voice/keep", { id: hers.id })).data, { kept: true, memory: true }, "kept twice, it goes into Aelios once");
+    assert.equal((await precious()).length, before + 2);
+
+    const shown = await lines();
+    assert.equal(shown.find((line) => line.id === hers.id).kept, true);
+    assert.equal(shown.find((line) => line.id === its.id).kept, true);
+    const listed = (await json("/web/voice/kept")).data.voices;
+    assert.deepEqual(listed.map((voice) => voice.id).sort(), [hers.id, its.id].sort());
+    assert.deepEqual(listed.find((voice) => voice.id === hers.id).voice, { key: hers.voice.key, seconds: hers.voice.seconds });
+    const download = await web(`/web/media?key=${hers.voice.key}&download=1`, KEY);
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get("content-disposition"), new RegExp(`attachment; filename="voice-${hers.voice.key}\\.wav"`));
+
+    assert.match((await json("/web/voice/keep", { id: all.find((line) => line.role === "user" && !line.voice).id })).data.error, /没有能收藏的语音/);
+    assert.equal((await json("/web/voice/keep", { id: "no-such-message" })).status, 400);
+
+    assert.deepEqual((await json("/web/voice/keep", { id: its.id, on: false })).data, { kept: false });
+    assert.equal((await lines()).find((line) => line.id === its.id).kept, undefined);
+    assert.deepEqual((await json("/web/voice/kept")).data.voices.map((voice) => voice.id), [hers.id]);
+    assert.equal((await web(`/web/media?key=${its.voice.key}`, KEY)).status, 200, "let go, it plays until it is pruned like any other");
+
+    // Kept again after being let go, its words are already in Aelios: not written a second time.
+    assert.deepEqual((await json("/web/voice/keep", { id: its.id })).data, { kept: true, memory: true });
+    assert.equal((await precious()).length, before + 2, "kept again, it does not go into Aelios again");
+    assert.deepEqual((await json("/web/voice/kept")).data.voices.map((voice) => voice.id).sort(), [hers.id, its.id].sort());
+    assert.deepEqual((await json("/web/voice/keep", { id: its.id, on: false })).data, { kept: false });
   });
 
   await step("live speech starts while the web reply is still being written, replays, and is cancelled with its turn", async () => {

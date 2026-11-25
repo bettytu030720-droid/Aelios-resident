@@ -308,6 +308,13 @@ function resident() {
   var playback = null;
   // The version of the conversation the page has (GET /web/messages?since=).
   var seenRev = '';
+  // Each ask for the kept voices (openKept), so only the latest one's answer is shown.
+  var keptAsk = 0;
+  // Which resident's page this is, counted up at each switch: a keep or let-go answered for an earlier one is dropped.
+  var keptTurn = 0;
+  // The keeps and let-gos under way for each resident, every one of them (keptWrite): its list waits for them all, so
+  // it never shows what was just let go, even after switching away and back, or when a later one failed.
+  var keptWriting = Object.create(null);
   var refreshSequence = 0;
   var lastCallPoll = 0;
   var doorEpoch = 0;
@@ -400,6 +407,9 @@ function resident() {
     avatarBusy: false,
 
     usage: { loaded: false, busy: false, totals: null, rows: [], more: false, keepDays: 90 },
+    // 语音收藏: the voice messages she kept; `keeping` is the message whose star was just pressed.
+    keptVoices: { loaded: false, busy: false, items: [] },
+    keeping: '',
     config: { fields: [], voice: { hears: null, gap: 'off', keyFrom: null }, telegram: { from: null, bot: null, here: false, error: null, lastError: null },
       wecom: { gap: 'off', allowed: [], relay: null, error: null, refused: null } },
     configSection: '',
@@ -741,6 +751,10 @@ function resident() {
       this.model = { model: '', removed: '', at: null, fallback: '', recent: [], lastUsage: null, memoryOff: false };
       this.aeliosModels = { loaded: false, items: [], curated: false, error: '' };
       this.usage = { loaded: false, busy: false, totals: null, rows: [], more: false, keepDays: 90 };
+      this.keptVoices = { loaded: false, busy: false, items: [] };
+      keptAsk += 1;
+      keptTurn += 1;
+      this.keeping = '';
       this.config = { fields: [], voice: { hears: null, gap: 'off', keyFrom: null }, telegram: { from: null, bot: null, here: false, error: null, lastError: null },
         wecom: { gap: 'off', allowed: [], relay: null, error: null, refused: null } };
       this.configSection = '';
@@ -2108,7 +2122,7 @@ function resident() {
       if (this.view === 'config') return this.configBack();
       if (this.view === 'thread') return this.openThreads();
       if (this.view === 'persona') return this.closeSettings();
-      if (this.view === 'usage') { this.view = 'profile'; return; }
+      if (this.view === 'usage' || this.view === 'kept') { this.view = 'profile'; return; }
       if (this.view === 'file') this.closeFile();
       this.view = 'chat';
       this.scrollSoon(true);
@@ -2116,7 +2130,7 @@ function resident() {
     backText() {
       if (this.view === 'config' && this.configSection) return '回到设置';
       if (this.view === 'thread') return '回到线程';
-      if (this.view === 'persona' || this.view === 'usage') return '回去';
+      if (this.view === 'persona' || this.view === 'usage' || this.view === 'kept') return '回去';
       return '回到聊天';
     },
     async openProfile() {
@@ -2329,6 +2343,114 @@ function resident() {
         this.notify(error.message);
       } finally {
         this.threadBusy = false;
+      }
+    },
+
+    // ---- 语音收藏: voice messages she keeps, hers or its (a call's too); never cleared out to make room ----
+    // A voice that is all there: not one still being said.
+    keepable(line) {
+      return Boolean(line && line.voice && line.voice.key && !line.voice.live && !line.pending);
+    },
+    // Keeps or lets go of a voice. Its answer, or its error, only for the resident it was asked for: null when the
+    // page has switched since (even back again), so nothing of it reaches this one.
+    async keptWrite(id, on) {
+      var turn = keptTurn;
+      var resident = this.resident;
+      var write = this.api('/web/voice/keep', { method: 'POST', body: { id: id, on: on } });
+      var settled = write.then(function () {}, function () {});
+      (keptWriting[resident] = keptWriting[resident] || []).push(settled);
+      settled.then(function () {
+        var under = keptWriting[resident] || [];
+        if (under.indexOf(settled) >= 0) under.splice(under.indexOf(settled), 1);
+        if (!under.length) delete keptWriting[resident];
+      });
+      try {
+        var result = await write;
+        if (turn === keptTurn) return result;
+        // Switched away and back meanwhile: no word of it, but what is shown of this resident follows it.
+        if (resident === this.resident) this.keptSettled(id, on);
+        return null;
+      } catch (error) {
+        if (turn === keptTurn) throw error;
+        return null;
+      }
+    },
+    keptSettled(id, on) {
+      if (!on) this.keptVoices.items = this.keptVoices.items.filter(function (item) { return item.id !== id; });
+      else this.keptVoices.loaded = false;
+      this.refresh().catch(function () {});
+    },
+    async toggleKept(line) {
+      if (!this.keepable(line) || this.keeping) return;
+      var on = !line.kept;
+      var turn = keptTurn;
+      this.keeping = line.id;
+      try {
+        var result = await this.keptWrite(line.id, on);
+        if (!result) return;
+        line.kept = on || undefined;
+        this.keptVoices.loaded = false;
+        this.notify(on ? (result.memory ? '收藏好了，说的话也记进了 Aelios' : '收藏好了') : '取消收藏了');
+        this.refresh().catch(function () {});
+      } catch (error) {
+        this.notify(error.message);
+      } finally {
+        if (turn === keptTurn) this.keeping = '';
+      }
+    },
+    async openKept() {
+      this.view = 'kept';
+      // Only the answer to the latest ask counts: a switch of resident (even back to this one) or a newer ask
+      // makes an older answer, or its failure, nothing. What was listed before goes first.
+      var ask = ++keptAsk;
+      this.keptVoices = { loaded: false, busy: true, items: [] };
+      try {
+        // Asked for only once none is under way, so it is what the server has after them, failed ones included.
+        while (keptWriting[this.resident]) {
+          await Promise.all(keptWriting[this.resident].slice());
+          if (ask !== keptAsk) return;
+        }
+        var data = await this.api('/web/voice/kept');
+        if (ask === keptAsk) this.keptVoices = { loaded: true, busy: false, items: data.voices };
+      } catch (error) {
+        if (ask !== keptAsk) return;
+        this.keptVoices = { loaded: false, busy: false, items: [] };
+        this.notify(error.message);
+      }
+    },
+    async unkeepVoice(item) {
+      if (this.keeping || !confirm('取消收藏这段语音？之后它会和别的语音一样，存满了会被清掉。')) return;
+      var turn = keptTurn;
+      this.keeping = item.id;
+      try {
+        if (!(await this.keptWrite(item.id, false))) return;
+        this.keptVoices.items = this.keptVoices.items.filter(function (other) { return other.id !== item.id; });
+        var line = this.lines.find(function (line) { return line.id === item.id; });
+        if (line) line.kept = undefined;
+        this.refresh().catch(function () {});
+      } catch (error) {
+        this.notify(error.message);
+      } finally {
+        if (turn === keptTurn) this.keeping = '';
+      }
+    },
+    async downloadVoice(item) {
+      try {
+        var blob = await this.api('/web/media?key=' + encodeURIComponent(item.voice.key) + '&download=1', { blob: true });
+        var ext = { 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/ogg': 'ogg', 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/amr': 'amr' }[blob.type] || 'bin';
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        var d = new Date(item.at || item.keptAt);
+        var pad = function (n) { return String(n).padStart(2, '0'); };
+        var when = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
+        link.download = ((item.role === 'assistant' ? this.identity.name : '我') + '-' + when).replace(/[\\/:*?"<>|\s]+/g, '-') + '.' + ext;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+      } catch (error) {
+        this.notify(error.message);
       }
     },
 

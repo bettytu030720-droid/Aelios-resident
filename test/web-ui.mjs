@@ -1996,3 +1996,199 @@ console.log('PASS the computer layout: a line under each name, the sidebar folds
   assert.equal(el.style.whiteSpace, 'pre-wrap');
 }
 console.log('markdown fallback ok');
+
+// 语音收藏: the list is the open resident's own, never one left from another resident.
+const keptPage = vm.runInContext('testPage()', context);
+keptPage.authed = true;
+keptPage.resident = 'default';
+keptPage.notify = () => {};
+keptPage.check = async () => {};
+keptPage.clearVoicePlayback = () => {};
+keptPage.api = async () => ({ voices: [{ id: 'm1', role: 'user', text: '默认住户的话', at: 1, keptAt: 1, voice: { key: 'k1', seconds: 2 } }] });
+await keptPage.openKept();
+assert.deepEqual(keptPage.keptVoices.items.map((item) => item.text), ['默认住户的话']);
+await keptPage.switchResident('b');
+assert.deepEqual([keptPage.keptVoices.items.length, keptPage.keptVoices.loaded], [0, false], 'switching resident empties the list');
+keptPage.keptVoices.items = [{ id: 'm1', text: '默认住户的话' }];
+keptPage.api = async () => { throw new Error('网络断了'); };
+await keptPage.openKept();
+assert.equal(keptPage.keptVoices.items.length, 0, 'a list that fails to load shows nothing, not what was there before');
+let keptAnswer;
+keptPage.api = () => new Promise((resolve) => { keptAnswer = resolve; });
+const opening = keptPage.openKept();
+await keptPage.switchResident('c');
+keptAnswer({ voices: [{ id: 'm2', role: 'user', text: 'b 的话' }] });
+await opening;
+assert.equal(keptPage.keptVoices.items.length, 0, 'a late answer for the last resident is not shown under this one');
+// There and back again: an answer (or a failure) to the ask made before switching is still not this list's.
+await keptPage.switchResident('default');
+const asks = [];
+keptPage.api = () => new Promise((resolve, reject) => { asks.push({ resolve, reject }); });
+const stale = keptPage.openKept();
+await keptPage.switchResident('b');
+await keptPage.switchResident('default');
+const fresh = keptPage.openKept();
+asks[1].resolve({ voices: [{ id: 'm3', role: 'user', text: '现在的' }] });
+await fresh;
+asks[0].resolve({ voices: [{ id: 'm1', role: 'user', text: '旧的' }] });
+await stale;
+assert.deepEqual(keptPage.keptVoices.items.map((item) => item.text), ['现在的'], 'an older answer does not replace the list, even for the same resident');
+const staleFail = keptPage.openKept();
+const freshAgain = keptPage.openKept();
+asks[3].resolve({ voices: [{ id: 'm3', role: 'user', text: '现在的' }] });
+await freshAgain;
+asks[2].reject(new Error('超时了'));
+await staleFail;
+assert.deepEqual([keptPage.keptVoices.items.length, keptPage.keptVoices.loaded], [1, true], 'nor does an older failure empty it');
+console.log('PASS 语音收藏 lists only the open resident\'s voices: emptied when switching, on a failed load, and only the latest ask\'s answer counts (A→B→A too)');
+
+// 语音收藏 writes: a keep or let-go answered after switching resident (even back again) shows nothing here and
+// leaves this resident's lock alone; the list opened while one is under way waits for it.
+{
+  const page = vm.runInContext('testPage()', context);
+  page.authed = true;
+  page.resident = 'a';
+  page.check = async () => {};
+  page.clearVoicePlayback = () => {};
+  page.refresh = async () => {};
+  const toasts = [];
+  page.notify = (text) => { toasts.push(text); };
+  context.confirm = () => true;
+  const calls = [];
+  page.api = (path, options) => new Promise((resolve, reject) => { calls.push({ path, options, resolve, reject }); });
+  const lineA = { id: 'm1', role: 'user', voice: { key: 'k1' }, kept: true };
+  page.lines = [lineA];
+  const letGo = page.unkeepVoice({ id: 'm1' });
+  assert.equal(page.keeping, 'm1');
+  await page.switchResident('b');
+  page.keeping = 'm9';
+  calls[0].resolve({ ok: true });
+  await letGo;
+  assert.deepEqual([toasts.length, page.keeping, lineA.kept], [0, 'm9', true], 'an old resident\'s late let-go: no toast, the lock and lines left alone');
+  page.keeping = '';
+  const failing = page.toggleKept({ id: 'm2', role: 'user', voice: { key: 'k2' } });
+  await page.switchResident('a');
+  page.keeping = 'm5';
+  calls[1].reject(new Error('超时了'));
+  await failing;
+  assert.deepEqual([toasts.length, page.keeping], [0, 'm5'], 'nor its failure, even back on the same resident');
+  page.keeping = '';
+  // Let go from the chat, then open the list at once: it is asked for only once the let-go is answered.
+  const line = { id: 'm3', role: 'user', voice: { key: 'k3' }, kept: true };
+  page.lines = [line];
+  const toggling = page.toggleKept(line);
+  const listing = page.openKept();
+  await Promise.resolve();
+  assert.equal(calls.length, 3, 'the list waits for the let-go under way');
+  calls[2].resolve({ ok: true });
+  await toggling;
+  for (let i = 0; i < 5 && calls.length < 4; i++) await Promise.resolve();
+  assert.equal(calls[3].path, '/web/voice/kept');
+  calls[3].resolve({ voices: [] });
+  await listing;
+  assert.deepEqual([page.keptVoices.items.length, page.keptVoices.loaded, line.kept, toasts.at(-1)], [0, true, undefined, '取消收藏了'], 'the list shows the let-go');
+  delete context.confirm;
+}
+console.log('PASS 语音收藏 writes: an old resident\'s late keep or let-go is dropped (no toast, lock untouched), and the list waits for one under way');
+
+// 语音收藏: let go on A, switched to B and back to A before it was answered, then the list opened: it waits for that
+// let-go, so the voice let go is not listed.
+{
+  const page = vm.runInContext('testPage()', context);
+  page.authed = true;
+  page.resident = 'a';
+  page.check = async () => {};
+  page.clearVoicePlayback = () => {};
+  page.refresh = async () => {};
+  const toasts = [];
+  page.notify = (text) => { toasts.push(text); };
+  context.confirm = () => true;
+  const calls = [];
+  page.api = (path, options) => new Promise((resolve, reject) => { calls.push({ path, options, resolve, reject }); });
+  page.keptVoices = { loaded: true, busy: false, items: [{ id: 'm1', text: '要取消的' }] };
+  const letGo = page.unkeepVoice({ id: 'm1' });
+  await page.switchResident('b');
+  await page.switchResident('a');
+  const listing = page.openKept();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(calls.length, 1, 'back on A, the list waits for A\'s let-go under way');
+  calls[0].resolve({ ok: true });
+  await letGo;
+  for (let i = 0; i < 5 && calls.length < 2; i++) await Promise.resolve();
+  assert.equal(calls[1].path, '/web/voice/kept');
+  calls[1].resolve({ voices: [] });
+  await listing;
+  assert.deepEqual([page.keptVoices.items.length, toasts.length], [0, 0], 'not listed, and no word of the earlier turn');
+  // A list already open on A when the let-go is answered drops it too.
+  page.keptVoices = { loaded: true, busy: false, items: [{ id: 'm2', text: '又一条' }] };
+  const second = page.keptWrite('m2', false);
+  await page.switchResident('b');
+  await page.switchResident('a');
+  page.keptVoices = { loaded: true, busy: false, items: [{ id: 'm2', text: '又一条' }] };
+  calls[2].resolve({ ok: true });
+  assert.equal(await second, null);
+  assert.equal(page.keptVoices.items.length, 0);
+  delete context.confirm;
+}
+console.log('PASS 语音收藏: a let-go under way on a resident is waited for after switching away and back');
+
+// 语音收藏: two writes under way on one resident (a let-go, then after switching away and back a keep that fails):
+// the list waits for both, the failed later one never makes it forget the earlier.
+{
+  const page = vm.runInContext('testPage()', context);
+  page.authed = true;
+  page.resident = 'a';
+  page.check = async () => {};
+  page.clearVoicePlayback = () => {};
+  page.refresh = async () => {};
+  const toasts = [];
+  page.notify = (text) => { toasts.push(text); };
+  context.confirm = () => true;
+  const calls = [];
+  page.api = (path, options) => new Promise((resolve, reject) => { calls.push({ path, options, resolve, reject }); });
+  const letGo = page.unkeepVoice({ id: 'm1' });
+  await page.switchResident('b');
+  await page.switchResident('a');
+  const keeping = page.toggleKept({ id: 'm2', role: 'user', voice: { key: 'k2' } });
+  calls[1].reject(new Error('网络断了'));
+  await keeping;
+  assert.deepEqual(toasts, ['网络断了'], 'the failure of the keep asked now is said');
+  const listing = page.openKept();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(calls.length, 2, 'the list still waits for the let-go asked before switching');
+  calls[0].resolve({ ok: true });
+  await letGo;
+  for (let i = 0; i < 5 && calls.length < 3; i++) await Promise.resolve();
+  assert.equal(calls[2].path, '/web/voice/kept');
+  calls[2].resolve({ voices: [] });
+  await listing;
+  assert.deepEqual([page.keptVoices.items.length, page.keptVoices.loaded], [0, true], 'what the server has once both are done');
+  delete context.confirm;
+}
+console.log('PASS 语音收藏: every write under way on a resident is waited for, a failed later one included');
+
+{
+  const page = vm.runInContext('testPage()', context);
+  page.resident = 'constructor';
+  page.refresh = async () => {};
+  const line = { id: 'm1', role: 'user', voice: { key: 'k1' } };
+  const write = Promise.withResolvers();
+  const calls = [];
+  page.api = async (path) => {
+    calls.push(path);
+    if (path === '/web/voice/keep') return write.promise;
+    assert.equal(path, '/web/voice/kept');
+    return { voices: [line] };
+  };
+  page.notify = () => {};
+  const keeping = page.toggleKept(line);
+  const listing = page.openKept();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ['/web/voice/keep']);
+  assert.equal(page.keptVoices.busy, true);
+  write.resolve({ kept: true, memory: false });
+  await Promise.all([keeping, listing]);
+  assert.deepEqual(calls, ['/web/voice/keep', '/web/voice/kept']);
+  assert.equal(line.kept, true);
+  assert.equal(page.keptVoices.items[0].id, line.id);
+}

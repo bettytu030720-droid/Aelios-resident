@@ -61,7 +61,9 @@ const HANDS_MODEL_MAX_BYTES = 4 * 1024 * 1024;
 const AVATAR_UPLOAD_MAX = 512 * 1024;
 
 /** A file of hers the web page reads and shows itself: never run as a page of this origin, never kept by caches. */
-function privateFile(type: string): HeadersInit {
+const AUDIO_EXTENSIONS: Record<string, string> = { "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg", "audio/webm": "webm", "audio/mp4": "m4a", "audio/amr": "amr" };
+
+function privateFile(type: string): Record<string, string> {
   return {
     "content-type": type,
     "content-security-policy": "sandbox",
@@ -415,8 +417,19 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       const key = url.searchParams.get("key") ?? "";
       const file = /^[0-9a-f]{32}$/.test(key) ? await agent.webMedia(key, url.searchParams.get("part") === "1") : null;
       if (!file) return new Response("not found", { status: 404 });
-      return new Response(file.bytes, { headers: privateFile(file.type) });
+      // ?download=1: saved as a file (语音收藏's download), named by its key.
+      const download: Record<string, string> = url.searchParams.get("download") === "1"
+        ? { "content-disposition": `attachment; filename="voice-${key}.${AUDIO_EXTENSIONS[file.type] ?? "bin"}"` }
+        : {};
+      return new Response(file.bytes, { headers: { ...privateFile(file.type), ...download } });
     }
+    case "POST /web/voice/keep": {
+      // 语音收藏: keep a message's voice, or with on: false let it go (kept-voices.ts).
+      const kept = await agent.webKeepVoice(String(body.id ?? ""), body.on !== false);
+      return Response.json(kept, { status: "error" in kept ? 400 : 200, headers: { "cache-control": "no-store" } });
+    }
+    case "GET /web/voice/kept":
+      return Response.json(await agent.webKeptVoices(), { headers: { "cache-control": "no-store" } });
     case "GET /web/file": {
       // A file a reply handed over: bytes to save, never a page of this origin (the web page decides how to show it).
       const key = url.searchParams.get("key") ?? "";

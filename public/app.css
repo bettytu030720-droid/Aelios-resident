@@ -307,6 +307,14 @@ a.pill { text-decoration: none; overflow: hidden; text-overflow: ellipsis; min-w
 .wave.playing i:nth-child(3n+1) { animation-delay: .4s; }
 @keyframes wave { 50% { transform: scaleY(.45); } }
 .voice .len { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* 语音收藏: the star on a voice message, filled once it is kept. */
+.voice .keep { flex: none; width: 28px; height: 28px; margin: 0 -6px 0 -4px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--text-3); }
+.voice .keep:hover { background: var(--line-soft); }
+.voice .keep.on { color: var(--accent-text); }
+.voice .keep:disabled { opacity: .5; cursor: default; }
+.voice .keep svg { width: 16px; height: 16px; }
+.kept-voice { gap: 6px; }
+.kept-voice .voice { align-self: flex-start; }
 .said { font-size: 12px; line-height: 1.5; color: var(--text-3); padding: 0 4px; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ---- the composer ---- */

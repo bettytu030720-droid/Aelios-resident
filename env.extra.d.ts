@@ -3,6 +3,9 @@
 interface Env {
   // Cloudflare Images (wrangler.jsonc), to shrink the photos she sends (pictures.ts). Left out, they go as they are.
   IMAGES?: ImagesBinding;
+  // An R2 bucket for the voice messages she keeps (kept-voices.ts), bound in wrangler.jsonc. Left out, they stay in
+  // the resident's own SQLite, only kept from being pruned.
+  KEPT_VOICES?: R2Bucket;
   // The old model variable: read once and moved onto the web page (see Resident.savedModel).
   MODEL?: string;
   AI_GATEWAY_ID?: string;

@@ -7,7 +7,7 @@ const log = [];
 // GitHub repositories the hands set up, by owner/name.
 const ghRepos = new Map();
 let nextMessageId = 1000;
-let faults = { ingestFailures: 0, letterModel: "ok" };
+let faults = { ingestFailures: 0, letterModel: "ok", preciousLost: 0, preciousHidden: 0, preciousKeyless: 0 };
 const ORIGIN = "http://127.0.0.1:9999";
 // The WeCom relay's key, and the app the fake WeCom knows.
 const WECOM_RELAY_KEY = "relay-key-for-tests-0123456789abcdef";
@@ -131,7 +131,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/__log") return reply(log);
   if (url.pathname === "/__reset") {
     log.length = 0;
-    faults = { ingestFailures: 0, letterModel: "ok" };
+    faults = { ingestFailures: 0, letterModel: "ok", preciousLost: 0, preciousHidden: 0, preciousKeyless: 0 };
     wecomTokens = 0;
     webhooks.clear();
     ghRepos.clear();
@@ -447,8 +447,37 @@ const server = http.createServer(async (req, res) => {
     return reply({ data: { conversation_id: json.conversation_id, message_ids: [crypto.randomUUID()] } });
   }
   if (url.pathname === "/v1/precious") {
-    log.push({ kind: "aelios.precious", body: json, auth });
-    return reply({ data: { id: "p1", content: json.content } }, 201);
+    const kept = () => log.filter((e) => e.kind === "aelios.precious");
+    if (req.method === "GET") {
+      log.push({ kind: "aelios.precious.list", query: url.search, auth });
+      return reply({ data: kept().map((e, i) => ({ id: `p${i + 1}`, content: e.body.content, hidden: e.hidden })).filter((e) => !e.hidden).reverse() });
+    }
+    // As Aelios with migration 0036: a client_key already written gives back what it wrote (200), nothing new; so does
+    // the same content written without a key (before keys, or by an Aelios without them), which takes the key.
+    const keyOf = (e) => (e.keyless ? undefined : e.body.client_key);
+    let same = json.client_key ? kept().findIndex((e) => keyOf(e) === json.client_key) : -1;
+    if (json.client_key && same < 0) {
+      same = kept().findIndex((e) => !keyOf(e) && e.body.content === json.content);
+      if (same >= 0) delete kept()[same].keyless;
+    }
+    if (same >= 0) {
+      log.push({ kind: "aelios.precious.same", body: json, auth });
+      return reply({ data: { id: `p${same + 1}`, content: kept()[same].body.content } });
+    }
+    // Saved, its answer lost and not in the list yet (written late, or older than the latest 200): faults.preciousHidden.
+    const hidden = faults.preciousHidden > 0;
+    if (hidden) faults.preciousHidden -= 1;
+    // Written by an Aelios that does not know client_key yet: it is dropped (faults.preciousKeyless).
+    const keyless = faults.preciousKeyless > 0;
+    if (keyless) faults.preciousKeyless -= 1;
+    log.push({ kind: "aelios.precious", body: json, auth, ...(hidden ? { hidden } : {}), ...(keyless ? { keyless } : {}) });
+    const id = `p${kept().length}`;
+    // Saved, but the answer never comes back (faults.preciousLost times).
+    if (faults.preciousLost > 0 || hidden) {
+      if (!hidden) faults.preciousLost -= 1;
+      return req.socket.destroy();
+    }
+    return reply({ data: { id, content: json.content } }, 201);
   }
   if (url.pathname === "/v1/memory_boot") {
     log.push({ kind: "aelios.boot", query: url.search, auth });

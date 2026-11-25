@@ -202,3 +202,42 @@ export async function pin(config: AeliosConfig, content: string): Promise<boolea
   });
   return response.ok;
 }
+
+/**
+ * Keep a moment as a precious memory, where keep_moment keeps one: never faded or merged. Its id in Aelios, or null
+ * when Aelios could not be reached or said no.
+ */
+/**
+ * The precious memory whose words hold `marker`, among the latest 200: its id, null when there is none, or undefined
+ * when Aelios could not be asked. For a keep whose answer never came back, before it is written again.
+ */
+export async function findMoment(config: AeliosConfig, marker: string, signal?: AbortSignal): Promise<string | null | undefined> {
+  try {
+    const query = new URLSearchParams({ limit: "200", ...(config.namespace ? { namespace: config.namespace } : {}) });
+    const response = await aelios(config, `/v1/precious?${query}`, { signal });
+    if (!response.ok) return undefined;
+    const body = (await response.json().catch(() => null)) as { data?: { id?: unknown; content?: unknown }[] } | null;
+    if (!Array.isArray(body?.data)) return undefined;
+    const found = body.data.find((row) => typeof row?.content === "string" && row.content.includes(marker));
+    return found ? (typeof found.id === "string" ? found.id : "") : null;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function keepMoment(config: AeliosConfig, content: string, signal?: AbortSignal, clientKey?: string): Promise<string | null> {
+  try {
+    const response = await aelios(config, "/v1/precious", {
+      method: "POST",
+      // client_key: an Aelios that knows it writes the moment once, however many times it is sent (one that does not
+      // ignores it).
+      body: JSON.stringify({ namespace: config.namespace, content, source: "human", ...(clientKey ? { client_key: clientKey } : {}) }),
+      signal
+    });
+    if (!response.ok) return null;
+    const body = (await response.json().catch(() => null)) as { data?: { id?: unknown } } | null;
+    return typeof body?.data?.id === "string" && body.data.id ? body.data.id : "";
+  } catch {
+    return null;
+  }
+}

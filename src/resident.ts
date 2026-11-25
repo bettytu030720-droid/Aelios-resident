@@ -44,7 +44,8 @@ import { getAgentByName, type AgentMcpOAuthProvider } from "agents";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { asSchema, generateText, tool, type JSONSchema7, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
-import { aeliosConfig, fetchBoot, ingest, memoryTools, pin, recall, type AeliosConfig } from "./aelios";
+import { aeliosConfig, fetchBoot, findMoment, ingest, keepMoment, memoryTools, pin, recall, type AeliosConfig } from "./aelios";
+import { KeptVoices, keptPrefix, MEMORY_UNSURE } from "./kept-voices";
 import { quietAfterTools } from "./after-tools";
 import { claudeCodeModel, isClaudeCode, type Segment } from "./claude-code";
 import { isKiro, kiroModel } from "./kiro-box";
@@ -104,7 +105,7 @@ import { LetterStateStore, type WriteState } from "./letter-state";
 import { deliverLetter } from "./letter-delivery";
 import { letterDeliveryStatus, letterWriteStatus } from "./letter-status";
 import { PICTURE_SEND_BYTES, base64, shrinkWith, withPictures, type Download } from "./pictures";
-import { MEDIA_MAX_BYTES, MediaStore, type MediaFile } from "./media-store";
+import { MEDIA_MAX_BYTES, MediaStore, type KeptVoice, type MediaFile } from "./media-store";
 import { makePushKeys, pushTargetOf, sendPush, type PushKeys, type PushTarget } from "./web-push";
 import { FcmClient, fcmTokenOf } from "./fcm";
 import { REFUSED_PICTURE, refusalOf, refusedNotice, withoutRefused } from "./refused-pictures";
@@ -366,6 +367,8 @@ export type WebLine = {
   tasks?: TaskCard[];
   /** Files this reply handed over (make_file), each read from /web/file by its key. */
   files?: MadeFile[];
+  /** Its voice is kept (语音收藏, kept-voices.ts). */
+  kept?: true;
   pending?: boolean;
 };
 
@@ -4094,6 +4097,7 @@ export class Resident extends Think<Env> {
     const replies = lines.filter((line) => line.role === "assistant" && line.kind === "chat").map((line) => line.id);
     const media = this.media();
     const spoken = media.spokenOf(replies);
+    const kept = media.keptAmong(lines.filter((line) => line.voice?.key).map((line) => line.id).concat([...spoken.keys()]));
     const files = this.madeFiles().ofReplies(replies);
     const cards = new Map(this.taskCards([...new Set([...taskIds.values()].flat())])?.map((card) => [card.id, card]));
     const decorated = lines.map((line) => {
@@ -4103,14 +4107,16 @@ export class Resident extends Think<Env> {
       const voicePending = Boolean(finishing);
       const made = files.get(line.id);
       const tasks = taskIds.get(line.id)?.map((id) => cards.get(id)).filter((card) => card !== undefined);
-      if (!voice && !liveVoice && !voicePending && !made && !tasks?.length) return line;
+      const isKept = kept.has(line.id);
+      if (!voice && !liveVoice && !voicePending && !made && !tasks?.length && !isKept) return line;
       return {
         ...line,
         ...(voice ? { voice } : {}),
         ...(liveVoice ? { liveVoice } : {}),
         ...(voicePending ? { voicePending } : {}),
         ...(made ? { files: made } : {}),
-        ...(tasks?.length ? { tasks } : {})
+        ...(tasks?.length ? { tasks } : {}),
+        ...(isKept ? { kept: true as const } : {})
       };
     });
     return { lines: decorated, notices: this.notices() };
@@ -4822,8 +4828,25 @@ export class Resident extends Think<Env> {
   }
 
   private media(): MediaStore {
-    this.#mediaStore ??= new MediaStore(this.sqlShownOnWeb(), (key) => this.readingNotes().remove({ key }));
+    this.#mediaStore ??= new MediaStore(
+      this.sqlShownOnWeb(),
+      (key) => this.readingNotes().remove({ key }),
+      // A file removed while in R2 (a reply taken back): its copy there goes too, once R2 is bound.
+      () => this.ctx.waitUntil(this.keptVoices().clear().catch(() => {})),
+      // The name a voice sent to R2 by the earlier draft went under.
+      (key) => `${keptPrefix(this.residentId)}${key}`
+    );
     return this.#mediaStore;
+  }
+
+  // One for the isolate: keeping and letting go take turns in it.
+  #keptVoices?: KeptVoices;
+  /** The precious memory a kept voice is going into now, by message, so two keeps at once write it once. */
+  #keepingMoments = new Map<string, Promise<string | null>>();
+
+  private keptVoices(): KeptVoices {
+    this.#keptVoices ??= new KeptVoices(this.media(), this.env.KEPT_VOICES ?? null, this.residentId);
+    return this.#keptVoices;
   }
 
   private madeFiles(): MadeFiles {
@@ -4914,18 +4937,20 @@ export class Resident extends Think<Env> {
   }
 
   /** A voice recording or read-out kept for the web page. The avatar is public and goes by /avatar/ instead. */
-  webMedia(key: string, part = false): MediaFile | null {
+  async webMedia(key: string, part = false): Promise<MediaFile | null> {
     const media = this.media();
     const kind = media.kindOf(key);
     if (kind !== "voice" && kind !== "spoken") return null;
     const clips = kind === "spoken" && !part ? media.spokenParts(key) : null;
-    if (!clips) return media.get(key);
+    // A kept voice may be in the R2 bucket rather than here.
+    const kept = this.keptVoices();
+    if (!clips) return kept.file(key);
 
     // Desktop and older web pages expect this key to fetch the complete message as one MP3.
     const bytes: Uint8Array[] = [];
     let seconds = 0;
     for (const clip of clips) {
-      const file = media.get(clip.key);
+      const file = await kept.file(clip.key);
       if (!file) return null;
       bytes.push(file.bytes);
       seconds += clip.seconds ?? 0;
@@ -4960,6 +4985,99 @@ export class Resident extends Think<Env> {
       console.error("voice: could not read a message out", { error: reason });
       return { error: `没念出来：${reason}` };
     }
+  }
+
+  // ---- 语音收藏: voice messages she keeps (kept-voices.ts) ----
+
+  /**
+   * Keeps the voice of a message, hers or its reply (a call's too), or with `on` false lets it go. Kept, it is
+   * never pruned, and what was said goes into Aelios as a precious memory, with the audio's key to find it by.
+   * The voice is kept even when Aelios cannot be reached: `memory` says whether it went in.
+   */
+  async webKeepVoice(id: string, on: boolean): Promise<{ kept: boolean; memory?: boolean } | { error: string }> {
+    const kept = this.keptVoices();
+    const media = this.media();
+    // All of it in its turn, the message read included, so the last asked is how it ends.
+    const done = await kept.run(async (): Promise<KeptVoice | { kept: false } | { error: string }> => {
+      if (kept.closing) return { error: "这个住户正在删，收藏不了" };
+      if (!on) {
+        const gone = await kept.unkeepNow(id);
+        return "error" in gone ? gone : { kept: false };
+      }
+      let voice: Omit<KeptVoice, "keptAt" | "memory"> | null = media.kept(id);
+      if (!voice) {
+        const message = await this.session.getMessage(id).catch(() => null);
+        if (!message || (message.role !== "user" && message.role !== "assistant")) return { error: "找不到这条消息了" };
+        const at = (message.metadata as { at?: number } | undefined)?.at ?? null;
+        if (message.role === "assistant") {
+          const spoken = media.spokenFor(id);
+          if (!spoken && this.#finishingVoices.has(id)) return { error: "语音还在生成，等它说完再收藏" };
+          if (spoken) {
+            const text = withoutStickerMarks(textOf(message)).trim();
+            voice = { message: id, role: "assistant", at, keys: spoken.parts ?? [spoken.key], seconds: spoken.seconds, text };
+          }
+        } else {
+          const own = message.metadata as WebSaidMeta | undefined;
+          const text = withoutFiles(message).replace(STAMP_PREFIX, "").replace(QUOTE_MARK, "").replace(VOICE_MARK, "").trim();
+          if (own?.voice?.key && media.kindOf(own.voice.key) === "voice") {
+            voice = { message: id, role: "user", at, keys: [own.voice.key], seconds: own.voice.seconds, text };
+          }
+        }
+        if (!voice) return { error: "这条没有能收藏的语音" };
+      }
+      // Kept already, it is kept again all the same: a letting go asked before this one may have just ended.
+      if (!(await kept.keepNow(voice))) return { error: "这段语音已经被清掉了，收藏不了" };
+      return media.kept(id) ?? { error: "这段语音已经被清掉了，收藏不了" };
+    });
+    if (!("message" in done)) return done;
+    const voice = done;
+    if (voice.memory !== null && voice.memory !== MEMORY_UNSURE) return { kept: true, memory: true };
+    const memory = aeliosConfig(this.cfg);
+    if (!memory) return { kept: true, memory: false };
+    let writing = this.#keepingMoments.get(id);
+    if (!writing) {
+      const who = voice.role === "assistant" ? this.cfg.RESIDENT_NAME?.trim() || DEFAULT_NAME : "我";
+      const said = voice.text || "（没听清）";
+      const mark = `resident 音频 ${voice.keys.join(",")}`;
+      writing = (async () => {
+        // A write before this one whose answer never came back may have gone in. An Aelios that knows client_key
+        // gives that one back below; for one that does not, look for it first (among its latest 200).
+        if (voice.memory === MEMORY_UNSURE) {
+          const found = await findMoment(memory, mark, AbortSignal.timeout(10_000));
+          if (found === undefined) return null;
+          if (found !== null) {
+            media.keptInMemory(id, found);
+            return found;
+          }
+        }
+        media.keptInMemory(id, MEMORY_UNSURE);
+        // The same key every time this message's voice is kept: an Aelios that knows client_key writes it once.
+        const once = `aelios-resident/${this.residentId}/voice/${id}`;
+        const moment = await keepMoment(memory, `${who}的语音：「${said}」（语音收藏，${mark}）`, AbortSignal.timeout(10_000),
+          once.length <= 200 ? once : undefined);
+        // Let go meanwhile, its row stays (let_go), so keeping it again still finds this memory.
+        if (moment !== null) media.keptInMemory(id, moment);
+        return moment;
+      })().finally(() => this.#keepingMoments.delete(id));
+      this.#keepingMoments.set(id, writing);
+    }
+    return { kept: true, memory: (await writing) !== null };
+  }
+
+  /** The kept voices, the latest said first, for the web page's 语音收藏. */
+  webKeptVoices(): { voices: { id: string; role: "user" | "assistant"; text: string; at: number | null; keptAt: number; voice: VoicePlayback }[] } {
+    // Copies in R2 still to clear (a delete that failed) are tried again whenever the list is looked at.
+    if (this.media().toClear().length) this.ctx.waitUntil(this.keptVoices().clear().catch(() => {}));
+    return {
+      voices: this.media().keptVoices().map((voice) => ({
+        id: voice.message,
+        role: voice.role,
+        text: voice.text,
+        at: voice.at,
+        keptAt: voice.keptAt,
+        voice: { key: voice.keys[0], seconds: voice.seconds, ...(voice.keys.length > 1 ? { parts: voice.keys } : {}) }
+      }))
+    };
   }
 
   /** A voice it made, kept for the web page to play: its key, or null when it could not be kept. */
@@ -5712,6 +5830,9 @@ export class Resident extends Think<Env> {
     const row = this.residentRows().find((row) => row.id === id);
     if (!row) return { error: "没有这个住户", status: 404 };
     if (!row.gone) {
+      // Kept voices of it in an R2 bucket no longer bound would be left there, out of reach: not until it is bound.
+      const problem = await (await getAgentByName(this.env.RESIDENT, id)).residentForgetProblem();
+      if (problem) return { error: problem, status: 409 };
       // The next try is set before anything else, so a wipe cut off at any point (a deploy, an eviction) still ends.
       await this.schedule(RESIDENT_WIPE_RETRY_SECONDS, "residentWipeAgain", { id, wait: RESIDENT_WIPE_RETRY_SECONDS });
       this.sql`UPDATE res_residents SET gone = ${Date.now()} WHERE id = ${id}`;
@@ -5773,9 +5894,16 @@ export class Resident extends Think<Env> {
     await this.ctx.storage.put(FORGETTING, true);
   }
 
-  /** Everything it keeps goes (conversation, settings, stickers, alarms). Ends this resident's isolate. */
+  /** Why this resident cannot be deleted yet, if it cannot (kept-voices.ts forgetProblem). */
+  async residentForgetProblem(): Promise<string | null> {
+    return this.keptVoices().forgetProblem();
+  }
+
+  /** Everything it keeps goes (conversation, settings, stickers, alarms, kept voices in R2). Ends this resident's isolate. */
   async residentForget(): Promise<void> {
     if (this.residentId === DEFAULT_RESIDENT) throw new Error("the default resident is never deleted");
+    // Before the SQLite that lists them goes; if this fails, the wipe is tried again.
+    await this.keptVoices().forgetAll();
     await this.destroy();
   }
 
