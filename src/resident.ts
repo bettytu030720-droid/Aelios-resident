@@ -6149,10 +6149,12 @@ export class Resident extends Think<Env> {
     };
   }
 
-  async webAddMcp(name: string, url: string, key: string, origin: string): Promise<{ servers: McpServerView[] } | { error: string }> {
+  async webAddMcp(name: string, url: string, key: string, origin: string): Promise<{ servers: McpServerView[]; authUrl: string | null } | { error: string }> {
     await this.noteOrigin(origin);
     const result = await this.connectMcp(name, url, key, origin);
-    return "error" in result ? result : this.webMcp();
+    if ("error" in result) return result;
+    const view = this.webMcp();
+    return { ...view, authUrl: view.servers.find((server) => server.id === result.id)?.authUrl ?? null };
   }
 
   async webRetryMcp(id: string): Promise<{ servers: McpServerView[] } | { error: string }> {

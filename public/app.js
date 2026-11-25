@@ -3415,28 +3415,41 @@ function resident() {
     },
     mcpText(server) {
       if (server.state === 'ready') return '能用 · ' + server.tools + ' 个工具 · 每轮约 ' + server.tokens + ' token' + (server.hasKey ? ' · 带 key' : '');
-      if (server.state === 'authenticating') return '等你授权：点「去授权」登录，授权完回来就好了';
+      if (server.state === 'authenticating') return '等你登录授权';
       if (server.state === 'connecting' || server.state === 'connected' || server.state === 'discovering') return '连接中…';
       return '没连上' + (server.hasKey ? '（带 key，重连不用再填）' : '') + '：点「重连」再试，一直不行就断开重接';
     },
     // Inside Telegram a sign-in opens in the browser, which can come back here.
-    openAuth(server, event) {
-      if (!telegram || !server.authUrl) return;
-      event.preventDefault();
-      try { telegram.openLink(server.authUrl); } catch (error) { window.open(server.authUrl, '_blank', 'noopener'); }
+    openAuth(url, event) {
+      if (!url) return;
+      if (telegram) {
+        try {
+          telegram.openLink(url);
+          if (event) event.preventDefault();
+          return;
+        } catch (error) {}
+      }
+      if (!event) window.location.assign(url);
     },
-    async addMcp(preset) {
-      if (this.mcpBusy) return;
+    async addMcp() {
+      var draft = this.mcpDraft;
+      var url = draft.url.trim();
+      if (this.mcpBusy || !url) return;
+      var epoch = doorEpoch;
       this.mcpBusy = 'add';
       this.mcpError = '';
       try {
-        var draft = preset || this.mcpDraft;
-        this.mcp = await this.api('/web/mcp', { method: 'POST', body: { name: draft.name.trim(), url: draft.url.trim(), key: draft.key.trim() } });
-        if (!preset) this.mcpDraft = { name: '', url: '', key: '' };
-        var waiting = this.mcp.servers.some(function (server) { return server.authUrl; });
-        this.notify(waiting ? '还要登录授权：点「去授权」' : '接上了，下一句开始能用');
+        var result = await this.api('/web/mcp', { method: 'POST', body: { name: draft.name.trim(), url: url, key: draft.key.trim() } });
+        if (epoch !== doorEpoch) return;
+        this.mcp = result;
+        this.mcpDraft = { name: '', url: '', key: '' };
+        if (result.authUrl) {
+          if (this.view === 'config' && this.configSection === 'mcp') this.openAuth(result.authUrl);
+        } else {
+          this.notify('接上了，下一句开始能用');
+        }
       } catch (error) {
-        this.mcpError = error.message;
+        if (!error.moved && epoch === doorEpoch) this.mcpError = error.message;
       } finally {
         this.mcpBusy = '';
       }

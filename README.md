@@ -457,10 +457,10 @@ Custom emoji packs (`t.me/addemoji/…`) cannot be sent by bots and are not acce
 
 ### Other MCP servers
 
-Enter a server's address (https) under **Other tools** (「别的工具（MCP）」), and its tools work from the next message.
+Enter a server's HTTPS address under **Other tools** (「别的工具（MCP）」) and click **Connect** (「连接」). If the server needs you to sign in, the authorization page opens automatically. After signing in, follow the link back to the web door.
 
-- For a server that needs signing in, click **Authorize** (「去授权」). For one that needs a key, enter the key there; it is sent as `Authorization: Bearer` by default, or written as `x-api-key: your-key` it goes into that header instead.
-- On a publicly reachable HTTPS web door, click 「接 ElevenLabs」, then 「去授权」 to sign in to the hosted ElevenLabs MCP in your browser.
+- For a server that needs a key, enter the key there. It is sent as `Authorization: Bearer` by default. Use `x-api-key: your-key` to send it in that header.
+- OAuth servers that use a Client ID Metadata Document need a publicly reachable HTTPS web door.
 - You can also say "connect https://…" or "disconnect …" in the chat and it does it itself. Don't send an address that contains a key in the chat (the chat is recorded in Aelios); connect those only on the settings page.
 - It acts only in a turn that you started yourself: if that turn has already read a web page, searched the web, opened a thread's file or called another MCP server, it does not connect, so that a "connect …" on some web page cannot decide for you.
 - Tool descriptions go to the model on every turn, so they are shortened; at most 8 servers, at most 40 tools per turn.

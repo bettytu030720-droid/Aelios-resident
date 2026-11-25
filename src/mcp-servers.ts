@@ -319,7 +319,7 @@ function escapeHtml(text: string): string {
 export function callbackPage(result: { authSuccess: boolean; authError?: string }, name: string | null, page = "/"): Response {
   const title = result.authSuccess ? `${name ?? "MCP"} 接好了` : `${name ?? "MCP"} 没接上`;
   const line = result.authSuccess
-    ? "可以关掉这页回去聊天了，下一句开始就能用它的工具。"
+    ? "下一句开始就能用它的工具。"
     : `授权没成功：${escapeHtml((result.authError ?? "不知道为什么").slice(0, 300))}。回设置页断开再接一次试试。`;
   const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <body style="font:16px/1.6 system-ui,sans-serif;max-width:32em;margin:15vh auto;padding:0 16px;color:#222;background:#fafafa">

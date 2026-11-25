@@ -228,6 +228,47 @@ page.fillDrafts();
 page.configBack();
 assert.equal(page.view, 'chat');
 console.log('PASS the settings page opens on a list with a line of state per section; back goes one step at a time');
+{
+  const mcpSection = html.slice(html.indexOf('<!-- other MCP servers -->'), html.indexOf('<!-- stickers -->'));
+  assert.match(mcpSection, /@click="addMcp\(\)"/);
+  assert.doesNotMatch(mcpSection, /ElevenLabs/i);
+
+  const settings = vm.runInContext('testPage()', context);
+  settings.view = 'config';
+  settings.configSection = 'mcp';
+  const draft = { name: '', url: 'https://mcp.example/server', key: '' };
+  const unrelated = { id: 'other', authUrl: 'https://other.example/authorize' };
+  const authUrl = 'https://mcp.example/authorize';
+  const redirects = [];
+  context.window.location = { assign: (url) => redirects.push(url) };
+  settings.mcpDraft = { ...draft };
+  settings.api = async (path, options) => {
+    assert.equal(path, '/web/mcp');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(copy(options.body), draft);
+    return { servers: [unrelated, { id: 'mcp', authUrl }], authUrl };
+  };
+  await settings.addMcp();
+  assert.deepEqual(redirects, [authUrl]);
+  assert.equal(settings.mcpDraft.url, '');
+  assert.equal(settings.mcpBusy, '');
+
+  settings.mcpDraft = { ...draft };
+  settings.api = async () => ({ servers: [unrelated], authUrl: null });
+  await settings.addMcp();
+  assert.deepEqual(redirects, [authUrl]);
+
+  settings.mcpDraft = { ...draft };
+  let finish;
+  settings.api = () => new Promise((resolve) => { finish = resolve; });
+  const pending = settings.addMcp();
+  settings.configBack();
+  finish({ servers: [unrelated], authUrl });
+  await pending;
+  assert.deepEqual(redirects, [authUrl]);
+  delete context.window.location;
+}
+console.log('PASS the MCP address form opens only the requested server’s sign-in and stays put if the user leaves the section');
 // Cloud tasks: a card under the reply that sent it, escaped, with https links only; the settings shown once it is on.
 const task = { id: 't_0123456789', title: '<b>修</b>错字', status: 'done', sessionUrl: 'https://claude.ai/code/session_1', progress: '', summary: '好了"<img src=x onerror=unsafe()>',
   links: ['https://github.com/o/r/pull/7', 'javascript:unsafe()', 'http://example.com/a'], test: false };

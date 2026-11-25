@@ -886,6 +886,7 @@ if (phase === "mcp") {
     const response = await web("/web/mcp", KEY, { name: "demo", url: `${MOCK}/ext/mcp` });
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.authUrl, null);
     const demo = body.servers.find((s) => s.id === "demo");
     assert.equal(demo.state, "ready", JSON.stringify(demo));
     assert.equal(demo.tools, 2);
@@ -944,6 +945,10 @@ if (phase === "mcp") {
     const pending = body.servers?.find((s) => s.id === "oauth");
     assert.equal(pending?.state, "authenticating", JSON.stringify(body));
     assert.ok(pending.authUrl?.startsWith(`${MOCK}/oauth/authorize`), pending.authUrl);
+    assert.equal(body.authUrl, pending.authUrl);
+    const open = await (await web("/web/mcp", KEY, { name: "demo", url: `${MOCK}/ext/mcp` })).json();
+    assert.equal(open.authUrl, null);
+    assert.equal(open.servers.find((s) => s.id === "oauth").authUrl, pending.authUrl);
     // Asked again before signing in: the same server, still waiting, a link that still works.
     const again = await (await web("/web/mcp/retry", KEY, { id: "oauth" })).json();
     const still = again.servers?.find((s) => s.id === "oauth");
@@ -1637,7 +1642,8 @@ if (phase === "mcp-cimd") {
     assert.equal(request.status, 200, JSON.stringify(body));
     const pending = body.servers.find((server) => server.id === "cimd");
     assert.equal(pending?.state, "authenticating", JSON.stringify(body));
-    const authorization = new URL(pending.authUrl);
+    assert.equal(body.authUrl, pending.authUrl);
+    const authorization = new URL(body.authUrl);
     const client = new URL(authorization.searchParams.get("client_id"));
     const callback = new URL(authorization.searchParams.get("redirect_uri"));
     assert.equal(client.protocol, "https:");
