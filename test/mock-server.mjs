@@ -76,6 +76,7 @@ const authServer = {
   authorization_endpoint: `${ORIGIN}/oauth/authorize`,
   token_endpoint: `${ORIGIN}/oauth/token`,
   registration_endpoint: `${ORIGIN}/oauth/register`,
+  client_id_metadata_document_supported: true,
   response_types_supported: ["code"],
   grant_types_supported: ["authorization_code", "refresh_token"],
   code_challenge_methods_supported: ["S256"],
@@ -297,10 +298,19 @@ const server = http.createServer(async (req, res) => {
 
   // Voice providers, reached through VOICE_BASE_URL=http://127.0.0.1:9999/voice: ElevenLabs Scribe and text to
   // speech, Cartesia, and OpenRouter's speech endpoint. A text with 炸 in it fails, so the reply goes out as text.
-  const voice = url.pathname.match(/^\/voice\/(v1\/speech-to-text|v1\/text-to-speech\/[^/]+|tts\/bytes|v1\/audio\/speech)$/);
+  const voice = url.pathname.match(/^\/voice\/(v1\/speech-to-text|v1\/text-to-speech\/[^/]+|v1\/text-to-voice(?:\/design)?|tts\/bytes|v1\/audio\/speech)$/);
   if (voice) {
     const headers = Object.fromEntries(["authorization", "xi-api-key", "cartesia-version", "accept"].filter((h) => req.headers[h]).map((h) => [h, req.headers[h]]));
     log.push({ kind: "voice", endpoint: voice[1], query: url.search, headers, body: json });
+    if (voice[1] === "v1/text-to-voice/design") {
+      if (faults.voiceDesignDelay) await new Promise((resolve) => setTimeout(resolve, faults.voiceDesignDelay));
+      if (headers["xi-api-key"] !== "test-voice-key") return reply({ detail: "private upstream detail" }, 401);
+      return reply({ previews: [{ generated_voice_id: "preview-1" }, { generated_voice_id: "preview-2" }] });
+    }
+    if (voice[1] === "v1/text-to-voice") {
+      if (faults.voiceSaveConflict) return reply({ detail: "A generation for this preview is already in progress." }, 409);
+      return reply({ voice_id: "designed-voice" });
+    }
     if (voice[1] === "v1/speech-to-text") {
       if (json?.file?.head?.startsWith("OggS")) return reply({ text: " 今天好累呀 " });
       // A voice message recorded on the web page: a WAV.
@@ -360,40 +370,52 @@ const server = http.createServer(async (req, res) => {
     return reply({ workflow_run_id: run, run_url: `${ORIGIN}/repos/${ghDispatch[1]}/actions/runs/${run}`, html_url: `https://github.com/${ghDispatch[1]}/actions/runs/${run}` });
   }
 
-  const mcp = url.pathname.match(/^\/(ext|ext2|keyed|oauth)\/mcp$/);
+  const mcp = url.pathname.match(/^\/(ext|ext2|keyed|oauth|cimd)\/mcp$/);
   if (mcp) {
     const who = mcp[1];
     log.push({ kind: `ext.${who}`, httpMethod: req.method, method: json?.method ?? null, auth: req.headers.authorization ?? null,
       apiKey: req.headers["x-api-key"] ?? null, tool: json?.params?.name ?? null, args: json?.params?.arguments ?? null });
     if (who === "keyed" && req.headers["x-api-key"] !== "k1") return reply({ error: "a key is needed" }, 403);
-    if (who === "oauth" && req.headers.authorization !== "Bearer tok-1") {
-      res.writeHead(401, { "content-type": "application/json", "www-authenticate": `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/oauth/mcp"` });
+    if ((who === "oauth" || who === "cimd") && req.headers.authorization !== "Bearer tok-1") {
+      res.writeHead(401, { "content-type": "application/json", "www-authenticate": `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/${who}/mcp"` });
       return res.end(JSON.stringify({ error: "invalid_token" }));
     }
     return mcpServer(who, req, res, json);
   }
   if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
     log.push({ kind: "oauth.resource", path: url.pathname });
-    return reply({ resource: `${ORIGIN}/oauth/mcp`, authorization_servers: [`${ORIGIN}/oauth`] });
+    const who = url.pathname.endsWith("/cimd/mcp") ? "cimd" : "oauth";
+    return reply({ resource: `${ORIGIN}/${who}/mcp`, authorization_servers: [`${ORIGIN}/${who}`] });
   }
   if (url.pathname.includes("/.well-known/oauth-authorization-server") || url.pathname.includes("/.well-known/openid-configuration")) {
     log.push({ kind: "oauth.metadata", path: url.pathname });
+    if (url.pathname.includes("/cimd")) {
+      const { registration_endpoint, ...metadata } = authServer;
+      return reply({
+        ...metadata,
+        issuer: `${ORIGIN}/cimd`,
+        authorization_endpoint: `${ORIGIN}/cimd/authorize`,
+        token_endpoint: `${ORIGIN}/cimd/token`,
+        client_id_metadata_document_supported: true
+      });
+    }
     return reply(authServer);
   }
   if (url.pathname === "/oauth/register") {
     log.push({ kind: "oauth.register", body: json });
     return reply({ ...json, client_id: "cid-1", token_endpoint_auth_method: "none" }, 201);
   }
-  if (url.pathname === "/oauth/authorize") {
+  if (url.pathname === "/oauth/authorize" || url.pathname === "/cimd/authorize") {
     // Stands in for her signing in: straight back to the resident with a code.
     log.push({ kind: "oauth.authorize", query: Object.fromEntries(url.searchParams) });
     const back = new URL(url.searchParams.get("redirect_uri"));
     back.searchParams.set("code", "code-1");
     back.searchParams.set("state", url.searchParams.get("state") ?? "");
+    if (url.pathname === "/cimd/authorize") back.searchParams.set("iss", `${ORIGIN}/cimd`);
     res.writeHead(302, { location: back.href });
     return res.end();
   }
-  if (url.pathname === "/oauth/token") {
+  if (url.pathname === "/oauth/token" || url.pathname === "/cimd/token") {
     const form = Object.fromEntries(new URLSearchParams(body));
     log.push({ kind: "oauth.token", form });
     if (form.grant_type === "authorization_code" && form.code !== "code-1") return reply({ error: "invalid_grant" }, 400);

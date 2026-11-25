@@ -9,6 +9,8 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 
 /** Where a server's OAuth sign-in comes back to; the Worker hands it to the resident. */
 export const MCP_CALLBACK_PATH = "/mcp/callback";
+export const MCP_CLIENT_METADATA_PATH = "/mcp/client-metadata.json";
+export const ELEVENLABS_MCP_URL = "https://api.elevenlabs.io/v1/mcp";
 export const MAX_MCP_SERVERS = 8;
 /** Tools beyond this many, across all servers, are left out of the turn. */
 export const MAX_MCP_TOOLS = 40;
@@ -19,6 +21,23 @@ const DESCRIPTION_MAX_CHARS = 300;
 const PARAM_DESCRIPTION_MAX_CHARS = 120;
 export const MCP_RESULT_MAX_CHARS = 6000;
 const TOOL_NAME_MAX = 64;
+
+export function mcpClientMetadata(base: string) {
+  return {
+    client_id: `${base}${MCP_CLIENT_METADATA_PATH}`,
+    client_name: "Aelios Resident",
+    client_uri: `${new URL(base).origin}/`,
+    redirect_uris: [`${base}${MCP_CALLBACK_PATH}`],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none"
+  };
+}
+
+export function isElevenLabsMcp(url: string): boolean {
+  const address = new URL(url);
+  return `${address.origin}${address.pathname.replace(/\/$/, "")}` === ELEVENLABS_MCP_URL;
+}
 
 /** A tool as a connected server lists it. */
 export type CatalogTool = { serverId: string; name: string; description?: string; inputSchema?: unknown };
@@ -297,13 +316,13 @@ function escapeHtml(text: string): string {
 }
 
 /** The page the OAuth sign-in lands on. The provider's error text is theirs, so it is escaped. */
-export function callbackPage(result: { authSuccess: boolean; authError?: string }, name: string | null): Response {
+export function callbackPage(result: { authSuccess: boolean; authError?: string }, name: string | null, page = "/"): Response {
   const title = result.authSuccess ? `${name ?? "MCP"} 接好了` : `${name ?? "MCP"} 没接上`;
   const line = result.authSuccess
     ? "可以关掉这页回去聊天了，下一句开始就能用它的工具。"
     : `授权没成功：${escapeHtml((result.authError ?? "不知道为什么").slice(0, 300))}。回设置页断开再接一次试试。`;
   const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <body style="font:16px/1.6 system-ui,sans-serif;max-width:32em;margin:15vh auto;padding:0 16px;color:#222;background:#fafafa">
-<h1 style="font-size:20px">${escapeHtml(title)}</h1><p>${line}</p><p><a href="/">回住户的网页门</a></p></body>`;
+<h1 style="font-size:20px">${escapeHtml(title)}</h1><p>${line}</p><p><a href="${escapeHtml(page)}">回住户的网页门</a></p></body>`;
   return new Response(html, { status: result.authSuccess ? 200 : 400, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }

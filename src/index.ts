@@ -36,7 +36,7 @@ import { boxPublic, boxWeb } from "./box-routes";
 import { stopRequestId } from "./chat-stop";
 import { machineReply, readMachineJson } from "./machine";
 import { callerAllowed, issueSession, miniAppCaller, triesMiniApp } from "./mini-app";
-import { MCP_CALLBACK_PATH } from "./mcp-servers";
+import { MCP_CALLBACK_PATH, MCP_CLIENT_METADATA_PATH, mcpClientMetadata } from "./mcp-servers";
 import { MAX_ZIP_BYTES } from "./stickers";
 import { REPORT_MAX_BYTES, THREAD_ID } from "./cloud-tasks";
 import { THREAD_FILE_MAX } from "./task-worker";
@@ -342,6 +342,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       : {};
   switch (`${request.method} ${url.pathname}`) {
     case "GET /web/check":
+      await agent.noteOrigin(at.base);
       return Response.json({ ok: true, aelios: await agent.hasMemory(), via: who.via, ...(await agent.webIdentity()) });
     case "GET /web/messages":
       // ?since=<version>: { same } while nothing has changed, without reading the conversation.
@@ -477,6 +478,10 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
     }
     case "GET /web/config":
       return Response.json(await agent.webConfig());
+    case "POST /web/voice/design": {
+      const design = await agent.webStartVoiceDesign(String(body.id ?? ""));
+      return Response.json(design, { status: "error" in design ? 400 : 200, headers: { "cache-control": "no-store" } });
+    }
     case "POST /web/config": {
       // A bot token saved here is connected to this address.
       await agent.noteOrigin(at.base);
@@ -650,6 +655,9 @@ export default {
       if (url.pathname === WECOM_PATH) return await handleWecom(request, env, url, at);
       if (url.pathname === "/tg/setup") return await handleSetup(request, env, url, at);
       if (url.pathname.startsWith("/web/")) return await handleWeb(request, env, url, at);
+      if (url.pathname === MCP_CLIENT_METADATA_PATH && request.method === "GET" && url.protocol === "https:") {
+        return Response.json(mcpClientMetadata(at.base));
+      }
       if (url.pathname === "/manifest.webmanifest" && request.method === "GET") return await manifest(env, at);
       const avatar = url.pathname.match(/^\/avatar\/([0-9a-f]{32})$/);
       if (avatar && request.method === "GET") {
@@ -719,7 +727,7 @@ export default {
       // address goes in, never the caller's headers: a WebSocket upgrade here would otherwise open a connection
       // to the resident, which streams the conversation to every connection it has.
       if (url.pathname === MCP_CALLBACK_PATH && request.method === "GET" && url.searchParams.has("state")) {
-        return await (await residentOf(env, at)).fetch(new Request(url.href));
+        return await (await residentOf(env, at)).fetch(new Request(request.url));
       }
       return new Response("not found", { status: 404 });
     } catch (error) {

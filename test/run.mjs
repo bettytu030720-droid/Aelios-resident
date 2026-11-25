@@ -1471,6 +1471,225 @@ if (phase === "voice") {
   await set({ VOICE_PROVIDER: "", VOICE_API_KEY: "", VOICE_MODEL: "", VOICE_ID: "", VOICE_REPLY: "", VOICE_BASE_URL: "" });
 }
 
+if (phase === "voice-design") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  const read = async (path = "/web/messages") => (await web(path, KEY)).json();
+  const start = async (id = "") => (await web("/web/voice/design", KEY, { id })).json();
+  const set = async (key, text) => assert.equal((await web("/web/config", KEY, { key, text })).status, 200);
+  const currentVoice = async () => (await read("/web/config")).fields.find((field) => field.key === "VOICE_ID").value;
+  const designCalls = async () => (await log()).filter((call) => call.kind === "voice" && call.endpoint.startsWith("v1/text-to-voice"));
+  const until = async (condition) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const data = await read();
+      if (condition(data)) return data;
+      await sleep(200);
+    }
+    assert.fail("the voice design did not reach the expected stage");
+  };
+  await step("voice design requires the web key and ElevenLabs settings", async () => {
+    assert.equal((await web("/web/voice/design", "bad", {})).status, 401);
+    assert.match((await start()).error, /先在语音设置里选 ElevenLabs/);
+    await set("VOICE_PROVIDER", "elevenlabs");
+    assert.match((await start()).error, /API Key/);
+    assert.deepEqual(await designCalls(), []);
+    assert.equal((await read()).voiceDesign, null);
+  });
+  await step("a button click makes one normal cached turn and saves one generated voice", async () => {
+    await set("VOICE_BASE_URL", `${MOCK}/voice`);
+    await set("VOICE_API_KEY", "test-voice-key");
+    await set("VOICE_ID", "old-voice");
+    await set("VOICE_REPLY", "always");
+    assert.equal((await web("/web/say", KEY, { text: "给捏音色记个设定：烟嗓" })).status, 200);
+    const before = await read();
+    const [first, second] = await Promise.all([start(), start()]);
+    assert.ok(first.voiceDesign?.id, JSON.stringify(first));
+    assert.equal(first.voiceDesign.id, second.voiceDesign?.id);
+    const done = await until((data) => data.voiceDesign?.stage === "done" || data.voiceDesign?.stage === "failed");
+    assert.equal(done.voiceDesign.stage, "done", JSON.stringify(done.voiceDesign));
+    const requests = done.data.filter((line) => line.role === "user" && line.text.includes("请给自己捏个声音"));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].id, first.voiceDesign.id);
+    assert.ok(done.data.length > before.data.length);
+    const description = done.data.find((line) => line.role === "assistant" && line.text.startsWith("A smoky"));
+    assert.ok(description, "the new turn reuses the earlier context, cache marker and request prefix");
+    assert.equal(description.voice, undefined, "the description is not synthesized with the old voice");
+    const calls = await designCalls();
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map((call) => call.endpoint), ["v1/text-to-voice/design", "v1/text-to-voice"]);
+    assert.equal(calls[0].headers["xi-api-key"], "test-voice-key");
+    assert.equal(calls[0].body.voice_description, description.text);
+    assert.ok(!calls[0].body.voice_description.includes("[sticker:"));
+    assert.ok(!calls[0].body.stream_previews);
+    assert.equal(calls[1].body.generated_voice_id, "preview-1");
+    assert.equal(await currentVoice(), "designed-voice");
+    assert.equal((await start()).voiceDesign.id, first.voiceDesign.id, "a stale click cannot generate a second voice");
+    const same = await read(`/web/messages?since=${encodeURIComponent(done.rev)}`);
+    assert.equal(same.same, true);
+    assert.equal(same.voiceDesign.stage, "done");
+    assert.ok(!JSON.stringify(done).includes("test-voice-key"));
+  });
+  await step("provider failure and a settings change preserve the chosen voice", async () => {
+    await set("VOICE_ID", "keep-manual");
+    await set("VOICE_API_KEY", "rejected-key");
+    await start((await read()).voiceDesign.id);
+    let failed = await until((data) => data.voiceDesign?.stage === "failed");
+    assert.match(failed.voiceDesign.error, /声音生成权限/);
+    assert.ok(!JSON.stringify(failed).includes("private upstream detail"));
+    assert.equal(await currentVoice(), "keep-manual");
+    await set("VOICE_API_KEY", "test-voice-key");
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ voiceDesignDelay: 2000 }) });
+    await start(failed.voiceDesign.id);
+    await until((data) => data.voiceDesign?.stage === "preview");
+    await set("VOICE_ID", "new-manual");
+    failed = await until((data) => data.voiceDesign?.stage === "failed");
+    assert.match(failed.voiceDesign.error, /设置在生成期间改过/);
+    assert.equal(await currentVoice(), "new-manual");
+    assert.equal((await designCalls()).filter((call) => call.endpoint === "v1/text-to-voice").length, 1);
+  });
+  await step("voice design stays with the resident and only runs from the button", async () => {
+    assert.equal((await web("/web/residents", KEY, { id: "other", name: "另一个" })).status, 200);
+    assert.equal((await read("/r/other/web/messages")).voiceDesign, null);
+    const calls = (await designCalls()).length;
+    assert.equal((await web("/web/say", KEY, { text: "请给自己捏个声音。" })).status, 200);
+    assert.equal((await designCalls()).length, calls);
+  });
+  await step("a 409 while saving preserves the active voice and reports that no voice was saved", async () => {
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ voiceDesignDelay: 0, voiceSaveConflict: true }) });
+    const previous = (await read()).voiceDesign.id;
+    const calls = (await designCalls()).length;
+    await start(previous);
+    const failed = await until((data) => data.voiceDesign?.id !== previous && data.voiceDesign?.stage === "failed");
+    assert.match(failed.voiceDesign.error, /仍在生成，这次音色还未保存/);
+    assert.equal(await currentVoice(), "new-manual");
+    assert.deepEqual((await designCalls()).slice(calls).map((call) => call.endpoint), ["v1/text-to-voice/design", "v1/text-to-voice"]);
+  });
+  await step("Aelios takes the voice request as auxiliary on the same chat model", async () => {
+    await fetch(`${MOCK}/__faults`, { method: "POST", body: JSON.stringify({ voiceSaveConflict: false }) });
+    assert.equal((await web("/web/model", KEY, { text: "anthropic/claude-opus-5-5" })).status, 200);
+    const previous = (await read()).voiceDesign.id;
+    await start(previous);
+    const result = await until((data) => data.voiceDesign?.id !== previous && ["done", "failed"].includes(data.voiceDesign?.stage));
+    assert.equal(result.voiceDesign.stage, "done", JSON.stringify(result.voiceDesign));
+    const turn = (await log()).find((call) => call.kind === "aelios.messages" && JSON.stringify(call.body.messages.at(-1)).includes("请给自己捏个声音"));
+    assert.equal(turn?.purpose, "auxiliary");
+    assert.equal(turn.body.model, "anthropic/claude-opus-5-5");
+  });
+}
+
+if (phase === "voice-design-recovery-1" || phase === "voice-design-recovery-2") {
+  const key = "test-web-key";
+  const prefix = "A steady low voice with clear Mandarin diction.";
+  const until = async (path, matches) => {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      const data = await (await web(`${path}/web/messages`, key)).json();
+      if (matches(data)) return data;
+      await sleep(200);
+    }
+    assert.fail(`voice design recovery did not advance at ${path || "/"}`);
+  };
+  if (phase.endsWith("-1")) {
+    await fetch(`${MOCK}/__reset`);
+    await step("two residents stop mid-description with saved voice requests", async () => {
+      assert.equal((await web("/web/residents", key, { id: "tools", name: "另一个" })).status, 200);
+      await Promise.all(["", "/r/tools"].map(async (path) => {
+        const persona = path ? "捏音色续写测试。捏音色续写时调用工具。" : "捏音色续写测试。";
+        assert.equal((await web(`${path}/web/persona`, key, { text: persona })).status, 200);
+        for (const [name, text] of Object.entries({
+          VOICE_PROVIDER: "elevenlabs", VOICE_API_KEY: "test-voice-key", VOICE_ID: "old-voice",
+          VOICE_BASE_URL: `${MOCK}/voice`, VOICE_REPLY: "always"
+        })) {
+          assert.equal((await web(`${path}/web/config`, key, { key: name, text })).status, 200);
+        }
+        const response = await web(`${path}/web/voice/design`, key, { id: "" });
+        assert.equal(response.status, 200);
+        await until(path, (data) => data.voiceDesign?.stage === "writing" && data.data.some((line) => line.pending && line.text === prefix));
+      }));
+      assert.ok(!(await log()).some((call) => call.kind === "voice"));
+    });
+  } else {
+    await step("restarted descriptions preserve tool and speech limits, and save only a complete voice", async () => {
+      const terminal = (data) => ["done", "failed"].includes(data.voiceDesign?.stage);
+      const [completed, blocked] = await Promise.all([until("", terminal), until("/r/tools", terminal)]);
+      assert.equal(completed.voiceDesign.stage, "done", JSON.stringify(completed.voiceDesign));
+      assert.equal(blocked.voiceDesign.stage, "failed", JSON.stringify(blocked.voiceDesign));
+      assert.match(blocked.voiceDesign.error, /没写出可用的描述/);
+      const reply = completed.data.find((line) => line.role === "assistant" && line.text.startsWith(prefix));
+      assert.equal(reply?.text, `${prefix} Warm, close-mic delivery with a measured pace.`);
+      assert.equal(reply.voice, undefined);
+      const calls = await log();
+      assert.ok(!calls.some((call) => call.kind === "aelios.mcp" && call.body.params?.name === "remember"));
+      const voice = calls.filter((call) => call.kind === "voice");
+      assert.deepEqual(voice.map((call) => call.endpoint), ["v1/text-to-voice/design", "v1/text-to-voice"]);
+      assert.equal(voice[0].body.voice_description, reply.text);
+    });
+  }
+}
+
+if (phase === "mcp-cimd") {
+  await fetch(`${MOCK}/__reset`);
+  const KEY = "test-web-key";
+  await step("an OAuth server without dynamic registration signs into a named resident", async () => {
+    const created = await web("/web/residents", KEY, { id: "other", name: "另一个" });
+    assert.equal(created.status, 200, await created.clone().text());
+    const request = await web("/r/other/web/mcp", KEY, { name: "cimd", url: `${MOCK}/cimd/mcp` });
+    const body = await request.json();
+    assert.equal(request.status, 200, JSON.stringify(body));
+    const pending = body.servers.find((server) => server.id === "cimd");
+    assert.equal(pending?.state, "authenticating", JSON.stringify(body));
+    const authorization = new URL(pending.authUrl);
+    const client = new URL(authorization.searchParams.get("client_id"));
+    const callback = new URL(authorization.searchParams.get("redirect_uri"));
+    assert.equal(client.protocol, "https:");
+    assert.equal(client.pathname, "/r/other/mcp/client-metadata.json");
+    assert.equal(callback.pathname, "/r/other/mcp/callback");
+    assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
+    const doc = await (await fetch(`${WORKER}${client.pathname}`)).json();
+    assert.equal(doc.client_id, client.href);
+    assert.deepEqual(doc.redirect_uris, [callback.href]);
+    assert.equal(doc.token_endpoint_auth_method, "none");
+    const authorized = await fetch(authorization, { redirect: "manual" });
+    assert.equal(authorized.status, 302);
+    const back = new URL(authorized.headers.get("location"));
+    const result = await fetch(`${WORKER}${back.pathname}${back.search}`);
+    const html = await result.text();
+    assert.equal(result.status, 200, html);
+    assert.match(html, /href="\/\?r=other"/);
+    let connected;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const servers = (await (await web("/r/other/web/mcp", KEY)).json()).servers;
+      connected = servers.find((server) => server.id === "cimd");
+      if (connected?.state === "ready") break;
+      await sleep(250);
+    }
+    assert.equal(connected?.tools, 2, JSON.stringify(connected));
+    assert.deepEqual((await (await web("/web/mcp", KEY)).json()).servers, []);
+    const calls = await log();
+    assert.ok(!calls.some((call) => call.kind === "oauth.register"));
+    const token = calls.find((call) => call.kind === "oauth.token");
+    assert.equal(token?.form.client_id, client.href);
+    assert.ok(token?.form.code_verifier);
+  });
+  await step("a server that also supports dynamic registration keeps its registered client on HTTPS", async () => {
+    const response = await web("/r/other/web/mcp", KEY, { name: "oauth", url: `${MOCK}/oauth/mcp` });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    const pending = body.servers.find((server) => server.id === "oauth");
+    assert.equal(pending?.state, "authenticating", JSON.stringify(body));
+    const auth = new URL(pending.authUrl);
+    assert.equal(auth.searchParams.get("client_id"), "cid-1");
+    const registration = (await log()).find((call) => call.kind === "oauth.register");
+    const redirect = auth.searchParams.get("redirect_uri");
+    assert.match(redirect, /^https:\/\/.+\/r\/other\/mcp\/callback$/);
+    assert.deepEqual(registration?.body.redirect_uris, [redirect]);
+  });
+  await step("the hosted ElevenLabs MCP asks for browser authorization instead of a saved key", async () => {
+    const response = await web("/web/mcp", KEY, { name: "elevenlabs", url: "https://api.elevenlabs.io/v1/mcp", key: "test-voice-key" });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /浏览器登录/);
+  });
+}
+
 if (phase === "tasks" || phase === "tasks-quiet" || phase === "tasks-roles") {
   await fetch(`${MOCK}/__reset`);
   const KEY = "test-web-key";

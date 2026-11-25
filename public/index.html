@@ -428,6 +428,7 @@ document.addEventListener('alpine:init', function () {
           </template>
         </div>
       </template>
+      <div class="divider" x-show="voiceDesignActive()" role="status" x-text="voiceDesignStatus()"></div>
     </div>
     <button class="jump" type="button" x-show="unseen && !nearBottom" @click="scrollSoon(true)" x-text="unseen + ' 条新消息'"></button>
   </main>
@@ -1034,6 +1035,16 @@ document.addEventListener('alpine:init', function () {
       <div class="card section">
         <p class="hint lead" x-show="groupHint(groupOf(configSection))" x-text="groupHint(groupOf(configSection))"></p>
         <p class="status-line" x-show="configSection === 'voice'" :class="sectionNeeds('voice') && 'needs'" x-text="voiceStatus()"></p>
+        <template x-if="configSection === 'voice'">
+          <div class="set">
+            <div class="inline">
+              <button class="btn small" type="button" :disabled="voiceDesignBusy || voiceDesignActive() || Boolean(configBusy)" @click="startVoiceDesign()">让住户给自己捏声音</button>
+            </div>
+            <p class="hint">选 ElevenLabs 并存好有声音生成权限的 API Key。住户会在聊天里写音色描述，生成会使用 ElevenLabs 额度。</p>
+            <p class="hint" role="status" x-show="voiceDesignActive()" x-text="voiceDesignStatus()"></p>
+            <p class="error" role="alert" x-show="voiceDesignError" x-text="voiceDesignError"></p>
+          </div>
+        </template>
 
         <template x-if="configSection === 'push'">
           <div class="section">
@@ -1381,6 +1392,9 @@ document.addEventListener('alpine:init', function () {
     <template x-if="configSection === 'mcp'">
       <div class="card section">
         <p class="hint">填一个 MCP 服务的地址，它的工具就加进来。要登录的点「去授权」。接得越多，每轮越费。</p>
+        <div class="inline">
+          <button class="btn small" type="button" :disabled="Boolean(mcpBusy)" @click="addMcp({ name: 'ElevenLabs', url: 'https://api.elevenlabs.io/v1/mcp', key: '' })">接 ElevenLabs</button>
+        </div>
         <template x-for="server in mcp.servers" :key="server.id">
           <div class="mini-row">
             <div class="top-line"><span class="t" x-text="server.name"></span></div>
@@ -1388,7 +1402,7 @@ document.addEventListener('alpine:init', function () {
             <span class="hint" style="font-size: 12px; overflow-wrap: anywhere" x-text="server.url"></span>
             <p class="error" x-show="server.error && server.state !== 'ready'" x-text="server.error"></p>
             <div class="inline">
-              <a class="icon-btn sm primary" x-show="server.authUrl" :href="server.authUrl || '#'" target="_blank" rel="noopener noreferrer" @click="openAuth(server, $event)" title="去授权" aria-label="去授权"><i class="i i-key" aria-hidden="true"></i></a>
+              <a class="btn small primary" x-show="server.authUrl" :href="server.authUrl || '#'" target="_blank" rel="noopener noreferrer" @click="openAuth(server, $event)">去授权</a>
               <button class="icon-btn sm" type="button" x-show="server.state !== 'ready'" :disabled="Boolean(mcpBusy)" @click="retryMcp(server)" :title="mcpBusy === server.id ? '连接中…' : (server.state === 'not-connected' || server.state === 'failed' ? '重连' : '刷新')" :aria-label="mcpBusy === server.id ? '连接中…' : (server.state === 'not-connected' || server.state === 'failed' ? '重连' : '刷新')" :aria-busy="String(mcpBusy === server.id)"><i class="i i-refresh" aria-hidden="true"></i></button>
               <span class="spacer"></span>
               <button class="icon-btn sm" type="button" :disabled="Boolean(mcpBusy)" @click="removeMcp(server)" title="断开" aria-label="断开"><i class="i i-unlink" aria-hidden="true"></i></button>

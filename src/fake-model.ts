@@ -2,6 +2,7 @@
 // It answers from the last user message so the tests can drive every path.
 
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { VOICE_DESIGN_PROMPT } from "./voice";
 
 const usage = (input: number, output: number) => ({
   inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
@@ -18,6 +19,8 @@ let stalledOnce = false;
 let voiceStalledOnce = false;
 const VOICE_RECOVERY_PREFIX = "这段是恢复前已经写下的第一句话。";
 const VOICE_RECOVERY_SUFFIX = "这段是恢复之后接着写的末尾，现在答完了。";
+const DESIGN_RECOVERY_PREFIX = "A steady low voice with clear Mandarin diction.";
+const DESIGN_RECOVERY_SUFFIX = " Warm, close-mic delivery with a measured pace.";
 // How many times 重来测试 has been answered.
 let redos = 0;
 
@@ -80,6 +83,18 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   const user = lastOf(prompt, "user");
   const last = prompt[prompt.length - 1];
   const said = user.replace(/^\[[^\]]+\]\s*/, "");
+  if (lastOf(prompt, "assistant") === DESIGN_RECOVERY_PREFIX) {
+    return system.includes("捏音色续写时调用工具")
+      ? { text: DESIGN_RECOVERY_SUFFIX, tool: "memory_remember", input: { content: "捏音色续写时不应保存这条记忆" } }
+      : { text: DESIGN_RECOVERY_SUFFIX };
+  }
+  if (said.startsWith(VOICE_DESIGN_PROMPT)) {
+    const smoky = prompt.some((message) => textOf(message.content).includes("给捏音色记个设定：烟嗓"));
+    const cached = repeatsPrevious(options) && cacheMark(options);
+    return { text: smoky && cached
+      ? "A smoky, low baritone with a clear Mandarin accent. Measured pace, a dry warmth, and relaxed, close-mic delivery. [sticker: test/wave]"
+      : "A warm midrange voice with a clear Mandarin accent. Even pacing, rounded vowels, and a lively conversational rhythm." };
+  }
 
   // A turn in a group chat (group.ts): who it is there, and what it was handed, after the first line.
   const group = said.match(/^\[group chat "[^"]*" with them.*?, where you are (.+?)\. What was said.*? This is round (\d+) of/);
@@ -470,17 +485,19 @@ export function fakeModel(): LanguageModelV4 {
         throw Object.assign(new Error("the model fell over after the file"), { statusCode: 400 });
       }
       const asked = lastOf(options.prompt, "user");
+      const designStall = asked.includes(VOICE_DESIGN_PROMPT) && lastOf(options.prompt, "assistant") !== DESIGN_RECOVERY_PREFIX
+        && options.prompt.some((message) => message.role === "system" && textOf(message.content).includes("捏音色续写测试"));
       const stallAfterText = asked.includes("语音续写测试") && !voiceStalledOnce;
-      if (stallAfterText || (asked.includes("卡住测试") && !stalledOnce)) {
+      if (designStall || stallAfterText || (asked.includes("卡住测试") && !stalledOnce)) {
         if (stallAfterText) voiceStalledOnce = true;
-        else stalledOnce = true;
+        else if (!designStall) stalledOnce = true;
         const signal = options.abortSignal;
         const stream = new ReadableStream<LanguageModelV4StreamPart>({
           start(controller) {
             controller.enqueue({ type: "stream-start", warnings: [] });
-            if (stallAfterText) {
+            if (designStall || stallAfterText) {
               controller.enqueue({ type: "text-start", id: "t" });
-              controller.enqueue({ type: "text-delta", id: "t", delta: VOICE_RECOVERY_PREFIX });
+              controller.enqueue({ type: "text-delta", id: "t", delta: designStall ? DESIGN_RECOVERY_PREFIX : VOICE_RECOVERY_PREFIX });
               controller.enqueue({ type: "text-end", id: "t" });
             }
             signal?.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")));

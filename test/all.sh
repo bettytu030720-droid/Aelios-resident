@@ -43,7 +43,7 @@ for file in test/*.mjs; do
   want "$name" && check "$name" node "$file"
 done
 
-for stage in main stickers voice tasks tasks-roles sites web residents group wecom; do fresh "$stage" "node test/run.mjs $stage"; done
+for stage in main stickers voice voice-design tasks tasks-roles sites web residents group wecom; do fresh "$stage" "node test/run.mjs $stage"; done
 fresh checkin "node test/run.mjs checkin" --var "CHECKIN_SCHEDULE:every 1 minute"
 fresh idle "node test/run.mjs idle" --var LETTER_IDLE_MINUTES:0.05
 fresh migrate "node test/run.mjs migrate" --var MODEL:fake
@@ -55,6 +55,8 @@ fresh stall "node test/run.mjs stall" --var CHAT_STALL_SECONDS:2
 fresh telegram "node test/run.mjs telegram" --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET:
 fresh menu "node test/run.mjs menu" --var TG_BOT_TOKEN: --var TG_WEBHOOK_SECRET: --local-upstream resident.test --upstream-protocol https
 pair mcp "node test/run.mjs mcp" "node test/run.mjs mcp-2"
+fresh mcp-cimd "node test/run.mjs mcp-cimd" --local-upstream resident.test --upstream-protocol https
+pair voice-design-recovery "node test/run.mjs voice-design-recovery-1" "node test/run.mjs voice-design-recovery-2"
 for test in history-worker box-worker chat-stop-worker chat-permissions-worker; do fresh "$test" "node test/$test.mjs"; done
 fresh native-push-worker "node test/native-push-worker.mjs" --var FCM_SERVICE_ACCOUNT:not-json
 fresh mini-app-worker "node test/mini-app.mjs worker"

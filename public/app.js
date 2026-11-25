@@ -306,6 +306,7 @@ function resident() {
   var playback = null;
   // The version of the conversation the page has (GET /web/messages?since=).
   var seenRev = '';
+  var doorEpoch = 0;
   var picLoading = {};
   // The Android app's notifications (Capacitor): one sign-up per installation, whichever resident is open.
   var nativeListening = false;
@@ -402,6 +403,9 @@ function resident() {
     configDraft: {},
     configError: {},
     configBusy: '',
+    voiceDesign: null,
+    voiceDesignBusy: false,
+    voiceDesignError: '',
     helpOpen: {},
     stepOpen: {},
     letter: { canRetry: false, write: null, delivery: { pending: 0, failed: 0, blocked: 0, latest: null } },
@@ -539,6 +543,15 @@ function resident() {
       var opts = options || {};
       // An answer for the resident the page was on before a switch is not shown on the new one.
       var on = this.resident;
+      var epoch = doorEpoch;
+      var stillHere = () => {
+        if (epoch !== doorEpoch || on !== this.resident) {
+          var error = new Error('网页门已切换');
+          error.moved = true;
+          throw error;
+        }
+      };
+      path = this.residentPath(path);
       if (this.miniApp && (!this.miniToken || this.miniExpires - Date.now() < 3600000)) {
         try { await this.miniSession(Boolean(this.miniToken)); } catch (error) {
           try { await this.miniSession(false); } catch (failed) { this.authed = false; this.loginError = failed.message; throw failed; }
@@ -548,8 +561,8 @@ function resident() {
       if (opts.body) headers['content-type'] = 'application/json';
       if (opts.raw) headers['content-type'] = opts.type || 'application/octet-stream';
       var payload = opts.raw || (opts.body ? JSON.stringify(opts.body) : undefined);
-      path = this.residentPath(path);
       var response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: payload });
+      stillHere();
       if (response.status === 401 && this.miniApp) {
         try {
           await this.miniSession(false);
@@ -557,25 +570,32 @@ function resident() {
           response = await fetch(path, { method: opts.method || 'GET', headers: headers, body: payload });
         } catch (error) { this.authed = false; this.loginError = error.message; throw error; }
       }
-      if (on !== this.resident) { var moved = new Error('已经换到别的住户了'); moved.moved = true; throw moved; }
+      stillHere();
       if (response.status === 401) { this.authed = false; this.loginError = this.miniApp ? '请关闭小窗后重新打开，或检查 Telegram 白名单' : '钥匙不对'; throw new Error(this.loginError); }
       if (!response.ok) {
         var problem = await response.json().catch(function () { return {}; });
+        stillHere();
         var failed = new Error(problem.error || '出错了（' + response.status + '）');
         failed.status = response.status;
         throw failed;
       }
       if (opts.blob) return response.blob();
       if (opts.bytes) return new Uint8Array(await response.arrayBuffer());
-      return response.json();
+      var result = await response.json();
+      stillHere();
+      return result;
     },
     async check(key) {
+      var epoch = doorEpoch;
       this.key = key;
       try {
         var data = await this.api('/web/check');
+        if (epoch !== doorEpoch) return;
         this.aelios = Boolean(data.aelios);
         this.identity = { name: data.name || '住户', avatar: data.avatar || null };
-        this.lines = this.took(await this.api('/web/messages')) || [];
+        var messages = await this.api('/web/messages');
+        if (epoch !== doorEpoch) return;
+        this.lines = this.took(messages) || [];
         this.authed = true;
         this.loaded = true;
         if (!this.miniApp) writeKey(key);
@@ -588,7 +608,7 @@ function resident() {
         this.scrollSoon(true);
         this.poll();
       } catch (error) {
-        if (error.moved) return;
+        if (error.moved || epoch !== doorEpoch) return;
         // A resident deleted since this device last opened it: back to the first one.
         if (error.status === 404 && this.resident !== 'default' && !this.miniApp) {
           this.resident = 'default';
@@ -681,6 +701,7 @@ function resident() {
       this.residents.open = false;
       if (id === this.resident && this.view === 'group') { this.view = 'chat'; this.scrollSoon(true); }
       if (id === this.resident || !this.authed) return;
+      this.resetVoiceDesign();
       clearTimeout(pollTimer);
       this.clearVoicePlayback();
       this.resident = id;
@@ -721,6 +742,7 @@ function resident() {
       this.configDraft = {};
       this.configError = {};
       this.mcp = { servers: [] };
+      this.mcpDraft = { name: '', url: '', key: '' };
       this.sites = [];
       this.search = freshSearch();
       this.stickers = { on: true, packs: [], left: 0 };
@@ -783,6 +805,7 @@ function resident() {
     },
 
     logout() {
+      this.resetVoiceDesign();
       this.clearVoicePlayback();
       writeKey('');
       seenRev = '';
@@ -801,6 +824,7 @@ function resident() {
       this.personaLoaded = false;
       this.config = { fields: [] };
       this.configDraft = {};
+      this.mcpDraft = { name: '', url: '', key: '' };
       this.setLetter(null);
       this.letterError = '';
       this.picker.open = false;
@@ -1021,10 +1045,11 @@ function resident() {
       pollTimer = setTimeout(async function () {
         if (self.authed && (!document.hidden || playback?.live || call)) await self.refresh().catch(function () {});
         if (self.authed) self.poll(self.replying());
-      }, fast || playback?.live || call ? FAST_MS : POLL_MS);
+      }, fast || playback?.live || call || self.voiceDesignActive() ? FAST_MS : POLL_MS);
     },
     // What /web/messages gave: the lines, or null when nothing has changed since the version the page has.
     took(data) {
+      this.syncVoiceDesign(data);
       if (this.syncChatPermissions) this.syncChatPermissions(data);
       if (data && data.rev) seenRev = data.rev;
       if (data && this.syncChatTurn && Object.prototype.hasOwnProperty.call(data, 'turn')) this.syncChatTurn(data.turn);
@@ -1035,8 +1060,11 @@ function resident() {
     },
     async refresh(full) {
       if (!this.authed) return;
+      var epoch = doorEpoch;
       var since = full ? '' : seenRev;
-      var lines = this.took(await this.api('/web/messages' + (since ? '?since=' + encodeURIComponent(since) : '')));
+      var data = await this.api('/web/messages' + (since ? '?since=' + encodeURIComponent(since) : ''));
+      if (!this.authed || epoch !== doorEpoch) return;
+      var lines = this.took(data);
       if (!lines) return;
       var before = this.lines.length;
       var stick = this.isNearBottom();
@@ -2502,10 +2530,11 @@ function resident() {
     },
     hasMore(group) {
       var self = this;
+      if (!group) return false;
       return group.fields.some(function (meta) { return meta.more && self.field(meta.key) && self.shown(meta); });
     },
     groupHint(group) {
-      return group.hint || '';
+      return (group && group.hint) || '';
     },
     // The address WeCom's 「接收消息」 takes.
     siteOrigin() { return location.origin; },
@@ -2632,6 +2661,42 @@ function resident() {
     },
     voiceGapLabel() {
       return { VOICE_ID: '声音', VOICE_MODEL: '模型', VOICE_API_KEY: '一把 key' }[this.config.voice && this.config.voice.gap] || '';
+    },
+    resetVoiceDesign() {
+      doorEpoch += 1;
+      this.voiceDesign = null;
+      this.voiceDesignBusy = false;
+      this.voiceDesignError = '';
+    },
+    syncVoiceDesign(data) {
+      var design = data && data.voiceDesign;
+      if (design && (!this.voiceDesign || design.revision > this.voiceDesign.revision)) this.voiceDesign = design;
+    },
+    voiceDesignActive() {
+      var stage = this.voiceDesign && this.voiceDesign.stage;
+      return stage === 'writing' || stage === 'preview' || stage === 'saving';
+    },
+    voiceDesignStatus() {
+      return { writing: '等住户写好声音描述…', preview: 'ElevenLabs 正在生成音色…', saving: '正在保存音色…' }[this.voiceDesign && this.voiceDesign.stage] || '';
+    },
+    async startVoiceDesign() {
+      if (this.voiceDesignBusy || this.voiceDesignActive() || this.configBusy) return;
+      var epoch = doorEpoch;
+      this.voiceDesignBusy = true;
+      this.voiceDesignError = '';
+      try {
+        var data = await this.api('/web/voice/design', { method: 'POST', body: { id: this.voiceDesign ? this.voiceDesign.id : '' } });
+        if (!this.authed || epoch !== doorEpoch) return;
+        this.syncVoiceDesign(data);
+        this.view = 'chat';
+        this.scrollSoon(true);
+        this.poll(true);
+        await this.refresh().catch(function () {});
+      } catch (error) {
+        if (!error.moved && epoch === doorEpoch) this.voiceDesignError = error.message;
+      } finally {
+        if (epoch === doorEpoch) this.voiceDesignBusy = false;
+      }
     },
     voiceStatus() {
       var voice = this.config.voice || {};
@@ -3160,13 +3225,14 @@ function resident() {
       event.preventDefault();
       try { telegram.openLink(server.authUrl); } catch (error) { window.open(server.authUrl, '_blank', 'noopener'); }
     },
-    async addMcp() {
+    async addMcp(preset) {
       if (this.mcpBusy) return;
       this.mcpBusy = 'add';
       this.mcpError = '';
       try {
-        this.mcp = await this.api('/web/mcp', { method: 'POST', body: { name: this.mcpDraft.name.trim(), url: this.mcpDraft.url.trim(), key: this.mcpDraft.key.trim() } });
-        this.mcpDraft = { name: '', url: '', key: '' };
+        var draft = preset || this.mcpDraft;
+        this.mcp = await this.api('/web/mcp', { method: 'POST', body: { name: draft.name.trim(), url: draft.url.trim(), key: draft.key.trim() } });
+        if (!preset) this.mcpDraft = { name: '', url: '', key: '' };
         var waiting = this.mcp.servers.some(function (server) { return server.authUrl; });
         this.notify(waiting ? '还要登录授权：点「去授权」' : '接上了，下一句开始能用');
       } catch (error) {
@@ -3181,7 +3247,7 @@ function resident() {
       this.mcpBusy = server.id;
       this.mcpError = '';
       try {
-        this.mcp = server.state === 'not-connected' || server.state === 'failed'
+        this.mcp = server.state === 'not-connected' || server.state === 'failed' || server.state === 'authenticating'
           ? await this.api('/web/mcp/retry', { method: 'POST', body: { id: server.id } })
           : await this.api('/web/mcp');
       } catch (error) {

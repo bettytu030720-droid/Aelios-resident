@@ -84,7 +84,7 @@ async function failed(name: string, response: Response, gateway: string | null):
  * Sends one request to a voice provider: through AI Gateway (AI_GATEWAY_ID, else "default") on the AI binding, or
  * straight to the provider without the binding. VOICE_BASE_URL sends it straight there instead (a proxy, the tests).
  */
-function sender(env: Env): Send {
+function sender(env: Env, direct = false): Send {
   const base = env.VOICE_BASE_URL?.trim().replace(/\/+$/, "");
   const ai = env.AI as unknown as { fetch(url: string, init: RequestInit): Promise<Response> } | undefined;
   const gateway = encodeURIComponent(env.AI_GATEWAY_ID?.trim() || "default");
@@ -92,8 +92,55 @@ function sender(env: Env): Send {
     const timeout = AbortSignal.timeout(TIMEOUT_MS);
     const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     if (base) return fetch(`${base}/${endpoint}`, { ...init, signal });
-    if (ai) return ai.fetch(`${GATEWAY_ORIGIN}/${gateway}/${provider}/${endpoint}`, { ...init, signal });
+    if (ai && !direct) return ai.fetch(`${GATEWAY_ORIGIN}/${gateway}/${provider}/${endpoint}`, { ...init, signal });
     return fetch(`${HOSTS[provider]}/${endpoint}`, { ...init, signal });
+  };
+}
+
+export const VOICE_DESIGN_PROMPT =
+  "请给自己捏个声音。按你对自己的理解，给 ElevenLabs 写一段 80 到 450 字符的英文音色描述，写清音色、音高、口音、语速和说话方式。只回复描述，别加标题、姓名、私事或台词，不用调用工具。";
+
+export class VoiceDesignHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`ElevenLabs HTTP ${status}`);
+  }
+}
+
+export function elevenLabsVoiceDesign(env: Env, key: string) {
+  const send = sender(env, true);
+  async function post<Result>(endpoint: string, body: unknown): Promise<Result> {
+    const response = await send("elevenlabs", endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "xi-api-key": key },
+      body: JSON.stringify(body),
+      redirect: "manual"
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new VoiceDesignHttpError(response.status);
+    }
+    return response.json<Result>();
+  }
+  return {
+    async preview(description: string): Promise<string> {
+      const result = await post<{ previews?: { generated_voice_id?: string }[] }>("v1/text-to-voice/design", {
+        voice_description: description,
+        auto_generate_text: true
+      });
+      const id = result?.previews?.[0]?.generated_voice_id;
+      if (typeof id !== "string" || !/^[\w-]{1,200}$/.test(id)) throw new Error("ElevenLabs did not return a preview ID");
+      return id;
+    },
+    async save(name: string, description: string, previewId: string): Promise<string> {
+      const result = await post<{ voice_id?: string }>("v1/text-to-voice", {
+        voice_name: name,
+        voice_description: description,
+        generated_voice_id: previewId
+      });
+      const id = result?.voice_id;
+      if (typeof id !== "string" || !/^[\w-]{1,200}$/.test(id)) throw new Error("ElevenLabs did not return a voice ID");
+      return id;
+    }
   };
 }
 

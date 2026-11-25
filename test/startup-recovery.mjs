@@ -32,6 +32,7 @@ const compiled = await build({
         // The menu-button repair onStart starts and does not wait for (src/resident.ts repairMenuButton): it talks
         // to Telegram, which these recovery tests have none of. A stub keeps what they do check unchanged.
         repairMenuButton() { return Promise.resolve(); }
+        recoverVoiceDesign() { return Promise.resolve(); }
         ${["onStart", "letterJob", "saveLetterJob", "letterState", "armLetterDelivery", "alarms", "armAlarm"].map(method).join("\n")}
       }
     `,

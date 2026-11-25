@@ -395,6 +395,8 @@ Changing the persona, switching models, deleting or branching messages, deployin
 - Links, Markdown and emoji are removed from what is spoken; for a reply with links, the links follow as text after the voice message.
 - If a voice message cannot be sent (a provider error, over 2000 characters, or the recipient does not accept voice), it sends text as usual and `/status` says why.
 
+To **design a voice**, select ElevenLabs under **Voice**, save an API key with Voice Generation access, and click 「让住户给自己捏声音」. The resident writes a description in your current conversation. The Worker sends that description to ElevenLabs, saves the first result to your voice library and makes it the resident's active voice. Generation uses ElevenLabs credits.
+
 **Calls**: on the web door, More → 打电话 (call). The microphone stays open; when you pause (about 0.9 s) what you said goes out as a voice message, the reply's voice plays as it is written, and then it listens again. Talk clearly over it and it stops to listen. It uses everything above: Scribe or Whisper to hear, your chosen voice to speak, the same key (one stored on AI Gateway will do), nothing more to set up. What is said on a call stays in the chat; the model sees `[voice 0:03, on a call] what you said` and answers briefly, as on the phone, and a call's replies are spoken whatever "when to send voice" says. Without a voice set up there is no call. It is not true streaming: each turn waits for transcription, the reply and its speech, so a round trip takes a few seconds; headphones work best, since on a loudspeaker the echo can be taken for you talking.
 
 The code is in `src/voice.ts`; the call is in `public/app.js` (`startCall`).
@@ -447,6 +449,7 @@ Custom emoji packs (`t.me/addemoji/…`) cannot be sent by bots and are not acce
 Enter a server's address (https) under **Other tools** (「别的工具（MCP）」), and its tools work from the next message.
 
 - For a server that needs signing in, click **Authorize** (「去授权」). For one that needs a key, enter the key there; it is sent as `Authorization: Bearer` by default, or written as `x-api-key: your-key` it goes into that header instead.
+- On a publicly reachable HTTPS web door, click 「接 ElevenLabs」, then 「去授权」 to sign in to the hosted ElevenLabs MCP in your browser.
 - You can also say "connect https://…" or "disconnect …" in the chat and it does it itself. Don't send an address that contains a key in the chat (the chat is recorded in Aelios); connect those only on the settings page.
 - It acts only in a turn that you started yourself: if that turn has already read a web page, searched the web, opened a thread's file or called another MCP server, it does not connect, so that a "connect …" on some web page cannot decide for you.
 - Tool descriptions go to the model on every turn, so they are shortened; at most 8 servers, at most 40 tools per turn.

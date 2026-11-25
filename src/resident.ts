@@ -2,11 +2,14 @@
 // they are set up) are doors into the same conversation.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import {
   Think,
   type ChatErrorClassification,
   type ChatErrorContext,
   type ChatOptions,
+  type ChatRecoveryContext,
+  type ChatRecoveryOptions,
   type ChunkContext,
   type ToolCallResultContext,
   type ChatResponseResult,
@@ -16,8 +19,10 @@ import {
   type ThinkScheduledTask,
   type ThinkScheduledTasks,
   type ThinkSession,
+  type ThinkSubmissionInspection,
   type StepContext,
   type StreamCallback,
+  type ToolCallDecision,
   type TurnConfig,
   type TurnContext
 } from "@cloudflare/think";
@@ -33,8 +38,9 @@ import {
   type ThinkMessengers
 } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
+import type { OAuthDiscoveryState } from "@modelcontextprotocol/client";
 import type { Adapter } from "chat";
-import { getAgentByName } from "agents";
+import { getAgentByName, type AgentMcpOAuthProvider } from "agents";
 import { webSearchTool } from "agents/websearch/ai-sdk";
 import { asSchema, generateText, tool, type JSONSchema7, type ModelMessage, type ToolSet, type UIMessage } from "ai";
 import { z } from "zod";
@@ -182,12 +188,14 @@ import type { Rgb } from "./gif";
 import {
   SPEAK_MAX_CHARS,
   joinMp3,
+  VOICE_DESIGN_PROMPT,
   VOICE_MARK,
   audioTypeOf,
   clock,
   mp3Seconds,
   wavSeconds,
   dialectOf,
+  elevenLabsVoiceDesign,
   heard,
   hearing,
   hearsBy,
@@ -200,6 +208,7 @@ import {
   speaker,
   speakingGap,
   unmarked,
+  VoiceDesignHttpError,
   voiceRules,
   byWhatItIs,
   type Spoken
@@ -235,7 +244,9 @@ import {
   checkServerUrl,
   connectReport,
   hideUrls,
+  isElevenLabsMcp,
   keyHeaders,
+  mcpClientMetadata,
   mcpToolSet,
   resultText,
   serverIdFor,
@@ -413,6 +424,20 @@ export type WebThread = {
 };
 
 type LetterOutcome = { status: "written" | "empty" | "failed" | "pending"; error?: string };
+
+type VoiceDesign = {
+  id: string;
+  revision: number;
+  stage: "writing" | "preview" | "saving" | "done" | "failed";
+  configHash: string;
+  error?: string;
+};
+
+type WebVoiceDesign = Omit<VoiceDesign, "configHash">;
+const VOICE_DESIGN_PREFIX = "voice_design_";
+const VOICE_DESIGN_SETTINGS = ["VOICE_PROVIDER", "VOICE_API_KEY", "VOICE_BASE_URL", "VOICE_ID", "VOICE_MODEL", "AI_GATEWAY_ID"] as const;
+const VOICE_SETTINGS_CHANGED = "语音设置在生成期间改过了，请用现在的设置再试一次。";
+const VOICE_SAVE_UNCERTAIN = "ElevenLabs 可能已经保存了音色，请到声音库确认后再试。";
 
 type LetterJob = {
   promptId: string;
@@ -613,6 +638,7 @@ export class Resident extends Think<Env> {
   // so a line on a page ("connect to …") cannot add a server they did not ask for. A task can be sent after reading.
   #theirTurns = new Set<string>();
   #readOutside = new Set<string>();
+  #voiceDesignTurn: string | null = null;
   /** What each running turn is, for its rows in the usage timeline. */
   #usageLabels = new Map<string, UsageLabel>();
   #usageStore: UsageStore | null = null;
@@ -686,11 +712,20 @@ export class Resident extends Think<Env> {
   override async onStart(): Promise<void> {
     // A server's OAuth sign-in lands on a page that says how it went, not on a bare redirect.
     this.mcp.configureOAuthCallback({
-      customHandler: (result) => callbackPage(result, this.mcp.listServers().find((server) => server.id === result.serverId)?.name ?? null)
+      customHandler: (result) => callbackPage(
+        result,
+        this.mcp.listServers().find((server) => server.id === result.serverId)?.name ?? null,
+        this.residentId === DEFAULT_RESIDENT ? "/" : `/?r=${this.residentId}`
+      )
     });
     // Recovery steps are independent. Keep durable work for a later startup to retry. Log only the
     // error's kind, never its message: scheduler exceptions may contain private payloads or keys.
     const kind = (error: unknown) => ({ error: error instanceof Error ? error.name : typeof error });
+    try {
+      await this.recoverVoiceDesign();
+    } catch (error) {
+      console.error("startup: voice design recovery failed", kind(error));
+    }
     try {
       if (this.letterJob()) await this.schedule(1, "resumeLetter", {}, { idempotent: true });
     } catch (error) {
@@ -795,7 +830,13 @@ export class Resident extends Think<Env> {
       this.ctx.waitUntil(this.ctx.storage.put("aelios_memory", { status, model: id, at: Date.now() }));
     };
     // Think uses an empty ID for its primary session. The Durable Object owns that transcript.
-    return aeliosModel(memory, id, { auxiliary, report, thinking, redo: () => this.#redo, session: () => this.ctx.id.toString() });
+    return aeliosModel(memory, id, {
+      auxiliary: auxiliary || this.isVoiceDesignTurn(),
+      report,
+      thinking,
+      redo: () => this.#redo,
+      session: () => this.ctx.id.toString()
+    });
   }
 
   /**
@@ -804,13 +845,13 @@ export class Resident extends Think<Env> {
    * turns itself, since they do not pass through Aelios. Work outside the conversation is one call, nothing kept.
    */
   private claudeCode(id: string, { auxiliary, thinking }: { auxiliary: boolean; thinking?: Thinking }): ThinkModel {
-    const memory = aeliosConfig(this.cfg);
+    const memory = auxiliary || this.isVoiceDesignTurn() ? null : aeliosConfig(this.cfg);
     return claudeCodeModel(
       id,
       {
         send: (body) => boxTurn(this.env, this.residentId, "claude", body),
         ...(auxiliary ? {} : { segments: { load: () => this.claudeCodeHeld(), save: (segments) => this.holdClaudeCode(segments) } }),
-        ...(memory && !auxiliary ? this.memoryHooks(memory, id) : {})
+        ...(memory ? this.memoryHooks(memory, id) : {})
       },
       thinking
     );
@@ -832,13 +873,13 @@ export class Resident extends Think<Env> {
 
   /** `kiro/<model>`: the turn goes to the Kiro box, signed in with the owner's Kiro API key (kiro-box.ts). */
   private kiro(id: string, auxiliary: boolean): ThinkModel {
-    const memory = aeliosConfig(this.cfg);
+    const memory = auxiliary || this.isVoiceDesignTurn() ? null : aeliosConfig(this.cfg);
     return kiroModel(id, {
       // The box keeps one live Kiro session for the resident's own conversation, none for work outside it.
       ...(auxiliary ? {} : { conversation: this.residentId }),
       send: (body) => boxTurn(this.env, this.residentId, "kiro", body),
       credits: (credits) => this.recordCredits(credits, id),
-      ...(memory && !auxiliary ? this.memoryHooks(memory, id) : {})
+      ...(memory ? this.memoryHooks(memory, id) : {})
     });
   }
 
@@ -2610,6 +2651,31 @@ export class Resident extends Think<Env> {
     return null;
   }
 
+  override createMcpOAuthProvider(callbackUrl: string): AgentMcpOAuthProvider {
+    const provider = super.createMcpOAuthProvider(callbackUrl);
+    if (!callbackUrl.startsWith("https://") || !callbackUrl.endsWith(MCP_CALLBACK_PATH)) return provider;
+    const readDiscovery = provider.discoveryState?.bind(provider);
+    const saveDiscovery = provider.saveDiscoveryState?.bind(provider);
+    if (!readDiscovery || !saveDiscovery) return provider;
+    const clientId = mcpClientMetadata(callbackUrl.slice(0, -MCP_CALLBACK_PATH.length)).client_id;
+    let discovery: OAuthDiscoveryState | undefined;
+    provider.discoveryState = async () => {
+      discovery = await readDiscovery();
+      return discovery;
+    };
+    provider.saveDiscoveryState = async (state) => {
+      await saveDiscovery(state);
+      discovery = state;
+    };
+    Object.defineProperty(provider, "clientMetadataUrl", {
+      get: () => {
+        const metadata = discovery?.authorizationServerMetadata;
+        return metadata?.client_id_metadata_document_supported && !metadata.registration_endpoint ? clientId : undefined;
+      }
+    });
+    return provider;
+  }
+
   /**
    * Connect a server, from the settings page (with a key, if it needs one) or from the chat (without). One
    * that asks for an OAuth sign-in comes back with the link to open. One already there is tried again in place,
@@ -2624,6 +2690,12 @@ export class Resident extends Think<Env> {
   ): Promise<{ id: string; state: string; authUrl?: string } | { error: string }> {
     const checked = checkServerUrl(rawUrl);
     if ("error" in checked) return checked;
+    const callbackHost = origin ?? (await this.ctx.storage.get<string>("origin"));
+    const elevenLabs = isElevenLabsMcp(checked.url);
+    if (elevenLabs) {
+      if (!callbackHost?.startsWith("https://")) return { error: "ElevenLabs MCP 需要 HTTPS 网页门。请用浏览器打开住户的 HTTPS 地址后再连接。" };
+      if (key?.trim()) return { error: "ElevenLabs MCP 用浏览器登录。请清空 MCP 的 Key，接上后点「去授权」。" };
+    }
     const id = serverIdFor(name, checked.url);
     const servers = this.mcp.listServers();
     const same = servers.find((server) => server.id === id);
@@ -2632,9 +2704,11 @@ export class Resident extends Think<Env> {
     if (twin) return { error: `这个地址已经接了，叫 ${twin.name}` };
     if (!same && servers.length >= MAX_MCP_SERVERS) return { error: `最多接 ${MAX_MCP_SERVERS} 个，先断开一个` };
     const headers = keyHeaders(key);
-    if (same && !headers) return this.reconnectMcp(id);
+    const needsOAuth = elevenLabs && same && (storedWithKey(same.server_options) || !same.callback_url.startsWith("https://"));
+    if (same && !headers && !needsOAuth) {
+      return this.reconnectMcp(id);
+    }
     if (same) await this.removeMcpServer(id);
-    const callbackHost = origin ?? (await this.ctx.storage.get<string>("origin"));
     try {
       const result = await this.addMcpServer(name?.trim() || id, checked.url, {
         id,
@@ -2761,6 +2835,16 @@ export class Resident extends Think<Env> {
     const content = lastUser?.content;
     const askedForThisTurn = typeof content === "string" ? content : Array.isArray(content)
       ? content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") : "";
+    const requestId = ctx.requestId;
+    let voiceDesign = requestId?.startsWith(VOICE_DESIGN_PREFIX) ?? false;
+    if (!voiceDesign && requestId && (ctx.trigger === "recovery-retry" || ctx.trigger === "recovery-continue")) {
+      const design = this.voiceDesign();
+      if (design?.stage === "writing") {
+        const submission = await this.inspectSubmission(design.id);
+        voiceDesign = submission?.status === "running" && submission.requestId === requestId;
+      }
+    }
+    if (voiceDesign && requestId) this.#voiceDesignTurn = requestId;
     this.#letterPromptId = letter && askedForThisTurn.startsWith(LETTER_PREFIX) ? letter.promptId : null;
     this.#letterReason = letter?.reason ?? "handoff";
     if (ctx.requestId) {
@@ -2772,7 +2856,7 @@ export class Resident extends Think<Env> {
           letter: Boolean(this.#letterPromptId),
           task: taskOfNote(askedForThisTurn) !== null,
           messenger: ctx.messenger?.messengerId,
-          proactive: ctx.trigger === "scheduled" || ctx.trigger === "submission",
+          proactive: !voiceDesign && (ctx.trigger === "scheduled" || ctx.trigger === "submission"),
           group: GROUP_HEAD.test(askedForThisTurn.replace(STAMP_PREFIX, ""))
         })
       );
@@ -2791,7 +2875,7 @@ export class Resident extends Think<Env> {
         ? ctx.messenger.messengerId === "wecom"
           ? "wecom"
           : "telegram"
-        : ctx.trigger === "scheduled" || ctx.trigger === "submission"
+        : !voiceDesign && (ctx.trigger === "scheduled" || ctx.trigger === "submission")
           ? "checkin"
           : "web";
       const draft = new WebDraft(`live_${ctx.requestId}`, Date.now(), via);
@@ -2801,7 +2885,7 @@ export class Resident extends Think<Env> {
       if (prefix) draft.chunk({ type: "text-delta", text: prefix });
       this.#drafts.set(ctx.requestId, draft);
       if (via === "web") {
-        const speak = this.webSpeaker(Boolean(lastSaid?.voice), Boolean(lastSaid?.call));
+        const speak = voiceDesign ? null : this.webSpeaker(Boolean(lastSaid?.voice), Boolean(lastSaid?.call));
         const speech = speak ? new ReplyVoice({
           speak,
           maxBytes: MEDIA_MAX_BYTES,
@@ -2837,7 +2921,7 @@ export class Resident extends Think<Env> {
       const asked = this.userMessageBefore("")?.text ?? "";
       // Cleared as a turn starts, never during one: a turn's count of tasks cannot be reset under it.
       if (this.#turnTasks.size > 20) this.#turnTasks.clear();
-      if (!proactive && !this.#letterPromptId && asked && !isNote(asked)) {
+      if (!voiceDesign && !proactive && !this.#letterPromptId && asked && !isNote(asked)) {
         this.markTurn(ctx.requestId, "their");
         // When they last wrote, from the start of their turn: a heartbeat due while it runs sees it and passes.
         await this.ctx.storage.put("their_last_at", Date.now());
@@ -2863,9 +2947,26 @@ export class Resident extends Think<Env> {
         cache: this.#letterPromptId ? { letter: this.letterCache() } : { chat: promptCache(this.cfg).anthropic.cacheControl }
       }),
       activeTools: Object.keys(ctx.tools).filter((name) => own.includes(name)),
+      ...(voiceDesign ? { maxSteps: 1 } : {}),
       // Words after tools that only repeat the reply, or say there is nothing to say, never go out (after-tools.ts).
       experimental_transform: quietAfterTools()
     };
+  }
+
+  override beforeToolCall(): ToolCallDecision | void {
+    if (this.isVoiceDesignTurn()) {
+      return { action: "block", reason: "Reply with only the voice description for this request." };
+    }
+  }
+
+  private isVoiceDesignTurn(): boolean {
+    return this.#voiceDesignTurn !== null && this.activeTurn?.requestId === this.#voiceDesignTurn;
+  }
+
+  protected override async onChatRecovery({ recoveryRootRequestId }: ChatRecoveryContext): Promise<ChatRecoveryOptions | void> {
+    if (!recoveryRootRequestId.startsWith(VOICE_DESIGN_PREFIX)) return;
+    const design = this.voiceDesign();
+    if (design?.id !== recoveryRootRequestId || design.stage !== "writing") return { continue: false };
   }
 
   /** A turn whose model is served by a box that is not connected runs on the default model, and the chat says so. */
@@ -3590,7 +3691,7 @@ export class Resident extends Think<Env> {
       if (result.requestId) this.madeFiles().withReply(result.requestId, result.message.id);
       const asked = before?.text ?? "";
       // Every message of hers starts with its time stamp, so a note prefix can only come from the system.
-      const fromThem = Boolean(asked) && !isNote(asked);
+      const fromThem = Boolean(asked) && !isNote(asked) && !before?.id.startsWith(VOICE_DESIGN_PREFIX);
       // A completed alarm turn (even SKIP) starts a new quiet activity cycle, without becoming her message.
       // Check-ins, heartbeats and failed alarms leave the current cycle's deadline and count alone.
       const activity = fromThem || (result.status === "completed" && asked.startsWith(ALARM_PREFIX));
@@ -4175,6 +4276,131 @@ export class Resident extends Think<Env> {
     );
   }
 
+  private voiceDesign(): VoiceDesign | null {
+    const row = this.settings("voice:design");
+    return row ? JSON.parse(row.value) as VoiceDesign : null;
+  }
+
+  private webVoiceDesign(): WebVoiceDesign | null {
+    const design = this.voiceDesign();
+    if (!design) return null;
+    const { id, revision, stage, error } = design;
+    return { id, revision, stage, error };
+  }
+
+  private voiceSettingsHash(): string {
+    return createHash("sha256").update(JSON.stringify(VOICE_DESIGN_SETTINGS.map((field) => this.cfg[field] ?? ""))).digest("hex");
+  }
+
+  private saveVoiceDesign(design: Omit<VoiceDesign, "revision">): void {
+    const revision = (this.voiceDesign()?.revision ?? 0) + 1;
+    this.saveSetting("voice:design", JSON.stringify({ ...design, revision }));
+  }
+
+  private failVoiceDesign(design: VoiceDesign, error: string): void {
+    this.saveVoiceDesign({ ...design, stage: "failed", error });
+    this.addNotice(error);
+  }
+
+  async webStartVoiceDesign(previousId: string): Promise<{ voiceDesign: WebVoiceDesign | null } | { error: string }> {
+    const previous = this.voiceDesign();
+    if ((previous?.id ?? "") !== previousId || (previous && previous.stage !== "done" && previous.stage !== "failed")) {
+      return { voiceDesign: this.webVoiceDesign() };
+    }
+    if (providerOf(this.cfg) !== "elevenlabs") return { error: "请先在语音设置里选 ElevenLabs。" };
+    if (!/^[\x21-\x7e]+$/.test(this.cfg.VOICE_API_KEY?.trim() ?? "")) {
+      return { error: "请在语音设置里填一把有声音生成权限的 ElevenLabs API Key。" };
+    }
+    const at = Date.now();
+    const id = `${VOICE_DESIGN_PREFIX}${crypto.randomUUID()}`;
+    this.saveVoiceDesign({ id, stage: "writing", configHash: this.voiceSettingsHash() });
+    const message: UIMessage = {
+      id, role: "user", parts: [{ type: "text", text: `[${stamp(new Date(at), this.tz)}] ${VOICE_DESIGN_PROMPT}` }], metadata: { at }
+    };
+    const submit = () => this.submitMessages([message], { submissionId: id, idempotencyKey: id });
+    await submit().catch(submit).catch(async () => {
+      const submission = await this.inspectSubmission(id);
+      if (!submission || submission.status === "pending") {
+        if (submission) await this.cancelSubmission(id).catch(() => undefined);
+        const design = this.voiceDesign();
+        if (design?.id === id && design.stage === "writing") this.failVoiceDesign(design, "捏音色的消息没发出去，请再试一次。");
+      }
+    });
+    return { voiceDesign: this.webVoiceDesign() };
+  }
+
+  protected override async onSubmissionStatus(submission: ThinkSubmissionInspection): Promise<void> {
+    if (!submission.submissionId.startsWith(VOICE_DESIGN_PREFIX) || submission.status === "pending" || submission.status === "running") return;
+    const design = this.voiceDesign();
+    if (design?.id !== submission.submissionId || design.stage !== "writing") return;
+    const message = submission.status === "completed" && submission.messageId
+      ? await this.session.getMessage(submission.messageId).catch(() => null)
+      : null;
+    const current = this.voiceDesign();
+    if (current?.id !== design.id || current.stage !== "writing") return;
+    const description = message?.role === "assistant" && !message.parts.some((part) => part.type.startsWith("tool-") || part.type === "dynamic-tool")
+      ? withoutStickerMarks(textOf(message)).replace(/\s+/g, " ").trim()
+      : "";
+    if (description.length < 20 || description.length > 500) {
+      this.failVoiceDesign(current, "捏音色失败，住户没写出可用的描述。");
+      return;
+    }
+    if (current.configHash !== this.voiceSettingsHash()) {
+      this.failVoiceDesign(current, VOICE_SETTINGS_CHANGED);
+      return;
+    }
+    this.saveVoiceDesign({ ...current, stage: "preview" });
+    this.ctx.waitUntil(this.makeDesignedVoice(current, description));
+  }
+
+  private async recoverVoiceDesign(): Promise<void> {
+    const design = this.voiceDesign();
+    if (design?.stage === "writing") {
+      const submission = await this.inspectSubmission(design.id);
+      if (submission) await this.onSubmissionStatus(submission);
+      else this.failVoiceDesign(design, "捏音色的消息没发出去，请再试一次。");
+    } else if (design?.stage === "preview" || design?.stage === "saving") {
+      this.failVoiceDesign(design, design.stage === "saving" ? VOICE_SAVE_UNCERTAIN : "生成音色时住户重启了，请再试一次。");
+    }
+  }
+
+  private async makeDesignedVoice(design: VoiceDesign, description: string): Promise<void> {
+    const cfg = this.cfg;
+    let saving = false;
+    try {
+      const voice = elevenLabsVoiceDesign(cfg, cfg.VOICE_API_KEY!.trim());
+      const previewId = await voice.preview(description);
+      if (design.configHash !== this.voiceSettingsHash()) {
+        this.failVoiceDesign(design, VOICE_SETTINGS_CHANGED);
+        return;
+      }
+      this.saveVoiceDesign({ ...design, stage: "saving" });
+      saving = true;
+      const name = Array.from(this.webIdentity().name).slice(0, 64).join("");
+      const voiceId = await voice.save(name, description, previewId);
+      if (design.configHash !== this.voiceSettingsHash()) {
+        this.failVoiceDesign(design, `音色已存到 ElevenLabs。语音设置已改动，可以手动选用音色 ${voiceId}。`);
+        return;
+      }
+      this.ctx.storage.transactionSync(() => {
+        this.storeConfig("VOICE_ID", voiceId);
+        this.saveVoiceDesign({ ...design, stage: "done" });
+        this.addNotice("捏好了自己的声音，下一条语音会用新音色。");
+      });
+    } catch (error) {
+      const status = error instanceof VoiceDesignHttpError ? error.status : 0;
+      if (status === 401 || status === 403) {
+        this.failVoiceDesign(design, "ElevenLabs 拒绝了这把 Key，请检查声音生成权限。");
+      } else if (saving && status === 409) {
+        this.failVoiceDesign(design, "ElevenLabs 的声音预览仍在生成，这次音色还未保存。请稍等再试。");
+      } else if (saving && (status < 400 || status >= 500 || status === 408)) {
+        this.failVoiceDesign(design, VOICE_SAVE_UNCERTAIN);
+      } else {
+        this.failVoiceDesign(design, `ElevenLabs ${saving ? "保存" : "生成"}音色失败${status ? `（HTTP ${status}）` : ""}，请再试一次。`);
+      }
+    }
+  }
+
   #webBurst = new WebBurst(
     async (take) => ({ status: (await this.saveMessages(async () => take())).status }),
     () => num(this.env.DEBOUNCE_SECONDS, 3) * 1000
@@ -4548,16 +4774,17 @@ export class Resident extends Think<Env> {
   /**
    * Return `same` for an unchanged version without a live draft. A draft is overlaid on the cached conversation.
    */
-  async webLook(since: string | null): Promise<({ data: WebLine[]; rev: string } | { same: true; rev: string }) & { turn: ChatTurn | null; permissions: ReturnType<typeof chatPermissions>; waiting: ReturnType<WaitingStore["list"]> }> {
+  async webLook(since: string | null): Promise<({ data: WebLine[]; rev: string } | { same: true; rev: string }) & { turn: ChatTurn | null; permissions: ReturnType<typeof chatPermissions>; waiting: ReturnType<WaitingStore["list"]>; voiceDesign: WebVoiceDesign | null }> {
     const waiting = this.waiting().list();
     const permissions = chatPermissions(waiting.items);
+    const voiceDesign = this.webVoiceDesign();
     const rev = `${this.#webBoot}.${this.#webRev}`;
     const turn = this.#chatStop.current();
     if (since && since === rev && !this.#drafts.size) {
       this.#webSeenAt = Date.now();
-      return { same: true, rev, turn, permissions, waiting };
+      return { same: true, rev, turn, permissions, waiting, voiceDesign };
     }
-    return { data: await this.webHistory(), rev, turn, permissions, waiting };
+    return { data: await this.webHistory(), rev, turn, permissions, waiting, voiceDesign };
   }
 
   /** Cancels only the current chat turn; queued messages and machine jobs are untouched. */
