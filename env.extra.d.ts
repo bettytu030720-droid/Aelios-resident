@@ -44,6 +44,11 @@ interface Env {
   QUIET_HOURS?: string;
   // Alarms the resident sets for itself (alarms.ts): off (default) or on.
   ALARMS?: string;
+  // Resident-initiated incoming web calls (proactive-call.ts): off (default) or on.
+  PROACTIVE_CALL?: string;
+  // Local tests only: how long an incoming web call rings before timing out, and how recent a web poll counts as online.
+  PROACTIVE_CALL_RING_SECONDS?: string;
+  PROACTIVE_CALL_ONLINE_SECONDS?: string;
   // It changes its own persona with edit_persona (persona-edit.ts): off (default) or on.
   PERSONA_EDIT?: string;
   // Local tests only: how many seconds a minute of set_alarm's in_minutes lasts.

@@ -62,6 +62,7 @@ fresh native-push-worker "node test/native-push-worker.mjs" --var FCM_SERVICE_AC
 fresh mini-app-worker "node test/mini-app.mjs worker"
 fresh home-screen-worker "node test/home-screen.mjs worker"
 fresh alarm-activity-worker "node test/alarm-activity-worker.mjs" --var ALARM_MINUTE_SECONDS:0.5
+fresh proactive-call-worker "node test/proactive-call-worker.mjs" --var ALARM_MINUTE_SECONDS:0.5 --var PROACTIVE_CALL_RING_SECONDS:3 --var PROACTIVE_CALL_ONLINE_SECONDS:2
 fresh letter-failures "node test/letter-failures.mjs"
 pair letter-restart "node test/letter-failures.mjs restart-1" "node test/letter-failures.mjs restart-2"
 pair native-tasks "node test/native-tasks.mjs first" "node test/native-tasks.mjs restart"

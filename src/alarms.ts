@@ -199,13 +199,13 @@ export function planAlarm(input: AlarmInput, now: number, timeZone: string, thei
   return { next, repeat };
 }
 
-export function alarmNote(alarm: Alarm, now: string, setAt: string): string {
+export function alarmNote(alarm: Alarm, now: string, setAt: string, callHint = ""): string {
   const repeats = alarm.repeat ? `It repeats (${alarm.repeat}) until you cancel it (id ${alarm.id}).` : "It rang once and is gone now.";
   return `${ALARM_PREFIX}; it is now ${now}.) You set it on ${setAt} with this note:
 <<<
 ${alarm.note}
 >>>
-${repeats} If you would like to reach out to them, write exactly what you want to send, as in any chat. If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
+${repeats} If you would like to reach out to them, write exactly what you want to send, as in any chat.${callHint} If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
 }
 
 function hex(bytes: number): string {

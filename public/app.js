@@ -151,6 +151,8 @@ function resident() {
         help: '这段时间里没动静也不问它要不要找你，这段沉默剩下的次数作废，你下次说话再从头数。按下面的时区算。你定的「主动找你」、它的闹钟和交接信照常。' },
       { key: 'ALARMS', label: '让它自己定闹钟', def: 'off', labels: ON_OFF,
         help: '它能自己定什么时候来找你：几分钟后、某个时间，或者每天几点，最多 10 个，重复的最密一小时一次。你一小时以上没说话时响，要把整段对话重新读一遍，大约顶 20 多条消息的钱。' },
+      { key: 'PROACTIVE_CALL', label: '有事想聊时给你打网页电话', def: 'off', labels: ON_OFF,
+        help: '打开后，住户在定时找你、没动静时、闹钟响了这些主动联系机会里，有具体事情想聊时可以选择给你打网页电话；需要先在「语音」里配好声音。夜里免打扰时段不会来电；拒接、超时或网页没接到时，会按普通主动消息留一句。' },
       { key: 'TIME_ZONE', label: '时区', def: 'Asia/Singapore' }
     ] },
     { id: 'voice', title: '语音', fields: [
@@ -250,7 +252,7 @@ function resident() {
   var TOOL_WORDS = {
     memory_recall: '翻了记忆', memory_remember: '记下了', memory_notebook: '翻了小本本', memory_forget: '忘掉了', memory_keep_moment: '存了一刻',
     web_search: '搜了网', web_fetch: '读了网页', make_sticker: '画了表情包', send_sticker: '发了表情包', send_voice: '发了语音', cloud_task: '交给线程',
-    set_alarm: '定了闹钟', list_alarms: '看了闹钟', cancel_alarm: '取消了闹钟', mcp_connect: '接了工具', edit_persona: '改了人设'
+    call_web: '发起了来电', set_alarm: '定了闹钟', list_alarms: '看了闹钟', cancel_alarm: '取消了闹钟', mcp_connect: '接了工具', edit_persona: '改了人设'
   };
   var USAGE_SPANS = [{ key: 'today', label: '今天' }, { key: 'week', label: '7 天' }, { key: 'month', label: '30 天' }];
   // Where the page turns into the computer layout (the same width as in app.css).
@@ -306,6 +308,8 @@ function resident() {
   var playback = null;
   // The version of the conversation the page has (GET /web/messages?since=).
   var seenRev = '';
+  var refreshSequence = 0;
+  var lastCallPoll = 0;
   var doorEpoch = 0;
   var picLoading = {};
   // The Android app's notifications (Capacitor): one sign-up per installation, whichever resident is open.
@@ -702,6 +706,7 @@ function resident() {
       if (id === this.resident && this.view === 'group') { this.view = 'chat'; this.scrollSoon(true); }
       if (id === this.resident || !this.authed) return;
       this.resetVoiceDesign();
+      if (this.resetIncomingCall) this.resetIncomingCall();
       clearTimeout(pollTimer);
       this.clearVoicePlayback();
       this.resident = id;
@@ -806,6 +811,7 @@ function resident() {
 
     logout() {
       this.resetVoiceDesign();
+      if (this.resetIncomingCall) this.resetIncomingCall();
       this.clearVoicePlayback();
       writeKey('');
       seenRev = '';
@@ -1045,12 +1051,16 @@ function resident() {
       pollTimer = setTimeout(async function () {
         if (self.authed && (!document.hidden || playback?.live || call)) await self.refresh().catch(function () {});
         if (self.authed) self.poll(self.replying());
-      }, fast || playback?.live || call || self.voiceDesignActive() ? FAST_MS : POLL_MS);
+      }, fast || playback?.live || call || self.voiceDesignActive() || self.incomingCall ? FAST_MS : POLL_MS);
     },
     // What /web/messages gave: the lines, or null when nothing has changed since the version the page has.
-    took(data) {
+    took(data, sequence) {
       this.syncVoiceDesign(data);
       if (this.syncChatPermissions) this.syncChatPermissions(data);
+      if (data && this.syncIncomingCall && Object.prototype.hasOwnProperty.call(data, 'incomingCall') && (sequence === undefined || sequence > lastCallPoll)) {
+        if (sequence !== undefined) lastCallPoll = sequence;
+        this.syncIncomingCall(data);
+      }
       if (data && data.rev) seenRev = data.rev;
       if (data && this.syncChatTurn && Object.prototype.hasOwnProperty.call(data, 'turn')) this.syncChatTurn(data.turn);
       if (data && data.same) return null;
@@ -1061,10 +1071,11 @@ function resident() {
     async refresh(full) {
       if (!this.authed) return;
       var epoch = doorEpoch;
+      var sequence = ++refreshSequence;
       var since = full ? '' : seenRev;
       var data = await this.api('/web/messages' + (since ? '?since=' + encodeURIComponent(since) : ''));
       if (!this.authed || epoch !== doorEpoch) return;
-      var lines = this.took(data);
+      var lines = this.took(data, sequence);
       if (!lines) return;
       var before = this.lines.length;
       var stick = this.isNearBottom();
@@ -1301,44 +1312,101 @@ function resident() {
     },
 
     // ---- a call: voice messages back and forth, hands free ----
-    async startCall() {
-      if (this.calling || this.recording) return;
+    callEpoch() {
+      return doorEpoch;
+    },
+    prepareCallAudio() {
+      var Context = window.AudioContext || window.webkitAudioContext;
+      if (!Context || typeof Audio !== 'function') return null;
+      var context;
+      try {
+        context = new Context();
+        if (context.state === 'suspended') context.resume().catch(function () {});
+        if (!player) player = new Audio();
+        if (!playback) {
+          player.src = 'data:audio/wav;base64,' + base64Of(encodeWav([new Float32Array(1600)], 16000, 16000));
+          player.play().catch(function () {});
+        }
+        return context;
+      } catch (error) {
+        if (context) context.close().catch(function () {});
+        return null;
+      }
+    },
+    async startCall(options) {
+      var context = options && options.context;
+      if (this.calling || this.recording || (this.incomingCallBusy && !context)) {
+        if (context) context.close().catch(function () {});
+        return false;
+      }
       this.panel = '';
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { this.notify('这个浏览器录不了音'); return; }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (context) context.close().catch(function () {});
+        this.notify('这个浏览器录不了音');
+        return false;
+      }
+      var epoch = doorEpoch;
+      var targetResident = this.resident;
       // Both made while she is still pressing the button: the reply plays later with no tap of hers, and the
       // microphone's audio runs (Safari holds back either otherwise).
-      if (!player) player = new Audio();
-      player.src = 'data:audio/wav;base64,' + base64Of(encodeWav([new Float32Array(1600)], 16000, 16000));
-      player.play().catch(function () {});
-      var Context = window.AudioContext || window.webkitAudioContext;
-      var context = new Context();
-      try { this.config = await this.api('/web/config'); this.fillDrafts(); } catch (e) {}
-      var gap = this.config.voice && this.config.voice.gap;
-      if (gap) {
-        context.close().catch(function () {});
-        this.notify(gap === 'off' ? '它还不会说话：先在 设置 → 声音 里选一家' : '它的声音还差' + this.voiceGapLabel() + '，在 设置 → 声音 里填好再打');
-        return;
+      context = context || this.prepareCallAudio();
+      if (!context) {
+        this.notify('这个浏览器录不了音');
+        return false;
+      }
+      var initialWait = options && options.initialWait;
+      if (!initialWait) {
+        try { this.config = await this.api('/web/config'); this.fillDrafts(); } catch (e) {}
+        if (epoch !== doorEpoch || this.resident !== targetResident) {
+          context.close().catch(function () {});
+          return false;
+        }
+        var gap = this.config.voice && this.config.voice.gap;
+        if (gap) {
+          context.close().catch(function () {});
+          this.notify(gap === 'off' ? '它还不会说话：先在 设置 → 声音 里选一家' : '它的声音还差' + this.voiceGapLabel() + '，在 设置 → 声音 里填好再打');
+          return false;
+        }
       }
       var stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       } catch (error) {
         context.close().catch(function () {});
-        this.notify('没拿到麦克风：在浏览器设置里允许这个网页用麦克风');
-        return;
+        if (epoch === doorEpoch) this.notify('没拿到麦克风：在浏览器设置里允许这个网页用麦克风');
+        return false;
       }
-      if (context.state === 'suspended') context.resume().catch(function () {});
-      var source = context.createMediaStreamSource(stream);
-      var node = context.createScriptProcessor(4096, 1, 1);
+      if (epoch !== doorEpoch || this.resident !== targetResident || this.calling || this.recording) {
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        context.close().catch(function () {});
+        return false;
+      }
+      var source;
+      var node;
+      try {
+        if (context.state === 'suspended') context.resume().catch(function () {});
+        source = context.createMediaStreamSource(stream);
+        node = context.createScriptProcessor(4096, 1, 1);
+        source.connect(node);
+        node.connect(context.destination);
+      } catch (error) {
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        context.close().catch(function () {});
+        this.notify('麦克风开了，但没能开始通话');
+        return false;
+      }
       var self = this;
-      call = { stream: stream, context: context, source: source, node: node, rate: context.sampleRate, phase: 'listening',
-        preroll: [], loud: 0, utterance: null, known: null, played: new Set(), quietSince: 0,
+      var initialPhase = initialWait ? 'thinking' : 'listening';
+      call = { stream: stream, context: context, source: source, node: node, rate: context.sampleRate, phase: initialPhase,
+        preroll: [], loud: 0, utterance: null,
+        known: initialWait ? initialWait.known : null,
+        expectId: initialWait ? initialWait.messageId : null,
+        played: new Set(), quietSince: 0,
         tick: setInterval(function () { self.followCall(); }, 250) };
       node.onaudioprocess = function (event) { self.callHeard(new Float32Array(event.inputBuffer.getChannelData(0))); };
-      source.connect(node);
-      node.connect(context.destination);
-      this.calling = { phase: 'listening' };
+      this.calling = { phase: initialPhase };
       this.poll(true);
+      return true;
     },
     endCall() {
       var c = call;
@@ -1360,7 +1428,7 @@ function resident() {
     // One chunk from the microphone.
     callHeard(chunk) {
       var c = call;
-      if (!c) return;
+      if (!c || c.expectId) return;
       var sum = 0;
       for (var i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
       var rms = Math.sqrt(sum / chunk.length);
@@ -1397,6 +1465,7 @@ function resident() {
       var url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
       // The reply to play is one that was not there yet.
       c.known = new Set(this.lines.map(function (line) { return line.id; }));
+      c.expectId = null;
       c.quietSince = 0;
       this.setCallPhase('thinking');
       this.send({ voice: { data: base64Of(wav) }, call: true }, { voice: { url: url, seconds: seconds } });
@@ -1412,22 +1481,31 @@ function resident() {
       if (c.phase !== 'thinking' || !c.known) return;
       var known = c.known;
       // Its replies since she spoke, but for ones already played (the live draft and the saved reply share a key).
-      var replies = this.lines.filter(function (line) {
-        return line.role === 'assistant' && line.kind === 'chat' && !known.has(line.id) && !(line.voice && c.played.has(line.voice.key));
-      });
+      var replies = c.expectId
+        ? this.lines.filter(function (line) {
+            return line.id === c.expectId && line.role === 'assistant' && line.kind === 'chat' && !(line.voice && c.played.has(line.voice.key));
+          })
+        : this.lines.filter(function (line) {
+            return line.role === 'assistant' && line.kind === 'chat' && !known.has(line.id) && !(line.voice && c.played.has(line.voice.key));
+          });
       var spoken = replies.find(function (line) { return line.voice && line.voice.key; });
       if (spoken) {
         c.played.add(spoken.voice.key);
+        if (c.expectId && spoken.id === c.expectId) {
+          c.known = null;
+        }
         this.setCallPhase('speaking');
-        this.play(spoken.voice.key, null, spoken.voice);
+        this.play(spoken.voice.key, null, spoken.voice).finally(function () { c.expectId = null; });
         return;
       }
-      var done = !this.replying() && !this.outbox.some(function (item) { return item.state === 'sending'; });
+      var voicePending = replies.some(function (line) { return Boolean(line.voicePending); });
+      var done = !voicePending && !this.replying() && !this.outbox.some(function (item) { return item.state === 'sending'; });
       if (!done) { c.quietSince = 0; return; }
       // Its voice is made after the words: a moment more before going back to listening.
       if (!c.quietSince) c.quietSince = Date.now();
-      if (replies.length && Date.now() - c.quietSince < CALL_NO_VOICE_MS) return;
+      if ((replies.length || c.expectId) && Date.now() - c.quietSince < CALL_NO_VOICE_MS) return;
       if (replies.length) this.notify('这句它没念出来，回在聊天里了');
+      c.expectId = null;
       c.known = null;
       this.setCallPhase('listening');
     },
@@ -3411,5 +3489,5 @@ function resident() {
       this.toast = message;
       setTimeout(function () { if (self.toast === message) self.toast = ''; }, 2400);
     }
-  }, typeof groupPage === 'function' ? groupPage() : {}, typeof machinePage === 'function' ? machinePage() : {}, typeof boxesPage === 'function' ? boxesPage() : {}, typeof attachPage === 'function' ? attachPage() : {}, typeof waitingPage === 'function' ? waitingPage() : {}, typeof chatPermissionsPage === 'function' ? chatPermissionsPage() : {}, typeof progressPage === 'function' ? progressPage() : {}, typeof recommendedRolesPage === 'function' ? recommendedRolesPage() : {}, typeof chatStopPage === 'function' ? chatStopPage() : {}, typeof homeScreenPage === 'function' ? homeScreenPage() : {}, typeof readingNotesPage === 'function' ? readingNotesPage() : {});
+  }, typeof groupPage === 'function' ? groupPage() : {}, typeof machinePage === 'function' ? machinePage() : {}, typeof boxesPage === 'function' ? boxesPage() : {}, typeof attachPage === 'function' ? attachPage() : {}, typeof waitingPage === 'function' ? waitingPage() : {}, typeof chatPermissionsPage === 'function' ? chatPermissionsPage() : {}, typeof progressPage === 'function' ? progressPage() : {}, typeof recommendedRolesPage === 'function' ? recommendedRolesPage() : {}, typeof chatStopPage === 'function' ? chatStopPage() : {}, typeof homeScreenPage === 'function' ? homeScreenPage() : {}, typeof readingNotesPage === 'function' ? readingNotesPage() : {}, typeof proactiveCallPage === 'function' ? proactiveCallPage() : {});
 }

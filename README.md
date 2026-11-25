@@ -227,7 +227,7 @@ One Worker can house several residents, each with its own persona, model, settin
 - **The first resident** stays exactly as it was: same address, settings and bot. If you never make another, nothing changes.
 - **A new resident's addresses** are under `/r/<id>`: its web page is `/?r=<id>`, and its Telegram webhook, WeCom message URL, thread reports and MCP sign-ins all carry that part. The resident fills them in itself.
 - **Memory**: it shares the first resident's Aelios address and key, speaks as the Aelios identity named after its id (`/<id>/`) and keeps its memories in that identity's space. Create the identity in Aelios' admin page and give it its main models; change the identity on its settings page under Long-term memory. The key must be Aelios' main key, `CHATBOX_API_KEY`: the other keys read and write only the default space, where two residents' memories would mix.
-- **Settings it never takes from Cloudflare**: the Telegram bot token, the WeCom app (AgentId, Secret, Token, EncodingAESKey), the Aelios identity and space, its name, and check-ins and heartbeats (a new resident does not reach out until you turn it on). The Cloudflare variables for these are the first resident's only. Everything else (providers, the Claude box, search, voice, the GitHub token, the time zone, who may talk to it) follows Cloudflare until set on its page.
+- **Settings it never takes from Cloudflare**: the Telegram bot token, the WeCom app (AgentId, Secret, Token, EncodingAESKey), the Aelios identity and space, its name, and check-ins, heartbeats and proactive calls (a new resident does not reach out or call until you turn them on). The Cloudflare variables for these are the first resident's only. Everything else (providers, the Claude box, search, voice, the GitHub token, the time zone, who may talk to it) follows Cloudflare until set on its page.
 - **Its own bot**: make another bot with @BotFather and paste its token on the new resident's settings page under Chat channels → Telegram. It connects the bot to `/r/<id>` itself, and the bot's menu button opens the Mini App on it. For WeCom, make another app and use the message URL shown on its settings page.
 - **Notifications**: the whole web door has one key pair and one list of devices, so a device that turned notifications on once, on any resident's page, gets every resident's, and tapping one opens that resident. Turning them off on one page turns them off for all.
 - **Deleting one**: open its page (tap its avatar), then **Delete this resident** (「删除这个住户」) at the bottom, and type its id to confirm. Its conversation, settings, stickers and alarms are deleted and its bot is let go; its memories in Aelios stay. It is off the list at once, but its id stays taken until everything is wiped; if wiping fails, it is tried again a few minutes later. The first resident cannot be deleted. Up to 8 more besides the first.
@@ -352,7 +352,7 @@ Changing the persona, switching models, deleting or branching messages, deployin
 - Normally each heartbeat comes within the 1-hour lifetime of the previous cache, so it costs about as much as one of your messages. Delayed scheduling, a changed prefix or an expired provider cache can still force a rebuild, so heartbeats are not free.
 - When the threshold is reached, the quiet time is up and there is something to fold, it writes a letter and skips the heartbeat: after a letter the conversation has changed and the whole cache must be rewritten, so asking then would be expensive.
 - Set the number under **Reaching out & alarms**: `0` turns it off, `10` is the maximum. Only models that use the Anthropic Messages cache get heartbeats, and not when the cache is set to 5 minutes or letters are turned `off`.
-- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Reaching out & alarms** with two hour pickers or a preset; `off` asks at night too. Check-ins, alarms and letters are not affected, since those run at a time someone chose.
+- **Quiet hours** (`QUIET_HOURS`, `00:00-08:00` by default, in your time zone): a heartbeat that falls in them is not asked, and the rest of that silence's count is dropped; proactive calls do not ring during quiet hours either. It does not pick up again in the morning: by then the cache is cold and asking would cost the whole conversation. Your next message starts a new count. Set them under **Reaching out & alarms** with two hour pickers or a preset; `off` asks at night too. Text check-ins, alarms and letters are not affected, since those run at a time someone chose.
 
 **Alarms** (`ALARMS`, off by default): when on, it gets three tools — set an alarm, list alarms, cancel one. An alarm can ring in a few minutes, once at a set time, or on repeat, like `every day at 21:30`, `every weekday at 08:00`, `every week on sat,sun at 10:00` or `every 3 hours`. When it rings, it gets back the note it wrote and can message you or let it pass.
 
@@ -360,6 +360,13 @@ Changing the persona, switching models, deleting or branching messages, deployin
 - Its alarms are listed under **Reaching out & alarms**, and on its page; **Move** (「改时间」) changes when one rings and **Delete** (「删掉」) removes it. The card under the reply that set an alarm has the same buttons. When you change the time zone, daily alarms follow the new zone.
 - At most 10 alarms; a repeat at most once an hour; at most 24 rings a day for all alarms together.
 - An alarm turn that completes (even with a `SKIP` reply) counts as new activity: it restarts the quiet timer and stops the old heartbeats; when the quiet time is up, it writes a letter if one is due, or starts the heartbeat. A failed alarm does not count. The ring is still a system note: it never poses as your words and does not change when you last spoke. Heartbeats and check-ins do not count as activity.
+
+**Proactive calls** (`PROACTIVE_CALL`, off by default, per resident): turn it on under **Reaching out & alarms** (with a voice configured) to let the resident choose `call_web` during existing proactive turns (check-ins, heartbeats, alarms) when it has something concrete to talk about.
+
+- Respects the resident's **Quiet hours** (`QUIET_HOURS`): proactive calls do not ring and are not offered during quiet hours.
+- The web door shows an Answer / Decline banner; the microphone is requested only after you click **Answer**, then hands off into the existing **Calls** flow on the current main chat with that resident's configured voice, with the resident speaking its opening first.
+- If you decline, let it ring out, or the web door is not online to receive the ring, it leaves a single fallback message through the existing proactive message pipeline without duplicate disturbance.
+- Multi-tab guards ensure a call can only be answered once, and resident switches or late clicks never cross residents or open the microphone for a stale ring. v1 is web-door only.
 
 ### Web search and web pages
 
@@ -399,7 +406,7 @@ To **design a voice**, select ElevenLabs under **Voice**, save an API key with V
 
 **Calls**: on the web door, More → 打电话 (call). The microphone stays open; when you pause (about 0.9 s) what you said goes out as a voice message, the reply's voice plays as it is written, and then it listens again. Talk clearly over it and it stops to listen. It uses everything above: Scribe or Whisper to hear, your chosen voice to speak, the same key (one stored on AI Gateway will do), nothing more to set up. What is said on a call stays in the chat; the model sees `[voice 0:03, on a call] what you said` and answers briefly, as on the phone, and a call's replies are spoken whatever "when to send voice" says. Without a voice set up there is no call. It is not true streaming: each turn waits for transcription, the reply and its speech, so a round trip takes a few seconds; headphones work best, since on a loudspeaker the echo can be taken for you talking.
 
-The code is in `src/voice.ts`; the call is in `public/app.js` (`startCall`).
+The code is in `src/voice.ts`; the call is in `public/app.js` (`startCall`), and resident-initiated web calls live in `src/proactive-call.ts` and `public/proactive-call.js`.
 
 ### Stickers
 
@@ -559,8 +566,9 @@ Everything is changed on the settings page, except `WEB_KEY` (a Cloudflare secre
 | `DEBOUNCE_SECONDS` | `3` | Messages sent within this many seconds count as one turn (Telegram, WeCom and the web door) |
 | `CHECKIN_SCHEDULE` | empty (no check-ins) | Times like `every day at 09:00`, `every weekday at 21:30`, `every 3 hours` |
 | `HEARTBEAT` | `3` | When the quiet time is up but the chat is below the letter threshold (or there is nothing to fold), ask whether it wants to reach out, then again after each further quiet time, at most this many times per silence. `0` turns it off, `10` at most |
-| `QUIET_HOURS` | `00:00-08:00` | Hours in `TIME_ZONE` when the heartbeat does not ask; hours past midnight such as `23:00-07:00` work. `off` for none |
+| `QUIET_HOURS` | `00:00-08:00` | Hours in `TIME_ZONE` when the heartbeat does not ask and proactive calls do not ring; hours past midnight such as `23:00-07:00` work. `off` for none |
 | `ALARMS` | `off` | `on` lets it set its own alarms to come back to you, at most 10 |
+| `PROACTIVE_CALL` | `off` | `on` lets the resident place a web-door call during check-ins, heartbeats or alarms (requires a voice and respects `QUIET_HOURS`) |
 | `PERSONA_EDIT` | `off` | `on` lets it change its own persona with `edit_persona`; switched on the persona page |
 | `AELIOS_URL` / `AELIOS_API_KEY` | empty | Long-term memory; when empty, Aelios is not used and the chat does not go through it |
 | `AELIOS_NAMESPACE` | `default` | The memory space for the memory tools, boot packet and letters; it must match the identity's space in Aelios. All three keys read and write `default`; only `CHATBOX_API_KEY` can use another |

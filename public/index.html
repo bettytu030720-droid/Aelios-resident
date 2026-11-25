@@ -58,6 +58,7 @@ document.addEventListener('alpine:init', function () {
 <script src="/chat-stop.js"></script>
 <script src="/home-screen.js"></script>
 <script src="/reading-notes.js"></script>
+<script src="/proactive-call.js"></script>
 <script src="/app.js"></script>
 <script defer src="/vendor/alpine-3.14.9.min.js"></script>
 </head>
@@ -180,6 +181,22 @@ document.addEventListener('alpine:init', function () {
       </button>
     </div>
   </header>
+
+  <template x-if="authed && incomingCall && !calling">
+    <div class="incoming-call-wrap">
+      <div class="incoming-call" role="alert" aria-live="assertive">
+        <span class="incoming-dot" aria-hidden="true"></span>
+        <div class="incoming-info">
+          <div class="incoming-title" x-text="incomingCallTitle()"></div>
+          <div class="incoming-sub" x-text="incomingCallSubtitle()"></div>
+        </div>
+        <div class="incoming-acts">
+          <button class="incoming-btn decline" type="button" :disabled="incomingCallBusy" @click="declineIncomingCall()" aria-label="拒接来电">拒接</button>
+          <button class="incoming-btn accept" type="button" :disabled="incomingCallBusy || Boolean(recording)" @click="answerIncomingCall()" aria-label="接听来电">接听</button>
+        </div>
+      </div>
+    </div>
+  </template>
 
   <main class="chat" x-show="authed && view === 'chat'">
     <div class="stream" x-ref="stream" @scroll.passive="onScroll()">

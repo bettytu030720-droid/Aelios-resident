@@ -69,6 +69,7 @@ export const FIELDS: readonly Field[] = [
   { key: "HEARTBEAT", kind: "text", check: times },
   { key: "QUIET_HOURS", kind: "text", check: quietHoursProblem },
   { key: "ALARMS", kind: "choice", choices: ["on", "off"] },
+  { key: "PROACTIVE_CALL", kind: "choice", choices: ["on", "off"] },
   // edit_persona: it changes its own persona (persona-edit.ts).
   { key: "PERSONA_EDIT", kind: "choice", choices: ["on", "off"] },
   { key: "LETTER_IDLE_MINUTES", kind: "text", check: minutes },

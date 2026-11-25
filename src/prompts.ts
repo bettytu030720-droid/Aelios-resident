@@ -72,8 +72,8 @@ Rules:
 - Don't call any tools. Output only the letter, and stop after the last section, without summing up.`;
 }
 
-export function checkinPrompt(now: string): string {
-  return `${CHECKIN_PREFIX}; it is now ${now}.) If you would like to reach out to them, write exactly what you want to send, as in any chat. If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
+export function checkinPrompt(now: string, callHint = ""): string {
+  return `${CHECKIN_PREFIX}; it is now ${now}.) If you would like to reach out to them, write exactly what you want to send, as in any chat.${callHint} If now is a bad time to disturb them (they may be asleep or busy), or you have nothing to say, reply with just the four letters SKIP.`;
 }
 
 /** Heartbeats in one quiet time unless HEARTBEAT says otherwise, and the most it may say. */
@@ -85,10 +85,10 @@ export const MAX_HEARTBEATS = 10;
  * had nothing to fold. The cache is still warm, so asking costs about one message of theirs. `n` of `times` in this
  * quiet time.
  */
-export function heartbeatPrompt(now: string, minutes: number, n: number, times: number): string {
+export function heartbeatPrompt(now: string, minutes: number, n: number, times: number, callHint = ""): string {
   const count = times > 1 ? ` This is heartbeat ${n} of ${times} while they are quiet${n === times ? ", the last" : ""}.` : "";
   // No nudge towards set_alarm: a completed alarm starts a new quiet cycle, and with it more heartbeats.
-  return `${HEARTBEAT_PREFIX}; they have not written for ${minutes} minute${minutes === 1 ? "" : "s"}, and it is now ${now}.${count}) Would you like to reach out to them? If so, write exactly what you want to send, as in any chat. If they are probably busy or asleep, or you have nothing to say, reply with just the four letters SKIP.`;
+  return `${HEARTBEAT_PREFIX}; they have not written for ${minutes} minute${minutes === 1 ? "" : "s"}, and it is now ${now}.${count}) Would you like to reach out to them? If so, write exactly what you want to send, as in any chat.${callHint} If they are probably busy or asleep, or you have nothing to say, reply with just the four letters SKIP.`;
 }
 
 export const SKIP = "SKIP";

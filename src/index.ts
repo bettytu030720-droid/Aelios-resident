@@ -301,12 +301,16 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
   }
   const body =
     request.method === "POST"
-      ? ((await request.json().catch(() => url.pathname === "/web/stop" ? null : {})) as {
+      ? ((await request.json().catch(() =>
+          url.pathname === "/web/stop" || url.pathname === "/web/call/answer" || url.pathname === "/web/call/decline" ? null : {}
+        )) as {
           text?: string;
           key?: string;
           name?: string;
           url?: string;
           id?: string;
+          residentId?: unknown;
+          clientId?: unknown;
           on?: boolean;
           when?: string;
           emoji?: string;
@@ -346,7 +350,7 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       return Response.json({ ok: true, aelios: await agent.hasMemory(), via: who.via, ...(await agent.webIdentity()) });
     case "GET /web/messages":
       // ?since=<version>: { same } while nothing has changed, without reading the conversation.
-      return Response.json(await agent.webLook(url.searchParams.get("since")));
+      return Response.json(await agent.webLook(url.searchParams.get("since")), { headers: { "cache-control": "no-store" } });
     case "GET /web/search": {
       // ?q=<words>, and ?before=<where the last page stopped> for the next page (chat-search.ts).
       const before = Number(url.searchParams.get("before"));
@@ -375,6 +379,24 @@ async function handleWeb(request: Request, env: Env, url: URL, at: At): Promise<
       if ("error" in input) return Response.json(input, { status: 400 });
       const stopped = await agent.webStop(input.requestId);
       return Response.json(stopped, { status: "error" in stopped ? 409 : 200, headers: { "cache-control": "no-store" } });
+    }
+    case "POST /web/call/answer": {
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return Response.json({ error: "请求格式不对" }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
+      await agent.noteOrigin(at.base);
+      const answered = await agent.webAnswerProactiveCall({ id: body.id, residentId: body.residentId, clientId: body.clientId });
+      const status = "status" in answered ? (answered.status === "stale" ? 409 : 200) : 400;
+      return Response.json(answered, { status, headers: { "cache-control": "no-store" } });
+    }
+    case "POST /web/call/decline": {
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return Response.json({ error: "请求格式不对" }, { status: 400, headers: { "cache-control": "no-store" } });
+      }
+      await agent.noteOrigin(at.base);
+      const declined = await agent.webDeclineProactiveCall({ id: body.id, residentId: body.residentId, clientId: body.clientId });
+      const status = "status" in declined ? (declined.status === "stale" ? 409 : 200) : 400;
+      return Response.json(declined, { status, headers: { "cache-control": "no-store" } });
     }
     case "POST /web/take-back": {
       // Its latest reply deleted, or with again: true answered anew (take-back.ts).

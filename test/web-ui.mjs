@@ -8,7 +8,7 @@ const code = readFileSync('public/app.js', 'utf8');
 const markdown = readFileSync('public/markdown.js', 'utf8');
 
 // The parts app.js mixes into the page's state, as the page loads them.
-const mixins = { chatPermissionsPage: 'public/chat-permissions.js', groupPage: 'public/group.js', machinePage: 'public/machine.js', waitingPage: 'public/waiting.js', attachPage: 'public/attach.js', recommendedRolesPage: 'public/recommended-roles.js', chatStopPage: 'public/chat-stop.js', homeScreenPage: 'public/home-screen.js', readingNotesPage: 'public/reading-notes.js' };
+const mixins = { chatPermissionsPage: 'public/chat-permissions.js', groupPage: 'public/group.js', machinePage: 'public/machine.js', waitingPage: 'public/waiting.js', attachPage: 'public/attach.js', recommendedRolesPage: 'public/recommended-roles.js', chatStopPage: 'public/chat-stop.js', homeScreenPage: 'public/home-screen.js', readingNotesPage: 'public/reading-notes.js', proactiveCallPage: 'public/proactive-call.js' };
 assert.ok(html.includes('<script src="/app.js"></script>'), 'the page loads its script from /app.js');
 for (const file of Object.values(mixins)) assert.ok(html.includes(`<script src="/${file.slice('public/'.length)}"></script>`), `the page loads ${file}`);
 const resized = [];
@@ -1799,6 +1799,184 @@ wide.showChat();
 assert.equal(profiled, true, 'and from the chat it shows who it is');
 delete context.matchMedia;
 console.log('PASS the computer layout: a line under each name, the sidebar folds away and back (a drawer on a phone), the resident\'s card goes to its chat');
+
+// Proactive incoming web call: ring banner, resident isolation, late polls, stale 409 without mic, and handoff into startCall.
+{
+  for (const part of ['@click="answerIncomingCall()"', '@click="declineIncomingCall()"', 'x-text="incomingCallTitle()"', 'x-text="incomingCallSubtitle()"']) {
+    assert.ok(html.includes(part), `the incoming call banner has ${part}`);
+  }
+  let micOpens = 0;
+  const stopped = [];
+  const ticks = [];
+  let activeAudio = null;
+  const origSetInterval = context.setInterval;
+  const origClearInterval = context.clearInterval;
+  const origAudio = context.Audio;
+  const channels = [];
+  context.BroadcastChannel = class {
+    constructor(name) { this.name = name; channels.push(this); }
+    postMessage(data) {
+      for (const peer of channels) if (peer !== this && peer.name === this.name) peer.onmessage?.({ data });
+    }
+  };
+  context.setInterval = (fn) => { ticks.push(fn); return ticks.length; };
+  context.clearInterval = () => {};
+  context.Audio = class {
+    constructor() { this.src = ''; activeAudio = this; }
+    play() { return Promise.resolve(); }
+    pause() {}
+  };
+  context.navigator = {
+    mediaDevices: {
+      async getUserMedia() {
+        micOpens += 1;
+        return { getTracks: () => [{ stop() { stopped.push('track'); } }] };
+      }
+    }
+  };
+  context.window.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.state = 'running'; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    close() { stopped.push('context'); return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
+  };
+
+  const incomingPage = vm.runInContext('testPage()', context);
+  incomingPage.authed = true;
+  incomingPage.resident = 'default';
+  incomingPage.identity = { name: '小来', avatar: null };
+  incomingPage.scrollSoon = () => {};
+  incomingPage.poll = () => {};
+  incomingPage.refresh = async () => {};
+  const notices = [];
+  incomingPage.notify = (msg) => notices.push(msg);
+  const otherTab = vm.runInContext('testPage()', context);
+  otherTab.resident = 'default';
+
+  // Wrong residentId is ignored (no cross-resident bleed).
+  incomingPage.took({ same: true, rev: 'r1', incomingCall: { id: 'c_other', residentId: 'bob', topic: '别串台', createdAt: Date.now(), expiresAt: Date.now() + 30000 } });
+  assert.equal(incomingPage.incomingCall, null, 'wrong residentId never rings here');
+
+  // Decline clears banner and late poll with the same call id cannot resurrect it.
+  const declinedCalls = [];
+  let offline = true;
+  incomingPage.api = async (path, opts) => {
+    if (path === '/web/call/decline') {
+      if (offline) throw new Error('Failed to fetch');
+      declinedCalls.push(opts.body);
+      return { status: 'declined', id: opts.body.id, residentId: opts.body.residentId };
+    }
+    throw new Error('unexpected api ' + path);
+  };
+  const ring1 = { id: 'c_decline', residentId: 'default', topic: '方案讨论', createdAt: Date.now(), expiresAt: Date.now() + 30000 };
+  incomingPage.took({ same: true, rev: 'r2', incomingCall: ring1 });
+  otherTab.took({ same: true, rev: 'r2', incomingCall: ring1 });
+  assert.equal(incomingPage.incomingCall.id, 'c_decline');
+  assert.equal(incomingPage.incomingCallTitle(), '小来 来电');
+  assert.equal(incomingPage.incomingCallSubtitle(), '方案讨论');
+  await incomingPage.declineIncomingCall();
+  assert.equal(incomingPage.incomingCall.id, 'c_decline', 'transient errors keep a ring available for retry');
+  assert.equal(otherTab.incomingCall.id, 'c_decline', 'a transient error is not broadcast as resolved');
+  offline = false;
+  await incomingPage.declineIncomingCall();
+  assert.equal(declinedCalls.length, 1);
+  assert.equal(incomingPage.incomingCall, null);
+  assert.equal(otherTab.incomingCall, null, 'confirmed declines are broadcast to other tabs');
+  assert.equal(micOpens, 0, 'declining never opens the microphone');
+  incomingPage.took({ same: true, rev: 'r2', incomingCall: ring1 });
+  assert.equal(incomingPage.incomingCall, null, 'a late poll cannot resurrect a declined call');
+
+  // Multi-tab stale 409 on answer never opens the microphone.
+  const ring2 = { id: 'c_stale', residentId: 'default', topic: '重复接听', createdAt: Date.now(), expiresAt: Date.now() + 30000 };
+  incomingPage.took({ same: true, rev: 'r3', incomingCall: ring2 });
+  incomingPage.api = async (path) => {
+    if (path === '/web/call/answer') throw Object.assign(new Error('这通来电已经在别处接听了'), { status: 409 });
+    throw new Error('unexpected api ' + path);
+  };
+  await incomingPage.answerIncomingCall();
+  assert.equal(micOpens, 0, 'stale 409 answer never opens the microphone');
+  assert.equal(incomingPage.incomingCall, null);
+  assert.equal(incomingPage.calling, null);
+  assert.equal(notices.at(-1), '这通来电已经在别处接听了');
+  incomingPage.took({ same: true, incomingCall: null }, 2);
+  incomingPage.took({ same: true, incomingCall: { ...ring2, id: 'late_old_poll' } }, 1);
+  assert.equal(incomingPage.incomingCall, null, 'an old poll arriving after a new one cannot restore a stale ring');
+
+  // Switching residents mid-flight while answer is pending aborts without opening mic on the new resident.
+  const ring3 = { id: 'c_switch', residentId: 'default', topic: '切换住户', createdAt: Date.now(), expiresAt: Date.now() + 30000 };
+  incomingPage.took({ same: true, rev: 'r4', incomingCall: ring3 });
+  let finishSwitchAnswer;
+  incomingPage.api = async (path) => {
+    if (path === '/web/call/answer') return new Promise((resolve) => { finishSwitchAnswer = resolve; });
+    return {};
+  };
+  const pendingAnswer = incomingPage.answerIncomingCall();
+  incomingPage.resetVoiceDesign();
+  incomingPage.resetIncomingCall();
+  incomingPage.resident = 'bob';
+  finishSwitchAnswer({ status: 'answered', id: 'c_switch', residentId: 'default', messageId: 'call_ans_a_c_switch', opening: '喂' });
+  await pendingAnswer;
+  assert.equal(micOpens, 0, 'resident switch mid-flight never opens mic on the new resident');
+  assert.equal(incomingPage.calling, null);
+
+  // Answering opens mic only after server claim, waits for opening voice, plays it, then listens.
+  incomingPage.resident = 'default';
+  incomingPage.view = 'config';
+  incomingPage.lines = [{ id: 'old_1', role: 'assistant', kind: 'chat', text: '旧消息' }];
+  const ring4 = { id: 'c_ok', residentId: 'default', topic: '说件具体的事', createdAt: Date.now(), expiresAt: Date.now() + 30000 };
+  incomingPage.took({ same: true, rev: 'r5', incomingCall: ring4 });
+  incomingPage.api = async (path, opts) => {
+    if (path === '/web/call/answer') {
+      assert.equal(micOpens, 0, 'mic is not opened until server claims the call');
+      assert.equal(opts.body.id, 'c_ok');
+      assert.equal(opts.body.residentId, 'default');
+      return { status: 'answered', id: 'c_ok', residentId: 'default', messageId: 'call_ans_a_c_ok', opening: '喂，说件具体的事。' };
+    }
+    if (path.startsWith('/web/media')) return new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mpeg' });
+    return {};
+  };
+  await incomingPage.answerIncomingCall();
+  assert.equal(micOpens, 1, 'mic opens once after server confirms answer');
+  assert.equal(incomingPage.view, 'chat', 'answering returns to main chat');
+  assert.equal(incomingPage.incomingCall, null);
+  assert.equal(incomingPage.calling.phase, 'thinking', 'waits for the resident opening voice first');
+
+  // Opening line arrives with voicePending: stays thinking without timing out early.
+  incomingPage.lines = [
+    { id: 'old_1', role: 'assistant', kind: 'chat', text: '旧消息' },
+    { id: 'call_ans_a_c_ok', role: 'assistant', kind: 'chat', text: '喂，说件具体的事。', voicePending: true }
+  ];
+  ticks.at(-1)();
+  assert.equal(incomingPage.calling.phase, 'thinking');
+  const loudAudio = new Float32Array(4096).fill(0.5);
+  for (let i = 0; i < 6; i += 1) incomingPage.callHeard(loudAudio);
+  assert.equal(incomingPage.calling.phase, 'thinking', 'audio picked up while waiting cannot cut off the opening');
+
+  // Once opening voice arrives, plays it and then returns to listening when playback ends.
+  incomingPage.lines = [
+    { id: 'old_1', role: 'assistant', kind: 'chat', text: '旧消息' },
+    { id: 'call_ans_a_c_ok', role: 'assistant', kind: 'chat', text: '喂，说件具体的事。', voice: { key: 'open_v1' } }
+  ];
+  ticks.at(-1)();
+  assert.equal(incomingPage.calling.phase, 'speaking', 'plays resident opening first');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(incomingPage.playing, 'open_v1');
+  if (activeAudio && activeAudio.onended) activeAudio.onended();
+  ticks.at(-1)();
+  assert.equal(incomingPage.calling.phase, 'listening', 'returns to listening after opening finishes');
+  incomingPage.endCall();
+  assert.equal(incomingPage.calling, null);
+  assert.ok(stopped.includes('track') && stopped.includes('context'));
+
+  context.setInterval = origSetInterval;
+  context.clearInterval = origClearInterval;
+  context.Audio = origAudio;
+  delete context.BroadcastChannel;
+  delete context.navigator;
+  delete context.window.AudioContext;
+  console.log('PASS proactive incoming call: resident isolation, late poll dedupe, stale 409 without mic, switch guard, and opening-first startCall handoff');
+}
 
 // If markdown.js never runs (an extension or a stale cache blocked it), a reply still shows its words as text.
 {

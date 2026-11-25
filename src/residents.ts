@@ -55,7 +55,8 @@ const OWN: Partial<Record<keyof Env & string, (id: string, saved: Record<string,
   AELIOS_IDENTITY: (id) => id,
   AELIOS_NAMESPACE: (id, saved) => saved.AELIOS_IDENTITY?.trim() || id,
   CHECKIN_SCHEDULE: () => "",
-  HEARTBEAT: () => "0"
+  HEARTBEAT: () => "0",
+  PROACTIVE_CALL: () => "off"
 };
 
 /** The Worker's env as a resident sees it under its own settings (config.ts withSaved goes on top of this). */

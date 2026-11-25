@@ -246,3 +246,10 @@ UI 按以下合同读取状态，写信结果与送达结果互不替代。
 新增 `node test/fcm.mjs`（HTTP v1、内存 RSA 签名、OAuth 缓存和失效 token）、`node test/native-push.mjs`（实际 Resident 方法与 SQLite、两通道发送及策略）、`node test/native-push-ui.mjs`（模拟 Capacitor 的实际页面函数）。已有 `web-push.mjs`、`web-ui.mjs` 继续覆盖普通浏览器。真实本地 Worker 路由由 `TEST_BASE_URL=http://127.0.0.1:8787 node test/native-push-worker.mjs` 验证（Worker 启动时加 `--var FCM_SERVICE_ACCOUNT:not-json`），使用全新隔离状态和无个人环境变量文件的测试目录。详细配置与测试边界见 [native-push.md](native-push.md)。
 
 本轮本地检查通过：`npm run typecheck`、FCM 11 项、共用推送 SQLite/策略 6 项、原生前端 13 组、原有 Web Push 6 组和全部 Web UI 测试；真实本地 Worker 的原有 `web` 16 组、`residents` 12 组，以及新增原生推送路由检查均通过。退出登录和网页推送一样，不注销这台设备，要停就在设置里关通知。测试 Worker 使用临时目录中的测试配置、源代码链接和独立状态，未加载个人 `.env` / `.dev.vars`。未连接真实 Firebase 或手机，未部署到 Cloudflare。
+
+## 住户主动来电
+
+- `node test/proactive-call.mjs` 检查从已保存的工具结果恢复来电、回放防重、单通响铃、接听和拒接互斥、按截止时间过期，以及未送出的备选留言能被恢复任务找到。
+- `node test/web-ui.mjs` 检查来电横幅、断线后可以重试、跨标签页同步、切换住户和迟到轮询、收到接听确认后才开麦，以及等待开场白时的收音会被忽略。
+- `node test/proactive-call-worker.mjs` 已接入 `test/all.sh`，用 `--var ALARM_MINUTE_SECONDS:0.5 --var PROACTIVE_CALL_RING_SECONDS:3 --var PROACTIVE_CALL_ONLINE_SECONDS:2`、独立 `--persist-to` 临时目录和假服务验证鉴权、默认关闭、主动回合与免打扰、单条备选留言、并发接听、响铃中改设置、开场白 TTS、后续通话和住户隔离。
+- 自动测试使用假麦克风或模拟接口。真机麦克风授权、Safari 与移动端的自动播放、真实语音供应商、真实模型发起通话的时机，以及线上 Durable Object 休眠恢复需要在相应环境验证。

@@ -58,6 +58,25 @@ import { readAuxiliaryAnswer, removeAuxiliaryTurn } from "./letter-auxiliary";
 import { fakeModel } from "./fake-model";
 import { TaskWorker, handedPath, type ThreadFile, type ThreadLine } from "./task-worker";
 import { ALARM_PREFIX, CHAT_RULES, DEFAULT_PERSONA, HEARTBEATS, MAX_HEARTBEATS, LETTER_PREFIX, SKIP, checkinPrompt, heartbeatPrompt, isCheckin, isNote, letterPrompt, stamp } from "./prompts";
+import {
+  PROACTIVE_CALL_TOOL,
+  PROACTIVE_CALL_TOOL_DESCRIPTION,
+  ProactiveCallStore,
+  incomingCallView,
+  isProactiveCallNote,
+  normalizeCallContent,
+  placedProactiveCall,
+  proactiveCallAnsweredNote,
+  proactiveCallFallbackNote,
+  proactiveCallOnlineMs,
+  proactiveCallPromptHint,
+  proactiveCallRingMs,
+  staleErrorOf,
+  type IncomingCallView,
+  type ProactiveCall,
+  type ProactiveCallContent,
+  type ProactiveCallStaleReason
+} from "./proactive-call";
 import { inQuietHours, quietHoursInWords, quietHoursOf } from "./quiet-hours";
 import {
   AlarmStore,
@@ -340,6 +359,7 @@ export type WebLine = {
   /** A voice message: hers (its recording when she made it on the web page), or the voice this reply was said in. */
   voice?: { key: string | null; seconds: number | null; missed?: boolean; parts?: string[] };
   liveVoice?: VoicePlayback;
+  voicePending?: boolean;
   /** The message she was replying to. */
   quote?: { who: "user" | "assistant"; text: string };
   /** Cloud tasks this reply sent, or reported on, as cards. */
@@ -752,6 +772,11 @@ export class Resident extends Think<Env> {
       }
     } catch (error) {
       console.error("startup: alarm restoration failed; durable alarms retained for retry", kind(error));
+    }
+    try {
+      await this.recoverProactiveCalls();
+    } catch (error) {
+      console.error("startup: proactive call recovery failed", kind(error));
     }
     // Not waited for: the first request should not wait on Telegram.
     this.ctx.waitUntil(this.repairMenuButton().catch((error) => console.error("startup: menu button check failed", kind(error))));
@@ -1238,7 +1263,18 @@ export class Resident extends Think<Env> {
       });
     }
     if (this.webFetchOn()) tools.web_fetch = webFetchTool(readerFor(this.cfg, this.compressor(), this.pageCache(), this.siteKeys().all()));
-    Object.assign(tools, openFileTools(() => this.media()), this.stickerTools(), this.voiceTools(), this.taskTools(), this.alarmTools(), this.ownPersonaTools(), this.mcpManageTools(), this.mcpTools());
+    Object.assign(
+      tools,
+      openFileTools(() => this.media()),
+      this.stickerTools(),
+      this.voiceTools(),
+      this.proactiveCallTools(),
+      this.taskTools(),
+      this.alarmTools(),
+      this.ownPersonaTools(),
+      this.mcpManageTools(),
+      this.mcpTools()
+    );
     return tools;
   }
 
@@ -1388,7 +1424,12 @@ export class Resident extends Think<Env> {
       await advance();
       return;
     }
-    const text = alarmNote(alarm, stamp(new Date(now), this.tz), stamp(new Date(alarm.setAt), this.tz));
+    const text = alarmNote(
+      alarm,
+      stamp(new Date(now), this.tz),
+      stamp(new Date(alarm.setAt), this.tz),
+      this.canOfferProactiveCall(now) ? proactiveCallPromptHint() : ""
+    );
     const message = { id: ringKey, role: "user", parts: [{ type: "text", text }], metadata: { at: now } } as UIMessage;
     try {
       await this.submitMessages([message], { submissionId: ringKey, idempotencyKey: ringKey });
@@ -2845,6 +2886,9 @@ export class Resident extends Think<Env> {
       }
     }
     if (voiceDesign && requestId) this.#voiceDesignTurn = requestId;
+    const proactive = ctx.trigger === "scheduled" || ctx.trigger === "submission";
+    const proactiveCallTurn = isCheckin(askedForThisTurn) &&
+      (proactive || ctx.trigger === "recovery-retry" || ctx.trigger === "recovery-continue");
     this.#letterPromptId = letter && askedForThisTurn.startsWith(LETTER_PREFIX) ? letter.promptId : null;
     this.#letterReason = letter?.reason ?? "handoff";
     if (ctx.requestId) {
@@ -2875,7 +2919,7 @@ export class Resident extends Think<Env> {
         ? ctx.messenger.messengerId === "wecom"
           ? "wecom"
           : "telegram"
-        : !voiceDesign && (ctx.trigger === "scheduled" || ctx.trigger === "submission")
+        : !voiceDesign && (proactive || proactiveCallTurn)
           ? "checkin"
           : "web";
       const draft = new WebDraft(`live_${ctx.requestId}`, Date.now(), via);
@@ -2916,9 +2960,13 @@ export class Resident extends Think<Env> {
     }
     if (this.#stickerSent.size > 20) this.#stickerSent.clear();
     if (ctx.requestId) {
-      const proactive = ctx.trigger === "scheduled" || ctx.trigger === "submission";
       // "" is no message's id: the latest message of anyone's.
       const asked = this.userMessageBefore("")?.text ?? "";
+      if (this.#proactiveTurns.size > 20) this.#proactiveTurns.clear();
+      if (this.#turnCall.size > 20) this.#turnCall.clear();
+      if (!voiceDesign && !this.#letterPromptId && proactiveCallTurn) {
+        this.#proactiveTurns.add(ctx.requestId);
+      }
       // Cleared as a turn starts, never during one: a turn's count of tasks cannot be reset under it.
       if (this.#turnTasks.size > 20) this.#turnTasks.clear();
       if (!voiceDesign && !proactive && !this.#letterPromptId && asked && !isNote(asked)) {
@@ -2926,6 +2974,7 @@ export class Resident extends Think<Env> {
         // When they last wrote, from the start of their turn: a heartbeat due while it runs sees it and passes.
         await this.ctx.storage.put("their_last_at", Date.now());
         await this.stopHeartbeats();
+        await this.cancelRingingCalls("user_replied");
       }
     }
     // Recheck after the auxiliary prompt has actually been persisted, including concurrent appends.
@@ -3548,7 +3597,13 @@ export class Resident extends Think<Env> {
       return;
     }
     const quiet = Math.max(1, Math.round((at - lastFromThem) / 60_000));
-    const text = heartbeatPrompt(stamp(new Date(at), this.tz), quiet, n, times);
+    const text = heartbeatPrompt(
+      stamp(new Date(at), this.tz),
+      quiet,
+      n,
+      times,
+      this.canOfferProactiveCall(at) ? proactiveCallPromptHint() : ""
+    );
     const message = { id: `heartbeat_${at}`, role: "user", parts: [{ type: "text", text }], metadata: { at } } as UIMessage;
     await this.submitMessages([message], { idempotencyKey: message.id }).catch((error) => console.error("heartbeat: not queued", { error: String(error) }));
     if (n < times) {
@@ -3609,6 +3664,12 @@ export class Resident extends Think<Env> {
     if (sent.key) this.media().saySpoken(messageId, sent.key);
     if (needsText(reply)) for (const bubble of splitIntoBubbles(unmarked(reply, dialectOf(this.cfg)))) await this.toHer(bubble);
     return true;
+  }
+
+  private async postProactiveReply(reply: string, messageId: string): Promise<void> {
+    let delivered = await this.checkinAsVoice(reply, messageId);
+    if (!delivered) for (const bubble of splitIntoBubbles(reply)) delivered = (await this.toHer(bubble)) || delivered;
+    this.ctx.waitUntil(this.pushOut(reply, delivered ? "delivered" : "proactive"));
   }
 
   /**
@@ -3673,6 +3734,8 @@ export class Resident extends Think<Env> {
         this.#stickerSent.delete(result.requestId);
         this.#turnTasks.delete(result.requestId);
         this.#usageLabels.delete(result.requestId);
+        this.#proactiveTurns.delete(result.requestId);
+        this.#turnCall.delete(result.requestId);
       }
       const before = this.userMessageBefore(result.message.id);
       const letter = this.letterJob();
@@ -3707,18 +3770,16 @@ export class Resident extends Think<Env> {
       // A sticker it sent with a mark is not part of what it said (sticker-marks.ts).
       const marked = stickerMarks(textOf(result.message).trim());
       const reply = marked.text;
+      const placedCall = isCheckin(asked) ? placedProactiveCall(result.message.parts) : null;
+      if (placedCall) await this.commitProactiveCall(`c_${result.message.id}`, placedCall);
       // When it last said something, for the dot on its avatar in the sidebar (/web/residents).
-      if (reply && reply !== SKIP) await this.ctx.storage.put("said_at", Date.now());
+      if (!placedCall && reply && reply !== SKIP) await this.ctx.storage.put("said_at", Date.now());
       const trigger = this.activeTurn?.trigger;
       // A check-in, heartbeat, alarm or task result has no messenger turn to reply into: post it ourselves. Told by
       // its note too, because a response hook replayed after a restart has no trigger.
       const proactive =
         isCheckin(asked) || taskOfNote(asked) !== null || ((trigger === "scheduled" || trigger === "submission") && isNote(asked));
-      if (proactive && reply && reply !== SKIP) {
-        let delivered = await this.checkinAsVoice(reply, result.message.id);
-        if (!delivered) for (const bubble of splitIntoBubbles(reply)) delivered = (await this.toHer(bubble)) || delivered;
-        this.ctx.waitUntil(this.pushOut(reply, delivered ? "delivered" : "proactive"));
-      }
+      if (!placedCall && proactive && reply && reply !== SKIP) await this.postProactiveReply(reply, result.message.id);
       // A voice message send_voice sent in this turn shows on the web page with this reply.
       const voiced = this.#turnVoice;
       this.#turnVoice = null;
@@ -3735,17 +3796,17 @@ export class Resident extends Think<Env> {
         if (Date.now() - this.#webSeenAt > WEB_AWAY_MS) this.ctx.waitUntil(this.pushOut(reply, "reply"));
       }
       // A sticker a check-in or a thread's report named goes after its words, as one make_sticker sent does.
-      const named = proactive && this.stickersOn() ? marked.stickers.map((handle) => this.stickers().find(handle)).find(Boolean) : null;
+      const named = !placedCall && proactive && this.stickersOn() ? marked.stickers.map((handle) => this.stickers().find(handle)).find(Boolean) : null;
       if (named && result.requestId && !this.#outbox.get(`req:${result.requestId}`)?.length) this.#outbox.set(`req:${result.requestId}`, [named.key]);
       if (result.requestId && this.#outbox.has(`req:${result.requestId}`)) {
         const thread = await this.herThread();
-        if (reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
+        if (placedCall || reply === SKIP || !thread) this.#outbox.delete(`req:${result.requestId}`);
         else await this.flushStickers(`req:${result.requestId}`, thread);
       }
       // Her turns are recorded by Aelios as they pass through it. A check-in answers no message of hers, so Aelios
       // leaves it out (via-aelios.ts): it is recorded here, as something said to her.
       const memory = aeliosConfig(this.cfg);
-      if (proactive && memory && reply && reply !== SKIP) {
+      if (!placedCall && proactive && memory && reply && reply !== SKIP) {
         this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: reply }], "aelios-resident:checkin"));
       }
       if (fromThem && !proactive && searches.length) this.learn(asked, searches, reply);
@@ -3789,7 +3850,7 @@ export class Resident extends Think<Env> {
     return {
       checkin: {
         schedule,
-        prompt: () => checkinPrompt(stamp(new Date(), this.tz))
+        prompt: () => checkinPrompt(stamp(new Date(), this.tz), this.canOfferProactiveCall() ? proactiveCallPromptHint() : "")
       } as ThinkScheduledTask
     };
   }
@@ -3862,6 +3923,7 @@ export class Resident extends Think<Env> {
             : "不问（当前模型没有 Anthropic 缓存，或缓存 5 分钟、交接信关着）"
       }`,
       `闹钟：${this.alarmsOn() ? `开，它定了 ${this.alarms().all().length} 个` : this.alarms().all().length ? `关，留着 ${this.alarms().all().length} 个不响` : "关"}`,
+      `主动来电：${this.proactiveCallOn() ? (speaker(this.cfg) ? `开（网页门，${this.quietHoursLine()}）` : "开，但还没配好声音") : "关"}`,
       `表情包：${this.stickersOn() ? `开，${this.stickerSummary()}` : "关"}`,
       await this.voiceLine(),
       `后台帮忙：${
@@ -3953,7 +4015,7 @@ export class Resident extends Think<Env> {
           via = "task";
           continue;
         }
-        if (isCheckin(text)) {
+        if (isCheckin(text) || isProactiveCallNote(text)) {
           via = "checkin";
           continue;
         }
@@ -4004,6 +4066,7 @@ export class Resident extends Think<Env> {
       }
       // A check-in or a thread's report it passed on says nothing; a group chat's answer was posted there.
       if (((via === "checkin" || via === "task") && said === SKIP) || via === "group") continue;
+      if (via === "checkin" && placedProactiveCall(message.parts)) continue;
       const ids = taskIdsOf(message.parts, about);
       if (ids.length) taskIds.set(message.id, ids);
       about = null;
@@ -4035,11 +4098,20 @@ export class Resident extends Think<Env> {
     const cards = new Map(this.taskCards([...new Set([...taskIds.values()].flat())])?.map((card) => [card.id, card]));
     const decorated = lines.map((line) => {
       const voice = spoken.get(line.id);
-      const liveVoice = voice ? undefined : this.#finishingVoices.get(line.id)?.live();
+      const finishing = voice ? undefined : this.#finishingVoices.get(line.id);
+      const liveVoice = finishing?.live();
+      const voicePending = Boolean(finishing);
       const made = files.get(line.id);
       const tasks = taskIds.get(line.id)?.map((id) => cards.get(id)).filter((card) => card !== undefined);
-      if (!voice && !liveVoice && !made && !tasks?.length) return line;
-      return { ...line, ...(voice ? { voice } : {}), ...(liveVoice ? { liveVoice } : {}), ...(made ? { files: made } : {}), ...(tasks?.length ? { tasks } : {}) };
+      if (!voice && !liveVoice && !voicePending && !made && !tasks?.length) return line;
+      return {
+        ...line,
+        ...(voice ? { voice } : {}),
+        ...(liveVoice ? { liveVoice } : {}),
+        ...(voicePending ? { voicePending } : {}),
+        ...(made ? { files: made } : {}),
+        ...(tasks?.length ? { tasks } : {})
+      };
     });
     return { lines: decorated, notices: this.notices() };
   }
@@ -4054,6 +4126,7 @@ export class Resident extends Think<Env> {
     const lines = this.#drafts.size ? [...stored] : stored;
     // Only include a running draft when the SDK has not already exposed its assistant row.
     for (const [requestId, draft] of this.#drafts) {
+      if (this.#turnCall.has(requestId)) continue;
       if (!this.#draftActive?.()) {
         this.#drafts.delete(requestId);
         this.#webTurns.get(requestId)?.speech?.cancel();
@@ -4487,11 +4560,266 @@ export class Resident extends Think<Env> {
 
   #mediaStore: MediaStore | null = null;
   #madeFileStore: MadeFiles | null = null;
+  #proactiveCallStore: ProactiveCallStore | null = null;
+  #proactiveTurns = new Set<string>();
+  #turnCall = new Set<string>();
   /** When the web page last asked for the conversation: a reply while it is closed is pushed (web push). */
   #webSeenAt = 0;
+  #webSeenPersistedAt = 0;
   /** Web turns now running, with their optional speech jobs. */
   #webTurns = new Map<string, { speech?: ReplyVoice }>();
   #finishingVoices = new Map<string, ReplyVoice>();
+
+  private proactiveCalls(): ProactiveCallStore {
+    this.#proactiveCallStore ??= new ProactiveCallStore(this.sqlShownOnWeb());
+    return this.#proactiveCallStore;
+  }
+
+  private proactiveCallOn(): boolean {
+    return this.cfg.PROACTIVE_CALL?.trim().toLowerCase() === "on";
+  }
+
+  private canOfferProactiveCall(now = Date.now()): boolean {
+    return this.proactiveCallOn() && !speakingGap(this.cfg) && !inQuietHours(quietHoursOf(this.cfg.QUIET_HOURS), now, this.tz);
+  }
+
+  private noteWebSeen(now = Date.now()): void {
+    this.#webSeenAt = now;
+    if (this.proactiveCallOn() && now - this.#webSeenPersistedAt >= 10_000) {
+      this.#webSeenPersistedAt = now;
+      this.ctx.waitUntil(this.ctx.storage.put("web_seen_at", now));
+    }
+  }
+
+  private async lastWebSeen(): Promise<number> {
+    const stored = (await this.ctx.storage.get<number>("web_seen_at")) ?? 0;
+    return Math.max(this.#webSeenAt, stored);
+  }
+
+  private proactiveCallTools(): ToolSet {
+    if (!this.proactiveCallOn() || speakingGap(this.cfg)) return {};
+    return {
+      [PROACTIVE_CALL_TOOL]: tool({
+        description: PROACTIVE_CALL_TOOL_DESCRIPTION,
+        inputSchema: z.object({
+          opening: z.string().describe("What you will say aloud first as soon as they answer the call."),
+          fallback: z.string().describe("A short proactive message to leave instead if they decline, miss it, or the web page is closed."),
+          topic: z.string().optional().describe("Optional short subtitle (a few words) for the incoming call prompt.")
+        }),
+        execute: ({ opening, fallback, topic }) => {
+          const now = Date.now();
+          const requestId = this.activeTurn?.requestId ?? "";
+          if (!requestId || !this.#proactiveTurns.has(requestId)) {
+            return "Not placed: proactive calls can only be started during a scheduled check-in, heartbeat, or alarm.";
+          }
+          if (this.#turnCall.has(requestId)) return "Not placed: a call was already placed in this turn.";
+          if (!this.proactiveCallOn()) return "Not placed: proactive calls are turned off.";
+          if (speakingGap(this.cfg)) return "Not placed: voice is not configured.";
+          if (inQuietHours(quietHoursOf(this.cfg.QUIET_HOURS), now, this.tz)) {
+            return "Not placed: it is quiet hours now.";
+          }
+          const cleaned = normalizeCallContent({ opening, fallback, topic });
+          if ("error" in cleaned) return `Not placed: ${cleaned.error}`;
+          const spokenOpening = speakable(cleaned.opening);
+          if (!spokenOpening) return "Not placed: opening has nothing to say aloud.";
+          if (spokenOpening.length > SPEAK_MAX_CHARS) {
+            return `Not placed: opening is too long to speak (${spokenOpening.length} characters; at most ${SPEAK_MAX_CHARS}).`;
+          }
+          if (this.proactiveCalls().active(now)) return "Not placed: a call is already ringing.";
+          this.#turnCall.add(requestId);
+          return "Placed: your web call is being placed now. Reply with just SKIP and do not send another text message.";
+        }
+      })
+    };
+  }
+
+  private async commitProactiveCall(id: string, content: ProactiveCallContent): Promise<void> {
+    const lastSeen = await this.lastWebSeen();
+    const now = Date.now();
+    if (!this.canOfferProactiveCall(now)) return;
+    const online = lastSeen > 0 && now - lastSeen <= proactiveCallOnlineMs(this.cfg.PROACTIVE_CALL_ONLINE_SECONDS);
+    const expiresAt = online ? now + proactiveCallRingMs(this.cfg.PROACTIVE_CALL_RING_SECONDS) : null;
+    const call = this.proactiveCalls().start({ ...content, id, now, expiresAt });
+    if (!call) return;
+    try {
+      await this.armProactiveCallTimeout(call);
+    } catch (error) {
+      console.error("proactive-call: failed to arm timeout schedule", { id: call.id, error: error instanceof Error ? error.name : typeof error });
+    }
+    if (call.status === "missed") await this.deliverProactiveFallback(call);
+  }
+
+  private async armProactiveCallTimeout(call: ProactiveCall): Promise<void> {
+    const due = Math.max(Date.now(), call.expiresAt);
+    const scheduled = await this.schedule(new Date(Math.ceil(due / 1000) * 1000), "proactiveCallTimeout", { id: call.id }, { idempotent: true });
+    const store = this.proactiveCalls();
+    if (store.get(call.id)?.status === "ringing") store.setScheduleId(call.id, scheduled.id);
+  }
+
+  private async cancelRingingCalls(reason: "user_replied" | "config_off"): Promise<void> {
+    const cancelled = this.proactiveCalls().cancelRinging(Date.now(), reason);
+    for (const call of cancelled) {
+      if (call.scheduleId) await this.cancelSchedule(call.scheduleId).catch(() => false);
+    }
+    if (cancelled.length) this.webChanged();
+  }
+
+  private async expireOverdueProactiveCalls(now = Date.now()): Promise<void> {
+    const store = this.proactiveCalls();
+    for (const call of store.expiredRinging(now)) {
+      const expired = store.expire(call.id, now);
+      if (expired) {
+        await this.deliverProactiveFallback(expired);
+        if (expired.scheduleId) await this.cancelSchedule(expired.scheduleId).catch(() => false);
+      }
+    }
+  }
+
+  private async recoverProactiveCalls(): Promise<void> {
+    const store = this.proactiveCalls();
+    if (!this.proactiveCallOn() || speakingGap(this.cfg)) await this.cancelRingingCalls("config_off");
+    for (const call of [...store.allRinging(), ...store.pendingFallbacks()]) {
+      await this.armProactiveCallTimeout(call);
+    }
+  }
+
+  async proactiveCallTimeout(payload: { id: string }): Promise<void> {
+    const store = this.proactiveCalls();
+    const call = store.get(payload.id);
+    if (!call) return;
+    const now = Date.now();
+    if (call.status === "ringing" && now < call.expiresAt) {
+      await this.armProactiveCallTimeout(call);
+      return;
+    }
+    const resolved = call.status === "ringing" ? store.expire(call.id, now) : call;
+    if (resolved) await this.deliverProactiveFallback(resolved);
+  }
+
+  private async deliverProactiveFallback(call: ProactiveCall): Promise<string | null> {
+    if (call.fallbackSentAt !== null || (call.status !== "declined" && call.status !== "missed")) return call.messageId || null;
+    const at = call.resolvedAt ?? Date.now();
+    const replyId = `call_fb_a_${call.id}`;
+    const fallback = call.fallback;
+    await this.addMessages([{
+      id: `call_fb_u_${call.id}`,
+      role: "user",
+      parts: [{ type: "text", text: proactiveCallFallbackNote(call.reason, stamp(new Date(at), this.tz)) }],
+      metadata: { at }
+    }, {
+      id: replyId,
+      role: "assistant",
+      parts: [{ type: "text", text: fallback }],
+      metadata: { at }
+    }]);
+    const store = this.proactiveCalls();
+    const now = Date.now();
+    if (!store.claimFallbackDelivery(call.id, now)) return replyId;
+    store.setMessageId(call.id, replyId);
+    await this.ctx.storage.put("said_at", now);
+    this.webHistoryChanged();
+    this.ctx.waitUntil(this.postProactiveReply(fallback, replyId).catch((error) =>
+      console.error("proactive-call: fallback delivery failed", { id: call.id, error: error instanceof Error ? error.name : typeof error })
+    ));
+    const memory = aeliosConfig(this.cfg);
+    if (memory) {
+      this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: fallback }], "aelios-resident:checkin"));
+    }
+    return replyId;
+  }
+
+  async webAnswerProactiveCall(input: { id?: unknown; residentId?: unknown; clientId?: unknown }): Promise<
+    | { status: "answered"; id: string; residentId: string; messageId: string; opening: string }
+    | { status: "stale"; reason: ProactiveCallStaleReason; error: string }
+    | { error: string }
+  > {
+    const id = typeof input.id === "string" ? input.id.trim() : "";
+    if (!id) return { error: "缺少来电编号" };
+    if (typeof input.residentId === "string" && input.residentId.trim() && input.residentId.trim() !== this.residentId) {
+      return { status: "stale", reason: "wrong_resident", error: staleErrorOf("wrong_resident") };
+    }
+    const clientId = typeof input.clientId === "string" ? input.clientId : "";
+    const now = Date.now();
+    this.noteWebSeen(now);
+    const store = this.proactiveCalls();
+    if (!this.canOfferProactiveCall(now) && store.get(id)?.status === "ringing") await this.cancelRingingCalls("config_off");
+    const claimed = store.answer(id, now, clientId);
+    if (!claimed.ok) {
+      if (claimed.expiredCall) {
+        await this.deliverProactiveFallback(claimed.expiredCall);
+        if (claimed.expiredCall.scheduleId) await this.cancelSchedule(claimed.expiredCall.scheduleId).catch(() => false);
+      }
+      return { status: "stale", reason: claimed.reason, error: staleErrorOf(claimed.reason) };
+    }
+    const call = claimed.call;
+    if (call.scheduleId) await this.cancelSchedule(call.scheduleId).catch(() => false);
+    const replyId = `call_ans_a_${call.id}`;
+    await this.addMessages([{
+      id: `call_ans_u_${call.id}`,
+      role: "user",
+      parts: [{ type: "text", text: proactiveCallAnsweredNote(stamp(new Date(now), this.tz)) }],
+      metadata: { at: now }
+    }, {
+      id: replyId,
+      role: "assistant",
+      parts: [{ type: "text", text: call.opening }],
+      metadata: { at: now }
+    }]);
+    store.setMessageId(call.id, replyId);
+    await this.ctx.storage.put("said_at", now);
+    await this.ctx.storage.put("their_last_at", now);
+    await this.ctx.storage.put("wrote_since_letter", true);
+    await this.stopHeartbeats();
+    await this.planIdleLetter(true);
+    const speak = speaker(this.cfg);
+    if (speak && speakable(call.opening)) {
+      this.dropWebVoice(replyId);
+      const speech = new ReplyVoice({
+        speak,
+        maxBytes: MEDIA_MAX_BYTES,
+        keep: (spoken) => this.keepSpoken(spoken),
+        release: (key) => this.media().remove(key),
+        changed: () => this.webChanged(),
+        waitUntil: (work) => this.ctx.waitUntil(work)
+      });
+      this.#finishingVoices.set(replyId, speech);
+      this.ctx.waitUntil(this.finishWebVoice(replyId, call.opening, speech));
+    }
+    const memory = aeliosConfig(this.cfg);
+    if (memory) {
+      this.ctx.waitUntil(ingest(memory, [{ role: "assistant", content: call.opening }], "aelios-resident:checkin"));
+    }
+    this.webHistoryChanged();
+    return { status: "answered", id: call.id, residentId: this.residentId, messageId: replyId, opening: call.opening };
+  }
+
+  async webDeclineProactiveCall(input: { id?: unknown; residentId?: unknown; clientId?: unknown }): Promise<
+    | { status: "declined"; id: string; residentId: string; messageId: string | null }
+    | { status: "stale"; reason: ProactiveCallStaleReason; error: string }
+    | { error: string }
+  > {
+    const id = typeof input.id === "string" ? input.id.trim() : "";
+    if (!id) return { error: "缺少来电编号" };
+    if (typeof input.residentId === "string" && input.residentId.trim() && input.residentId.trim() !== this.residentId) {
+      return { status: "stale", reason: "wrong_resident", error: staleErrorOf("wrong_resident") };
+    }
+    const clientId = typeof input.clientId === "string" ? input.clientId : "";
+    const now = Date.now();
+    this.noteWebSeen(now);
+    const store = this.proactiveCalls();
+    const claimed = store.decline(id, now, clientId);
+    if (!claimed.ok) {
+      if (claimed.expiredCall) {
+        await this.deliverProactiveFallback(claimed.expiredCall);
+        if (claimed.expiredCall.scheduleId) await this.cancelSchedule(claimed.expiredCall.scheduleId).catch(() => false);
+      }
+      return { status: "stale", reason: claimed.reason, error: staleErrorOf(claimed.reason) };
+    }
+    const call = claimed.call;
+    const messageId = await this.deliverProactiveFallback(call);
+    if (call.scheduleId) await this.cancelSchedule(call.scheduleId).catch(() => false);
+    return { status: "declined", id: call.id, residentId: this.residentId, messageId };
+  }
 
   private media(): MediaStore {
     this.#mediaStore ??= new MediaStore(this.sqlShownOnWeb(), (key) => this.readingNotes().remove({ key }));
@@ -4774,17 +5102,20 @@ export class Resident extends Think<Env> {
   /**
    * Return `same` for an unchanged version without a live draft. A draft is overlaid on the cached conversation.
    */
-  async webLook(since: string | null): Promise<({ data: WebLine[]; rev: string } | { same: true; rev: string }) & { turn: ChatTurn | null; permissions: ReturnType<typeof chatPermissions>; waiting: ReturnType<WaitingStore["list"]>; voiceDesign: WebVoiceDesign | null }> {
+  async webLook(since: string | null): Promise<({ data: WebLine[]; rev: string } | { same: true; rev: string }) & { turn: ChatTurn | null; permissions: ReturnType<typeof chatPermissions>; waiting: ReturnType<WaitingStore["list"]>; voiceDesign: WebVoiceDesign | null; incomingCall: IncomingCallView | null }> {
+    const now = Date.now();
+    this.noteWebSeen(now);
+    await this.expireOverdueProactiveCalls(now);
     const waiting = this.waiting().list();
     const permissions = chatPermissions(waiting.items);
     const voiceDesign = this.webVoiceDesign();
+    const incomingCall = this.canOfferProactiveCall(now) ? incomingCallView(this.proactiveCalls().active(now), this.residentId) : null;
     const rev = `${this.#webBoot}.${this.#webRev}`;
     const turn = this.#chatStop.current();
     if (since && since === rev && !this.#drafts.size) {
-      this.#webSeenAt = Date.now();
-      return { same: true, rev, turn, permissions, waiting, voiceDesign };
+      return { same: true, rev, turn, permissions, waiting, voiceDesign, incomingCall };
     }
-    return { data: await this.webHistory(), rev, turn, permissions, waiting, voiceDesign };
+    return { data: await this.webHistory(), rev, turn, permissions, waiting, voiceDesign, incomingCall };
   }
 
   /** Cancels only the current chat turn; queued messages and machine jobs are untouched. */
@@ -5133,6 +5464,9 @@ export class Resident extends Think<Env> {
       }
     }
     if (key === "TIME_ZONE") await this.rearmAlarms();
+    if ((key === "PROACTIVE_CALL" || key === "QUIET_HOURS" || key === "TIME_ZONE" || key.startsWith("VOICE_")) && !this.canOfferProactiveCall()) {
+      await this.cancelRingingCalls("config_off");
+    }
     // Another relay or app: ask the relay again what it does, and forget the last error.
     if (key.startsWith("WECOM_")) {
       this.#wecomApi = null;

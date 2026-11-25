@@ -175,7 +175,30 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
     if (rounds < 2) return { tool: "set_alarm", input: { note: "晚点再问问她", in_minutes: rounds === 0 ? 30 : 61 } };
     return { text: "SKIP" };
   }
-  if (said.startsWith("(Not from them: an alarm you set")) return { text: `闹钟响了：${said.match(/<<<\n([\s\S]*?)\n>>>/)?.[1] ?? ""}` };
+  if (said.startsWith("(Not from them: an alarm you set")) {
+    const note = said.match(/<<<\n([\s\S]*?)\n>>>/)?.[1] ?? "";
+    if (note.startsWith("来电测试：")) {
+      const detail = note.slice("来电测试：".length);
+      if (last?.role === "tool" && toolOf(last.content) === "call_web") {
+        const outcome = textOf(last.content);
+        if (outcome.startsWith("Placed:")) return { text: detail.includes("嘴碎") ? "不应该重复发出的废话" : "SKIP" };
+        return { text: `没打成：${outcome}` };
+      }
+      const hasCall = (options.tools ?? []).some((t) => t.type === "function" && t.name === "call_web");
+      if (hasCall && (said.includes("call_web") || detail.includes("强行打"))) {
+        return {
+          tool: "call_web",
+          input: {
+            topic: detail,
+            opening: `喂，我想当面跟你聊聊「${detail}」这件事。`,
+            fallback: `刚才想给你打个电话聊聊「${detail}」，你忙的话有空再回我。`
+          }
+        };
+      }
+      return { text: `普通文字提醒：${detail}` };
+    }
+    return { text: `闹钟响了：${note}` };
+  }
   // Six alarms in one reply, each every day at its own hour.
   if (said.includes("定六个闹钟") && (last?.role !== "tool" || toolResultsSince(prompt) < 6)) {
     const n = last?.role === "tool" ? toolResultsSince(prompt) : 0;
@@ -232,6 +255,16 @@ function decide(options: LanguageModelV4CallOptions): { text: string; delayMs?: 
   if (said.includes("闹钟工具有哪些")) {
     const names = (options.tools ?? []).filter((t) => t.type === "function" && /alarm/.test(t.name)).map((t) => t.name);
     return { text: names.join("|") || "没有闹钟工具。" };
+  }
+  if (said.includes("主动来电工具在吗")) {
+    const hasCall = (options.tools ?? []).some((t) => t.type === "function" && t.name === "call_web");
+    return { text: hasCall ? "有 call_web。" : "没有 call_web。" };
+  }
+  if (said.includes("普通消息强行来电")) {
+    return { tool: "call_web", input: { opening: "喂，普通消息里来电。", fallback: "普通消息兜底。" } };
+  }
+  if (said.includes("定来电闹钟：")) {
+    return { tool: "set_alarm", input: { note: `来电测试：${said.split("定来电闹钟：")[1].trim()}`, in_minutes: 1 } };
   }
   // Its own persona (persona-edit.ts): whether it was given edit_persona, a line added at the end, a piece replaced.
   if (said.includes("改人设工具在吗")) {
