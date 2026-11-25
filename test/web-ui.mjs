@@ -1799,3 +1799,22 @@ wide.showChat();
 assert.equal(profiled, true, 'and from the chat it shows who it is');
 delete context.matchMedia;
 console.log('PASS the computer layout: a line under each name, the sidebar folds away and back (a drawer on a phone), the resident\'s card goes to its chat');
+
+// If markdown.js never runs (an extension or a stale cache blocked it), a reply still shows its words as text.
+{
+  const at = html.indexOf('<script type="module" src="/markdown.js"></script>');
+  const inline = [...html.slice(0, at).matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).find((s) => s.includes("directive('markdown'"));
+  assert.ok(inline, 'a plain-text x-markdown comes before markdown.js');
+  const listeners = [];
+  const directives = {};
+  const fallbackDoc = { addEventListener(name, fn) { if (name === 'alpine:init') listeners.push(fn); } };
+  const win = { Alpine: { directive(name, fn) { directives[name] = fn; } } };
+  vm.runInNewContext(inline, { document: fallbackDoc, window: win });
+  for (const fn of listeners) fn();
+  const el = { style: {}, textContent: '' };
+  const text = '第一段 <b>不是标签</b>\n第二行';
+  directives.markdown(el, { expression: 'b.text' }, { evaluateLater: () => (done) => done(text), effect: (fn) => fn() });
+  assert.equal(el.textContent, text, 'the fallback shows the words as text, tags included');
+  assert.equal(el.style.whiteSpace, 'pre-wrap');
+}
+console.log('markdown fallback ok');

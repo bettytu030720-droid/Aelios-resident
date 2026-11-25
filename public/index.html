@@ -34,6 +34,16 @@ window.telegramReady = /(?:^#|[&#])tgWebAppData=/.test(location.hash) ? new Prom
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/threads.css">
 <link rel="stylesheet" href="/chat-stop.css">
+<script>
+// If markdown.js never runs (an extension blocked it, a stale cache), x-markdown still shows the words as plain
+// text instead of an empty bubble. markdown.js registers the same directive after this and takes its place.
+document.addEventListener('alpine:init', function () {
+  window.Alpine.directive('markdown', function (el, binding, utils) {
+    var read = utils.evaluateLater(binding.expression);
+    utils.effect(function () { read(function (value) { el.style.whiteSpace = 'pre-wrap'; el.textContent = String(value == null ? '' : value); }); });
+  });
+});
+</script>
 <script type="module" src="/markdown.js"></script>
 <script src="/group.js"></script>
 <script src="/machine.js"></script>
